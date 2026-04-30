@@ -39,13 +39,20 @@ pub(crate) enum RecordingError {
     },
 }
 
-/// Errors specific to default-device resolution via `wpctl`. Kept
-/// separate from `RecordingError` so the discovery code can be unit
-/// tested without pulling in `GStreamer` types.
+/// Errors specific to default-device resolution via `PipeWire` CLI
+/// helpers (`wpctl`, `pw-cli`). Kept separate from `RecordingError`
+/// so the discovery code can be unit tested without pulling in
+/// `GStreamer` types. The `tool` field names which binary failed —
+/// the discovery layer shells out to more than one, and conflating
+/// them leaves the user chasing the wrong tool when something
+/// breaks (e.g. `pw-cli` missing surfacing as "wpctl failed").
 #[derive(Debug, Error)]
 pub(crate) enum DeviceError {
-    #[error("`wpctl` invocation failed: {message}")]
-    WpctlFailed { message: String },
+    #[error("`{tool}` invocation failed: {message}")]
+    CommandFailed {
+        tool: &'static str,
+        message: String,
+    },
 
     #[error(
         "`wpctl inspect {alias}` did not contain a `node.name` line — output:\n{output}"

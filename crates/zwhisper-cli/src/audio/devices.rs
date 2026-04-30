@@ -41,7 +41,8 @@ impl WpctlRunner for WpctlCommandRunner {
         let output = Command::new("wpctl")
             .args(["inspect", alias])
             .output()
-            .map_err(|e| DeviceError::WpctlFailed {
+            .map_err(|e| DeviceError::CommandFailed {
+                tool: "wpctl",
                 message: format!("could not spawn `wpctl inspect {alias}`: {e}"),
             })?;
 
@@ -51,7 +52,8 @@ impl WpctlRunner for WpctlCommandRunner {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
         if !output.status.success() {
-            return Err(DeviceError::WpctlFailed {
+            return Err(DeviceError::CommandFailed {
+                tool: "wpctl",
                 message: format!(
                     "`wpctl inspect {alias}` exited with status {:?}: {stderr}",
                     output.status.code()
@@ -60,7 +62,8 @@ impl WpctlRunner for WpctlCommandRunner {
         }
 
         if stdout.trim().is_empty() || stdout.contains("not found") {
-            return Err(DeviceError::WpctlFailed {
+            return Err(DeviceError::CommandFailed {
+                tool: "wpctl",
                 message: format!("`wpctl inspect {alias}` returned no node: {stdout}{stderr}"),
             });
         }
@@ -70,14 +73,16 @@ impl WpctlRunner for WpctlCommandRunner {
 
     fn list_node_names(&self) -> Result<Vec<String>, DeviceError> {
         let output = Command::new("pw-cli").args(["ls", "Node"]).output().map_err(
-            |e| DeviceError::WpctlFailed {
+            |e| DeviceError::CommandFailed {
+                tool: "pw-cli",
                 message: format!("could not spawn `pw-cli ls Node`: {e}"),
             },
         )?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DeviceError::WpctlFailed {
+            return Err(DeviceError::CommandFailed {
+                tool: "pw-cli",
                 message: format!(
                     "`pw-cli ls Node` exited with status {:?}: {stderr}",
                     output.status.code()
@@ -146,12 +151,14 @@ pub(crate) fn resolve(
         format!("{sink_name}.monitor")
     } else {
         let candidate = validate_explicit(monitor_arg, "monitor")?;
-        // Accept either the literal node we are pointed at, or — in
-        // the common case of `<sink>.monitor` — the parent sink. If
-        // neither exists we fail fast with a typed error rather than
-        // letting GStreamer surface a vague "target not found".
-        let candidate_parent = candidate.strip_suffix(".monitor");
-        ensure_one_of_exists(runner, [&candidate, candidate_parent.unwrap_or("")], "monitor")?;
+        // Require the literal node name to appear in `pw-cli ls Node`.
+        // We do not accept a parent sink as proof that its
+        // `.monitor` exists: PipeWire publishes monitor sources as
+        // their own Node objects, and accepting the parent would
+        // silently hand `pipewiresrc` a name it cannot resolve,
+        // turning a fast-fail into a vague preroll-time
+        // "target not found".
+        ensure_node_exists(runner, &candidate, "monitor")?;
         candidate
     };
 
@@ -210,26 +217,6 @@ fn ensure_node_exists(
     }
     Err(DeviceError::InvalidArgument {
         value: format!("{name} (available {kind} candidates: {})", sample_names(&names)),
-        reason: "node name not found in `pw-cli ls Node`",
-    })
-}
-
-fn ensure_one_of_exists<'a>(
-    runner: &impl WpctlRunner,
-    candidates: impl IntoIterator<Item = &'a str>,
-    kind: &'static str,
-) -> Result<(), DeviceError> {
-    let candidates: Vec<&str> = candidates.into_iter().filter(|c| !c.is_empty()).collect();
-    let names = runner.list_node_names()?;
-    if candidates.iter().any(|c| names.iter().any(|n| n == *c)) {
-        return Ok(());
-    }
-    Err(DeviceError::InvalidArgument {
-        value: format!(
-            "{} (available {kind} candidates: {})",
-            candidates.join(" or "),
-            sample_names(&names)
-        ),
         reason: "node name not found in `pw-cli ls Node`",
     })
 }
@@ -300,7 +287,8 @@ mod tests {
             match alias {
                 "@DEFAULT_AUDIO_SOURCE@" => self.source_body.clone(),
                 "@DEFAULT_AUDIO_SINK@" => self.sink_body.clone(),
-                other => Err(DeviceError::WpctlFailed {
+                other => Err(DeviceError::CommandFailed {
+                    tool: "wpctl",
                     message: format!("unexpected alias `{other}` in test"),
                 }),
             }
@@ -314,7 +302,8 @@ mod tests {
     impl Clone for DeviceError {
         fn clone(&self) -> Self {
             match self {
-                Self::WpctlFailed { message } => Self::WpctlFailed {
+                Self::CommandFailed { tool, message } => Self::CommandFailed {
+                    tool,
                     message: message.clone(),
                 },
                 Self::NodeNameMissing { alias, output } => Self::NodeNameMissing {
@@ -350,6 +339,7 @@ mod tests {
                 "alsa_output.usb-Generic_PHL_34B1U5601-00.analog-stereo".to_owned(),
                 "my.mic.node".to_owned(),
                 "my.sink.node".to_owned(),
+                "my.sink.node.monitor".to_owned(),
                 "explicit.monitor".to_owned(),
             ]),
         }
@@ -380,7 +370,8 @@ mod tests {
         // Sink lookup would fail, but explicit mic should still resolve.
         let runner = MockRunner {
             source_body: Ok(SOURCE_FIXTURE.to_owned()),
-            sink_body: Err(DeviceError::WpctlFailed {
+            sink_body: Err(DeviceError::CommandFailed {
+                tool: "wpctl",
                 message: "should not be called".into(),
             }),
             node_names: Ok(vec![
@@ -420,16 +411,44 @@ mod tests {
     }
 
     #[test]
-    fn wpctl_failure_propagates() {
+    fn wpctl_failure_propagates_with_tool_name() {
         let runner = MockRunner {
-            source_body: Err(DeviceError::WpctlFailed {
+            source_body: Err(DeviceError::CommandFailed {
+                tool: "wpctl",
                 message: "exit 1".into(),
             }),
             sink_body: Ok(SINK_FIXTURE.to_owned()),
             node_names: Ok(vec![]),
         };
         let err = resolve(&runner, "default", "default").unwrap_err();
-        assert!(matches!(err, DeviceError::WpctlFailed { .. }));
+        match err {
+            DeviceError::CommandFailed { tool, .. } => assert_eq!(tool, "wpctl"),
+            other => panic!("expected CommandFailed{{tool=wpctl}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pw_cli_failure_is_attributed_to_pw_cli_not_wpctl() {
+        // Regression: previously a `pw-cli ls Node` failure surfaced
+        // through `WpctlFailed`, sending the user to debug the wrong
+        // binary. The error must name `pw-cli` so the diagnostics
+        // are actionable.
+        let runner = MockRunner {
+            source_body: Ok(SOURCE_FIXTURE.to_owned()),
+            sink_body: Ok(SINK_FIXTURE.to_owned()),
+            node_names: Err(DeviceError::CommandFailed {
+                tool: "pw-cli",
+                message: "could not spawn `pw-cli ls Node`: No such file or directory".into(),
+            }),
+        };
+        let err = resolve(&runner, "explicit.mic", "default").unwrap_err();
+        match err {
+            DeviceError::CommandFailed { tool, message } => {
+                assert_eq!(tool, "pw-cli");
+                assert!(message.contains("pw-cli"), "unexpected message: {message}");
+            }
+            other => panic!("expected CommandFailed{{tool=pw-cli}}, got {other:?}"),
+        }
     }
 
     #[test]
@@ -449,13 +468,36 @@ mod tests {
     }
 
     #[test]
-    fn explicit_monitor_accepts_parent_sink_with_monitor_suffix() {
+    fn explicit_monitor_requires_literal_node_in_pw_cli() {
+        // Parent sink alone is not proof the `.monitor` source
+        // exists — accepting it would silently hand `pipewiresrc`
+        // a name it cannot resolve.
         let runner = MockRunner {
             source_body: Ok(SOURCE_FIXTURE.to_owned()),
             sink_body: Ok(SINK_FIXTURE.to_owned()),
             node_names: Ok(vec![
                 "alsa_input.usb-Generic_PHL_34B1U5601-00.analog-stereo".to_owned(),
                 "my.real.sink".to_owned(),
+            ]),
+        };
+        let err = resolve(&runner, "default", "my.real.sink.monitor").unwrap_err();
+        match err {
+            DeviceError::InvalidArgument { reason, .. } => {
+                assert!(reason.contains("not found"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_monitor_passes_when_literal_node_present() {
+        let runner = MockRunner {
+            source_body: Ok(SOURCE_FIXTURE.to_owned()),
+            sink_body: Ok(SINK_FIXTURE.to_owned()),
+            node_names: Ok(vec![
+                "alsa_input.usb-Generic_PHL_34B1U5601-00.analog-stereo".to_owned(),
+                "my.real.sink".to_owned(),
+                "my.real.sink.monitor".to_owned(),
             ]),
         };
         let selection = resolve(&runner, "default", "my.real.sink.monitor").unwrap();

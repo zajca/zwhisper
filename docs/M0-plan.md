@@ -4,19 +4,22 @@
 > current CLI scaffolding into a working single-process recorder that
 > captures mic + sink monitor and writes a valid FLAC file.
 
-## Status snapshot (2026-04-30)
+## Status snapshot (2026-04-30, post-Phase 7D)
 
 | Area | State | Evidence |
 |---|---|---|
 | Cargo workspace + tooling | done | `Cargo.toml`, `rust-toolchain.toml`, CI workflows |
 | `zwhisper-cli` skeleton | done | `crates/zwhisper-cli/` parses `record/transcribe/status` |
-| `zwhisper record …` actually records | **not done** | `crates/zwhisper-cli/src/cli.rs:52` returns `bail!("not implemented yet")` |
-| GStreamer / PipeWire deps wired | not done | `gstreamer` absent from `workspace.dependencies` |
-| Device discovery | not done | no module yet |
-| FLAC validity / soak verification | not done | no harness yet |
+| `zwhisper record …` actually records | done | commit `4418d52`; `crates/zwhisper-cli/src/audio/{recorder,pipeline,watchdog,devices}.rs`; `cli::run_record` calls `record_blocking` |
+| GStreamer / PipeWire deps wired | done | `Cargo.toml` workspace.dependencies (`gstreamer`, `tokio`, `uuid`, `dirs`); `gst::init` gated to the `Record` subcommand in `main.rs` |
+| Device discovery | done | `audio/devices.rs` (`wpctl inspect` + `pw-cli ls Node` allow-list, 13 unit tests) |
+| FLAC validity / soak verification | done | `scripts/m0-soak.sh`; 3600 s soak slope 0.0147 KiB/s, 57 600 008 samples (`docs/M0-verification.md`); `Recorder::stop` enforces STREAMINFO length 34 + samples-vs-wall-clock ± 16 000 gate |
+| Live capture covered by default tests | done | `tests/cli.rs::record_writes_valid_flac` is no longer behind `audio-it`; runs on every `cargo test`, runtime-skips with `[SKIP]` when no `$XDG_RUNTIME_DIR/pipewire-0` socket is present |
+| Hot-swap detection (DoD #5) | pending — manual test | unit tests cover `DeviceLost` branches; physical USB unplug not yet exercised by maintainer (`docs/M0-verification.md` § 5) |
 
-**Verdict: M0 is not done.** Scaffolding is in place; the entire audio
-pipeline still needs to be built.
+**Verdict: M0 walking skeleton is implemented; 4/5 DoD items signed
+off, only the manual hot-swap unplug remains.** Detailed evidence
+lives in `docs/M0-verification.md`.
 
 ## Definition of done (verbatim from IDEA.md)
 

@@ -36,12 +36,40 @@ fn status_runs_without_daemon() {
         .stdout(predicate::str::contains("walking skeleton"));
 }
 
-/// End-to-end audio capture against a live `PipeWire` daemon. Gated
-/// behind `audio-it` because CI does not have audio hardware.
-#[cfg(feature = "audio-it")]
+/// Detect whether a `PipeWire` daemon is reachable on the test
+/// host. We treat the presence of `$XDG_RUNTIME_DIR/pipewire-0`
+/// as the canonical signal — that is the unix socket every
+/// `pipewiresrc` element ultimately connects to. Headless CI
+/// runners (and the Arch sandbox jobs) do not have this socket,
+/// so the live recording test cleanly skips instead of pretending
+/// `PipeWire` is absent.
+fn pipewire_socket_present() -> bool {
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return false;
+    };
+    std::path::PathBuf::from(runtime)
+        .join("pipewire-0")
+        .exists()
+}
+
+/// End-to-end audio capture against a live `PipeWire` daemon. The
+/// test is **always compiled** (so the live path keeps its callers
+/// honest) and runtime-skips when no `PipeWire` socket is reachable.
+/// CI without audio hardware sees a clear "[SKIP]" line instead of
+/// a silent gap; the maintainer's box always exercises the full
+/// encoder + filesink path. The `audio-it` feature is kept as a
+/// historical marker but no longer gates compilation.
 #[test]
 fn record_writes_valid_flac() {
     use std::process::Command as StdCommand;
+
+    if !pipewire_socket_present() {
+        eprintln!(
+            "[SKIP] record_writes_valid_flac: no $XDG_RUNTIME_DIR/pipewire-0 socket on this host"
+        );
+        return;
+    }
+
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("zwhisper-it.flac");
     bin()

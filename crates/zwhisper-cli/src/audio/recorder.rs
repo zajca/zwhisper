@@ -26,6 +26,12 @@ use super::watchdog::{self, Classification};
 
 const EOS_TIMEOUT_SECS: u64 = 5;
 const BUS_POLL_TIMEOUT_MS: u64 = 100;
+/// Sample rate of the encoded mono stream, locked in by the
+/// pipeline caps `audio/x-raw,rate=16000,channels=1` (see
+/// `pipeline.rs`). Mirrored here as a typed constant so the
+/// `samples_written` ↔ wall-clock cross-check uses one source of
+/// truth instead of a magic literal.
+const OUTPUT_SAMPLE_RATE_HZ: u32 = 16_000;
 /// Hard cap on the number of bus warnings the recorder retains. Past
 /// this, additional warnings are still logged through `tracing` but
 /// not stored in `RecordingReport.warnings`. Without the cap a
@@ -290,11 +296,34 @@ impl Recorder {
                         seconds: EOS_TIMEOUT_SECS,
                     });
                 }
-                *self.state.lock().expect("poisoned recorder state") = RecorderState::Idle;
                 // Read the authoritative sample count straight from
                 // the closed FLAC. Done here (not before Null) so the
-                // encoder has flushed everything to disk.
-                let samples_written = read_flac_total_samples(&self.output_path);
+                // encoder has flushed everything to disk. A failure
+                // here means the encoder produced an unreadable or
+                // non-FLAC output — DoD #1 violated, surface as
+                // `EncoderFailed` and mark the recorder Failed.
+                let samples_written = match read_flac_total_samples(&self.output_path) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        *self.state.lock().expect("poisoned recorder state") =
+                            RecorderState::Failed;
+                        return Err(e);
+                    }
+                };
+                // Cross-check the declared sample count against
+                // wall-clock duration (DoD #3). Without this gate,
+                // a structurally valid header claiming 0 samples on
+                // a multi-minute recording would still return Ok.
+                if let Err(e) = verify_samples_match_duration(
+                    samples_written,
+                    duration,
+                    &self.output_path,
+                ) {
+                    *self.state.lock().expect("poisoned recorder state") =
+                        RecorderState::Failed;
+                    return Err(e);
+                }
+                *self.state.lock().expect("poisoned recorder state") = RecorderState::Idle;
                 Ok(RecordingReport {
                     session_id: self.session_id,
                     duration,
@@ -381,15 +410,38 @@ fn run_bus_thread(ctx: BusThreadCtx) {
     }
 }
 
+/// Size of the prefix we read from the closed FLAC: 4-byte `fLaC`
+/// magic + 4-byte metadata-block header + 34-byte STREAMINFO body
+/// (per `RFC` 9639 § 8.1 and § 8.2). A valid FLAC is *at least*
+/// this large; reading exactly this many bytes lets us reject a
+/// truncated file before parsing the sample count.
+const FLAC_PREFIX_BYTES: usize = 4 + 4 + 34;
+
+/// Length declared by a STREAMINFO metadata-block header. Locked in
+/// by `RFC` 9639 § 8.2 — flacenc cannot legally write a different
+/// value, so any mismatch is a structural defect we refuse to sign
+/// off.
+const FLAC_STREAMINFO_LENGTH: u32 = 34;
+
 /// Read the `total samples` field from the FLAC STREAMINFO block of
-/// the closed output file. This is the authoritative count after
+/// the closed output file and use it to validate that what we wrote
+/// is in fact a FLAC. This is the authoritative count after
 /// `set_state(Null)` has flushed every flacenc frame; querying the
 /// running pipeline underestimates because flacenc keeps queued
-/// buffers until EOS finalisation. Returns `0` if the file cannot be
-/// read or does not look like a FLAC — telemetry only, not a
-/// correctness gate.
+/// buffers until EOS finalisation.
 ///
-/// FLAC layout (RFC 9639 § 8.1, 8.2):
+/// Reads only the first `FLAC_PREFIX_BYTES` bytes — the recording
+/// can be many `GiB` and `stop()` runs on the foreground thread.
+///
+/// Validates four things, all required for `DoD` #1 ("produces a
+/// valid FLAC"):
+/// 1. The first four bytes are the `fLaC` magic.
+/// 2. The first metadata block is STREAMINFO (block-type 0).
+/// 3. The declared block length is exactly 34 (per `RFC` 9639 § 8.2).
+/// 4. The full 34-byte STREAMINFO body is present on disk
+///    (covered by `read_exact` on the 42-byte prefix).
+///
+/// FLAC layout (`RFC` 9639 § 8.1, 8.2):
 /// - bytes 0..4 : "fLaC" magic
 /// - byte 4 : metadata block header (high bit = last-flag, low 7
 ///   bits = block type; STREAMINFO == 0 and must be the first block)
@@ -398,21 +450,88 @@ fn run_bus_thread(ctx: BusThreadCtx) {
 /// - bytes 8.. : STREAMINFO body (34 bytes); bytes 21..26 hold a
 ///   36-bit total-sample-count — 4 low bits of byte 21 are the high
 ///   nibble, bytes 22..26 are the low 32 bits, all big-endian.
-fn read_flac_total_samples(path: &std::path::Path) -> u64 {
-    let Ok(bytes) = std::fs::read(path) else {
-        return 0;
-    };
-    if bytes.len() < 26 || &bytes[0..4] != b"fLaC" {
-        return 0;
+fn read_flac_total_samples(path: &std::path::Path) -> Result<u64, RecordingError> {
+    use std::fs::File;
+    use std::io::Read;
+
+    let mut file = File::open(path).map_err(|e| {
+        RecordingError::EncoderFailed(format!(
+            "cannot open output `{}` to verify FLAC header: {e}",
+            path.display()
+        ))
+    })?;
+    let mut header = [0u8; FLAC_PREFIX_BYTES];
+    file.read_exact(&mut header).map_err(|e| {
+        RecordingError::EncoderFailed(format!(
+            "output `{}` is shorter than {FLAC_PREFIX_BYTES} bytes; cannot contain a complete \
+             STREAMINFO block: {e}",
+            path.display()
+        ))
+    })?;
+    if &header[0..4] != b"fLaC" {
+        return Err(RecordingError::EncoderFailed(format!(
+            "output `{}` does not start with the FLAC `fLaC` magic",
+            path.display()
+        )));
     }
-    if bytes[4] & 0x7F != 0 {
-        // First metadata block is not STREAMINFO; we do not search
-        // further in M0 — the encoder always writes it first.
-        return 0;
+    if header[4] & 0x7F != 0 {
+        return Err(RecordingError::EncoderFailed(format!(
+            "output `{}` has a non-STREAMINFO first metadata block (type {})",
+            path.display(),
+            header[4] & 0x7F
+        )));
     }
-    let hi = u64::from(bytes[21] & 0x0F) << 32;
-    let lo = u64::from(u32::from_be_bytes([bytes[22], bytes[23], bytes[24], bytes[25]]));
-    hi | lo
+    let declared_len = u32::from_be_bytes([0, header[5], header[6], header[7]]);
+    if declared_len != FLAC_STREAMINFO_LENGTH {
+        return Err(RecordingError::EncoderFailed(format!(
+            "output `{}` declares STREAMINFO length {declared_len}, expected {FLAC_STREAMINFO_LENGTH}",
+            path.display()
+        )));
+    }
+    let hi = u64::from(header[21] & 0x0F) << 32;
+    let lo = u64::from(u32::from_be_bytes([
+        header[22], header[23], header[24], header[25],
+    ]));
+    Ok(hi | lo)
+}
+
+/// Maximum allowed drift between the FLAC's declared sample count
+/// and the wall-clock duration × 16 kHz, expressed in samples.
+/// `DoD` #3 says "± one buffer"; one second is generous — flacenc's
+/// default block size is ~4608 samples (~290 ms) and the 60-min
+/// soak observed only an 8-sample drift, so 16 000 samples is
+/// several orders of magnitude looser than the worst observed
+/// value while still catching duplicated/dropped buffers and
+/// truncated streams.
+const SAMPLE_COUNT_TOLERANCE: u64 = OUTPUT_SAMPLE_RATE_HZ as u64;
+
+/// Verify that the FLAC STREAMINFO sample count is within
+/// `SAMPLE_COUNT_TOLERANCE` of `wall_duration × 16 kHz`. Closes
+/// `DoD` #3 ("declared length matches wall-clock duration ± one
+/// buffer, no truncation"): without this check, `Recorder::stop`
+/// would return success even when the encoder produced a header
+/// claiming zero samples for a multi-minute recording.
+fn verify_samples_match_duration(
+    samples_written: u64,
+    wall_duration: Duration,
+    path: &std::path::Path,
+) -> Result<(), RecordingError> {
+    let expected_f = wall_duration.as_secs_f64() * f64::from(OUTPUT_SAMPLE_RATE_HZ);
+    // Cast saturates on out-of-range f64s, which is the right
+    // behaviour for a sanity check (we only care about magnitude).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let expected = expected_f.max(0.0) as u64;
+    let lo = expected.saturating_sub(SAMPLE_COUNT_TOLERANCE);
+    let hi = expected.saturating_add(SAMPLE_COUNT_TOLERANCE);
+    if (lo..=hi).contains(&samples_written) {
+        return Ok(());
+    }
+    Err(RecordingError::EncoderFailed(format!(
+        "FLAC sample count {samples_written} for `{}` is outside expected range \
+         [{lo}, {hi}] (wall-clock {:.3}s, expected ≈ {expected} samples ± {SAMPLE_COUNT_TOLERANCE})",
+        path.display(),
+        wall_duration.as_secs_f64()
+    )))
 }
 
 /// Block the calling thread until the watch channel reports a
@@ -547,7 +666,7 @@ async fn race_stop(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -586,14 +705,102 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("synth.flac");
         std::fs::write(&path, &buf).unwrap();
-        assert_eq!(read_flac_total_samples(&path), 1_234_567);
+        assert_eq!(read_flac_total_samples(&path).unwrap(), 1_234_567);
     }
 
     #[test]
-    fn read_flac_total_samples_returns_zero_for_non_flac() {
+    fn read_flac_total_samples_rejects_non_flac() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("not-flac.bin");
         std::fs::write(&path, b"definitely not a flac stream").unwrap();
-        assert_eq!(read_flac_total_samples(&path), 0);
+        let err = read_flac_total_samples(&path).unwrap_err();
+        assert!(matches!(err, RecordingError::EncoderFailed(_)),
+            "expected EncoderFailed, got {err:?}");
+    }
+
+    #[test]
+    fn read_flac_total_samples_rejects_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.flac");
+        let err = read_flac_total_samples(&path).unwrap_err();
+        assert!(matches!(err, RecordingError::EncoderFailed(_)),
+            "expected EncoderFailed, got {err:?}");
+    }
+
+    #[test]
+    fn read_flac_total_samples_rejects_truncated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncated.flac");
+        // Has the magic but is shorter than 42 bytes.
+        std::fs::write(&path, b"fLaC\x00\x00\x00\x22").unwrap();
+        let err = read_flac_total_samples(&path).unwrap_err();
+        assert!(matches!(err, RecordingError::EncoderFailed(_)),
+            "expected EncoderFailed, got {err:?}");
+    }
+
+    #[test]
+    fn read_flac_total_samples_rejects_wrong_streaminfo_length() {
+        // 42 bytes, fLaC magic, STREAMINFO type, but declared
+        // length is 33 instead of 34 — a structural defect that
+        // the previous parser silently accepted because it only
+        // read 26 bytes.
+        let mut buf = Vec::with_capacity(42);
+        buf.extend_from_slice(b"fLaC");
+        buf.push(0); // STREAMINFO, not last
+        buf.extend_from_slice(&[0, 0, 33]); // wrong length
+        buf.extend_from_slice(&[0u8; 34]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad-len.flac");
+        std::fs::write(&path, &buf).unwrap();
+        let err = read_flac_total_samples(&path).unwrap_err();
+        match err {
+            RecordingError::EncoderFailed(msg) => {
+                assert!(msg.contains("STREAMINFO length"), "unexpected msg: {msg}");
+            }
+            other => panic!("expected EncoderFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_samples_match_duration_accepts_within_tolerance() {
+        let path = std::path::Path::new("/tmp/synthetic.flac");
+        // 60 s × 16 000 = 960 000; tolerance is 16 000.
+        verify_samples_match_duration(960_000, Duration::from_secs(60), path).unwrap();
+        verify_samples_match_duration(944_000, Duration::from_secs(60), path).unwrap();
+        verify_samples_match_duration(976_000, Duration::from_secs(60), path).unwrap();
+    }
+
+    #[test]
+    fn verify_samples_match_duration_rejects_zero_samples_for_long_recording() {
+        let path = std::path::Path::new("/tmp/synthetic.flac");
+        let err = verify_samples_match_duration(0, Duration::from_secs(60), path).unwrap_err();
+        assert!(matches!(err, RecordingError::EncoderFailed(_)));
+    }
+
+    #[test]
+    fn verify_samples_match_duration_rejects_overshoot() {
+        let path = std::path::Path::new("/tmp/synthetic.flac");
+        // 60 s expected = 960 000; +50 000 overshoots tolerance.
+        let err = verify_samples_match_duration(1_010_000, Duration::from_secs(60), path)
+            .unwrap_err();
+        assert!(matches!(err, RecordingError::EncoderFailed(_)));
+    }
+
+    #[test]
+    fn verify_samples_match_duration_accepts_short_recording() {
+        // For sub-second recordings the tolerance dominates expected,
+        // so the lower bound is 0 — only catches gross errors.
+        let path = std::path::Path::new("/tmp/synthetic.flac");
+        verify_samples_match_duration(0, Duration::from_millis(100), path).unwrap();
+        verify_samples_match_duration(1_600, Duration::from_millis(100), path).unwrap();
+    }
+
+    #[test]
+    fn verify_samples_match_duration_matches_3600s_soak_drift() {
+        // Regression: the 60-min soak measured 57_600_008 samples
+        // for ~3600 s wall-clock; this must continue to pass.
+        let path = std::path::Path::new("/tmp/synthetic.flac");
+        verify_samples_match_duration(57_600_008, Duration::from_secs(3600), path).unwrap();
     }
 }

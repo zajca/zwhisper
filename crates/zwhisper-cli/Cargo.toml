@@ -32,8 +32,14 @@ predicates = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
-# Integration tests that require a running PipeWire daemon and an
-# audio source on the host. Off by default so CI can stay green.
+default = ["audio-it"]
+# Integration tests that drive the live PipeWire/GStreamer path. On
+# by default so a plain `cargo test` on the maintainer's box catches
+# audio-capture regressions; `record_writes_valid_flac` falls back
+# to a clear runtime skip when no PipeWire socket is reachable, so
+# headless CI runners without audio hardware still produce a green
+# build instead of a false negative. Run `cargo test
+# --no-default-features` to compile out the live test entirely.
 audio-it = []
 
 [lints]
