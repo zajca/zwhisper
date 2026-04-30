@@ -33,22 +33,38 @@ fn status_runs_without_daemon() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("not running"));
+        .stdout(predicate::str::contains("walking skeleton"));
 }
 
+/// End-to-end audio capture against a live `PipeWire` daemon. Gated
+/// behind `audio-it` because CI does not have audio hardware.
+#[cfg(feature = "audio-it")]
 #[test]
-fn record_is_not_implemented_yet() {
+fn record_writes_valid_flac() {
+    use std::process::Command as StdCommand;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("zwhisper-it.flac");
     bin()
         .args([
             "record",
             "--output",
-            "/tmp/zwhisper-test.flac",
+            path.to_str().expect("utf8 path"),
             "--duration",
             "1",
         ])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("not implemented"));
+        .success()
+        .stderr(predicate::str::contains("recording complete"));
+
+    let flac_test = StdCommand::new("flac")
+        .args(["-t", path.to_str().expect("utf8")])
+        .output()
+        .expect("flac CLI must be installed for audio-it tests");
+    assert!(
+        flac_test.status.success(),
+        "flac -t rejected the output: {}",
+        String::from_utf8_lossy(&flac_test.stderr)
+    );
 }
 
 #[test]
