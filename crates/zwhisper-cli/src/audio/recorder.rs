@@ -44,6 +44,10 @@ const MAX_WARNINGS: usize = 100;
 #[derive(Debug, Clone)]
 pub(crate) struct RecordOptions {
     pub mic: String,
+    /// Sink monitor node, or `"default"` for the `PipeWire` default.
+    /// Empty strings are rejected by `devices::resolve` with a
+    /// typed `InvalidArgument` — M2 ships mic + sink monitor mono
+    /// mix only, mic-only mode lands in M3.
     pub monitor: String,
     pub output: PathBuf,
 }

@@ -8,9 +8,10 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 
 mod audio;
 mod cli;
+mod profile;
 mod transcribe;
 
-use crate::cli::{RecordArgs, TranscribeArgs};
+use crate::cli::{ProfileCmd, RecordArgs, TranscribeArgs};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -36,6 +37,10 @@ enum Command {
     /// Transcribe an existing audio file.
     Transcribe(TranscribeArgs),
 
+    /// Manage user / shipped / embedded TOML profiles (M2).
+    #[command(subcommand)]
+    Profile(ProfileCmd),
+
     /// Print runtime status information.
     Status,
 }
@@ -52,9 +57,10 @@ fn main() -> color_eyre::Result<()> {
             cli::run_record(args)
         }
         Command::Transcribe(args) => cli::run_transcribe(args),
+        Command::Profile(cmd) => cli::run_profile(cmd),
         Command::Status => {
             info!("status command invoked");
-            println!("zwhisper: M0 walking skeleton, no daemon yet (M3)");
+            println!("zwhisper: M2 profile system; daemon split lands in M3");
             Ok(())
         }
     }

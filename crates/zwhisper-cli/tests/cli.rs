@@ -33,7 +33,7 @@ fn status_runs_without_daemon() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("walking skeleton"));
+        .stdout(predicate::str::contains("M2 profile system"));
 }
 
 /// Detect whether a `PipeWire` daemon is reachable on the test

@@ -14,6 +14,12 @@ const MAX_NODE_NAME_LEN: usize = 256;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeviceSelection {
     pub mic_node: String,
+    /// Required in M2: the engine ships mic + sink monitor mono mix
+    /// only. Empty `monitor_arg` is rejected by `resolve` with a
+    /// typed `InvalidArgument` rather than silently coerced to
+    /// "default" (the M2 review's High finding). Mic-only mode
+    /// (`Option<String>`) reappears in M3 alongside the pipeline
+    /// rate parameterisation.
     pub monitor_node: String,
 }
 
@@ -144,7 +150,17 @@ pub(crate) fn resolve(
         candidate
     };
 
-    let monitor_node = if monitor_arg == "default" {
+    let monitor_node = if monitor_arg.is_empty() {
+        // Mic-only mode is not supported in M2 (the M2 review's
+        // High finding caught the previous silent "" → "default"
+        // coercion). Surface the limitation up-front.
+        return Err(DeviceError::InvalidArgument {
+            value: String::new(),
+            reason: "monitor must be \"default\" or a specific node \
+                     name; mic-only mode lands in M3 alongside the \
+                     pipeline rate parameterisation",
+        });
+    } else if monitor_arg == "default" {
         let body = runner.inspect("@DEFAULT_AUDIO_SINK@")?;
         let sink_name = parse_node_name(&body, "@DEFAULT_AUDIO_SINK@")?;
         validate_node_name(&sink_name, &sink_name)?;
@@ -363,6 +379,27 @@ mod tests {
         let selection = resolve(&happy_runner(), "my.mic.node", "my.sink.node.monitor").unwrap();
         assert_eq!(selection.mic_node, "my.mic.node");
         assert_eq!(selection.monitor_node, "my.sink.node.monitor");
+    }
+
+    #[test]
+    fn empty_monitor_arg_returns_typed_invalid_argument() {
+        // M2 ships mic + sink monitor only. Empty monitor must
+        // surface a typed error, not be silently coerced to
+        // "default" (which previously captured system audio against
+        // the user's intent).
+        let runner = MockRunner {
+            source_body: Ok(SOURCE_FIXTURE.to_owned()),
+            sink_body: Err(DeviceError::CommandFailed {
+                tool: "wpctl",
+                message: "must not be called when monitor_arg is empty".into(),
+            }),
+            node_names: Ok(vec![
+                "alsa_input.usb-Generic_PHL_34B1U5601-00.analog-stereo".to_owned(),
+            ]),
+        };
+        let err = resolve(&runner, "default", "").unwrap_err();
+        assert!(matches!(err, DeviceError::InvalidArgument { .. }));
+        assert!(err.to_string().contains("mic-only mode lands in M3"));
     }
 
     #[test]

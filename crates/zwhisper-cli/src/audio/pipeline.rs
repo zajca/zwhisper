@@ -86,6 +86,12 @@ fn build_inner(
     // escaping. The `target-object` value is also covered by the
     // strict `[A-Za-z0-9._:-]+` validation in `audio::devices`, so the
     // double-defence keeps any future caller from injecting elements.
+    //
+    // M2 ships mic + sink monitor mono mix only. Mic-only is
+    // rejected upstream (`devices::resolve` returns
+    // `InvalidArgument` for empty `monitor_arg`; profile validation
+    // rejects empty `system_output`); the M3 pipeline split adds
+    // a real mic-only branch alongside the rate parameterisation.
     let description = format!(
         "pipewiresrc target-object=\"{escaped_mic}\" ! audioconvert ! audioresample ! mix. \
          pipewiresrc target-object=\"{escaped_monitor}\" ! audioconvert ! audioresample ! mix. \

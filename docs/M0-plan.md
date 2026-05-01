@@ -4,6 +4,10 @@
 > current CLI scaffolding into a working single-process recorder that
 > captures mic + sink monitor and writes a valid FLAC file.
 
+> **M2 (Profiles) followed and is verified READY** — see
+> [docs/M2-plan.md](./M2-plan.md) and
+> [docs/M2-verification.md](./M2-verification.md).
+
 ## Status snapshot (2026-04-30, post-Phase 7D)
 
 | Area | State | Evidence |

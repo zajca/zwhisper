@@ -7,6 +7,14 @@
 > user-installed `whisper.cpp` build and persists the resulting
 > transcript next to the audio.
 
+> **M2 (Profiles) followed and is verified READY** — see
+> [docs/M2-plan.md](./M2-plan.md) and
+> [docs/M2-verification.md](./M2-verification.md). The
+> hardcoded `DEFAULT_MODEL` / `DEFAULT_LANGUAGE` constants from
+> M1's `cli.rs:12-13` were removed in M2; users either pass
+> `--model` / `--lang` explicitly alongside `--transcribe`, or
+> select a profile that defines them.
+
 ## Status snapshot (2026-04-30)
 
 | Area | State | Evidence |
