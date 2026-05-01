@@ -90,7 +90,7 @@ fn build_inner(
         "pipewiresrc target-object=\"{escaped_mic}\" ! audioconvert ! audioresample ! mix. \
          pipewiresrc target-object=\"{escaped_monitor}\" ! audioconvert ! audioresample ! mix. \
          audiomixer name=mix ! audioconvert ! audioresample ! \
-         audio/x-raw,rate=16000,channels=1 ! \
+         audio/x-raw,format=S16LE,rate=16000,channels=1 ! \
          flacenc ! filesink location=\"{escaped_output}\""
     );
     debug!(%description, "constructed gstreamer pipeline description");
