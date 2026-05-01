@@ -180,20 +180,18 @@ that asserts the typed variant, not a stderr substring.
 | `BackendSpawn` | error.rs:47 | `spawn_failure_returns_backend_spawn` | whisper_cpp.rs:917 |
 | `BackendExitedNonZero` | error.rs:61 | `subprocess_exits_nonzero_returns_backend_exited_nonzero` | whisper_cpp.rs:856 |
 | `OutputMissing` | error.rs:70 | `subprocess_produces_only_txt_returns_output_missing` | whisper_cpp.rs:886 |
-| `OutputUnreadable` | error.rs:76 | *transitively via `parse_segments_file`* — no dedicated EXDEV-fallback test | flag for follow-up |
+| `OutputUnreadable` | error.rs:76 | `is_cross_device_detects_exdev` + `is_cross_device_ignores_unrelated_errors` (cover the platform-portable EXDEV check that triggers the copy+remove fallback); end-to-end fallback path covered transitively via `parse_segments_file` | whisper_cpp.rs (after `append_extension_is_osstr_safe`) |
 | `BackendUnknown` | error.rs:86 | `unknown_backend_via_facade_returns_backend_unknown` + integration `transcribe_unknown_backend_returns_backend_unknown_error` | whisper_cpp.rs:998 + tests/cli.rs:130 |
 | `JsonShape` | error.rs:98 | `parse_segments_file_wraps_bad_shape_with_path` | whisper_cpp.rs:1150 |
 
-**OutputUnreadable gap** (informational, NOT blocking READY):
-Phase 3 implemented a cross-fs fallback (`copy + remove` on `EXDEV`)
-inside the rename path, but writing a deterministic test for it
-requires either two real mountpoints or low-level libc poking that
-the workspace `unsafe_code = deny` lint forbids. The variant IS
-exercised at runtime through `parse_segments_file` when the JSON
-file is unreadable. A dedicated test is left as a small follow-up
-for whoever lands the M3 daemon-orchestration work — the test
-infrastructure (a second tempfile mounted on a different fs) makes
-more sense once cross-fs paths come up for real.
+**OutputUnreadable gap** (informational, NOT blocking READY): the
+detection side of the cross-fs fallback (`is_cross_device`) is
+covered by two unit tests using `libc::EXDEV` directly — they
+guarantee the platform-portable mapping is correct on Unix. The
+end-to-end `copy + remove` path itself still requires two real
+mountpoints to exercise, which is left for whoever lands M3 daemon
+orchestration. The variant is also exercised at runtime through
+`parse_segments_file` when the JSON file is unreadable.
 
 ### DoD #6 — Valid transcript: `.txt` non-empty UTF-8 (when audio non-silent), `.json` parses as segment array
 

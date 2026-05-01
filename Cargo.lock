@@ -1942,6 +1942,7 @@ dependencies = [
  "color-eyre",
  "dirs",
  "gstreamer",
+ "libc",
  "predicates",
  "serde",
  "serde_json",

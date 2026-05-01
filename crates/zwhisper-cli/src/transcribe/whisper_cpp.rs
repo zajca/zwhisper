@@ -469,9 +469,31 @@ async fn move_or_copy(src: &Path, dst: &Path) -> Result<(), TranscribeError> {
 }
 
 /// Detect cross-device-link errors. `io::ErrorKind::CrossesDevices`
-/// is unstable; on Linux the raw OS error is `EXDEV` = 18.
+/// is unstable on stable Rust, so we map to the platform-native
+/// errno: `EXDEV` on Unix (libc constant; differs in principle
+/// between OSes even though Linux/macOS/BSD all happen to use 18),
+/// `ERROR_NOT_SAME_DEVICE` (17) on Windows. Other targets fall
+/// through to `false` — `move_or_copy` will propagate the original
+/// error as `OutputUnreadable` instead of attempting a fallback.
 fn is_cross_device(e: &std::io::Error) -> bool {
-    e.raw_os_error() == Some(18)
+    let Some(raw) = e.raw_os_error() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        raw == libc::EXDEV
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_NOT_SAME_DEVICE — Windows surfaces this for
+        // MoveFile across volumes. std doesn't re-export it.
+        raw == 17
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = raw;
+        false
+    }
 }
 
 // ----- JSON segment parsing ---------------------------------------
@@ -1020,6 +1042,25 @@ mod tests {
         assert_eq!(txt, PathBuf::from("/tmp/x.flac.txt"));
         let json = append_extension(&p, ".json");
         assert_eq!(json, PathBuf::from("/tmp/x.flac.json"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_cross_device_detects_exdev() {
+        let exdev = std::io::Error::from_raw_os_error(libc::EXDEV);
+        assert!(
+            is_cross_device(&exdev),
+            "EXDEV (errno {}) must trigger the cross-fs fallback",
+            libc::EXDEV
+        );
+    }
+
+    #[test]
+    fn is_cross_device_ignores_unrelated_errors() {
+        let enoent = std::io::Error::from_raw_os_error(2);
+        assert!(!is_cross_device(&enoent), "ENOENT must not trigger fallback");
+        let synthetic = std::io::Error::other("no errno");
+        assert!(!is_cross_device(&synthetic), "errors without raw_os_error must not trigger fallback");
     }
 
     #[tokio::test]
