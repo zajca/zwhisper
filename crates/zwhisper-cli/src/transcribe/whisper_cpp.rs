@@ -432,9 +432,11 @@ fn truncate_for_log(s: &str) -> String {
     format!("{}… [truncated {} bytes]", &s[..cut], s.len() - cut)
 }
 
-/// `tokio::fs::rename` first; on cross-filesystem error (`EXDEV` =
-/// 18 on Linux, `ErrorKind::CrossesDevices` once stable) fall back
-/// to copy + remove. All failure paths surface as
+/// `tokio::fs::rename` first; on cross-filesystem error (Unix
+/// `EXDEV`, Windows `ERROR_NOT_SAME_DEVICE`, or
+/// `io::ErrorKind::CrossesDevices` once it stabilises in std) fall
+/// back to copy + remove. The platform mapping lives in
+/// [`is_cross_device`]. All failure paths surface as
 /// [`TranscribeError::OutputUnreadable`] with the *target* path so
 /// the user sees where we tried to land the file.
 async fn move_or_copy(src: &Path, dst: &Path) -> Result<(), TranscribeError> {
@@ -475,6 +477,14 @@ async fn move_or_copy(src: &Path, dst: &Path) -> Result<(), TranscribeError> {
 /// `ERROR_NOT_SAME_DEVICE` (17) on Windows. Other targets fall
 /// through to `false` — `move_or_copy` will propagate the original
 /// error as `OutputUnreadable` instead of attempting a fallback.
+/// `winerror.h` constant. Windows surfaces this raw OS error code
+/// when `MoveFile` (which `tokio::fs::rename` calls into) is asked
+/// to cross volumes. `std` does not re-export it and a single
+/// `i32` doesn't justify pulling in `windows-sys`, so we name it
+/// here. Used by [`is_cross_device`].
+#[cfg(windows)]
+const ERROR_NOT_SAME_DEVICE: i32 = 17;
+
 fn is_cross_device(e: &std::io::Error) -> bool {
     let Some(raw) = e.raw_os_error() else {
         return false;
@@ -485,9 +495,7 @@ fn is_cross_device(e: &std::io::Error) -> bool {
     }
     #[cfg(windows)]
     {
-        // ERROR_NOT_SAME_DEVICE — Windows surfaces this for
-        // MoveFile across volumes. std doesn't re-export it.
-        raw == 17
+        raw == ERROR_NOT_SAME_DEVICE
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -1052,6 +1060,17 @@ mod tests {
             is_cross_device(&exdev),
             "EXDEV (errno {}) must trigger the cross-fs fallback",
             libc::EXDEV
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn is_cross_device_detects_error_not_same_device() {
+        let err = std::io::Error::from_raw_os_error(super::ERROR_NOT_SAME_DEVICE);
+        assert!(
+            is_cross_device(&err),
+            "ERROR_NOT_SAME_DEVICE ({}) must trigger the cross-fs fallback",
+            super::ERROR_NOT_SAME_DEVICE
         );
     }
 
