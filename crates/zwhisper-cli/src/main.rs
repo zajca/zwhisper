@@ -8,6 +8,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 
 mod audio;
 mod cli;
+mod transcribe;
 
 use crate::cli::{RecordArgs, TranscribeArgs};
 

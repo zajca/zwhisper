@@ -21,6 +21,13 @@
 off, only the manual hot-swap unplug remains.** Detailed evidence
 lives in `docs/M0-verification.md`.
 
+## M1 status (cross-link)
+
+| Area | State | Evidence |
+|---|---|---|
+| M1 — whisper.cpp post-process | done | `docs/M1-verification.md` (verdict: READY); `crates/zwhisper-cli/src/transcribe/{discovery, models, whisper_cpp, error, mod}.rs` |
+| M0 pipeline output format pinned to S16LE | done (during M1 sign-off) | `crates/zwhisper-cli/src/audio/pipeline.rs:93` — fixed bug found during M1 DoD #1 verification (whisper-cli rejected 32-bit FLAC); see `docs/M1-verification.md` § "Bug #1" |
+
 ## Definition of done (verbatim from IDEA.md)
 
 1. `zwhisper record --mic default --monitor default --output x.flac --duration 60`

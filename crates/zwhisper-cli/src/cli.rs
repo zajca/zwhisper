@@ -5,6 +5,13 @@ use color_eyre::eyre::bail;
 use tracing::info;
 
 use crate::audio::recorder::{RecordOptions, record_blocking};
+use crate::transcribe::{self, TranscribeOpts};
+
+/// Default model used by the post-record `--transcribe` shortcut and by
+/// the standalone `transcribe` command when `--model` is omitted.
+const DEFAULT_MODEL: &str = "small";
+/// Default language hint. `auto` triggers whisper.cpp autodetect.
+const DEFAULT_LANGUAGE: &str = "auto";
 
 #[derive(Debug, Args)]
 pub(crate) struct RecordArgs {
@@ -30,6 +37,26 @@ pub(crate) struct RecordArgs {
     /// captures. Pass `0` to opt out explicitly.
     #[arg(long, default_value_t = 240)]
     pub(crate) max_duration_minutes: u64,
+
+    /// Backend for post-record transcription. Omit to skip transcribing.
+    /// Only `whisper-cpp` is supported in M1; M5 widens this.
+    #[arg(long)]
+    pub(crate) transcribe: Option<String>,
+
+    /// Model name for the post-record transcribe step. Resolved by name
+    /// only via `~/.local/share/zwhisper/models/ggml-{name}.bin`.
+    /// `requires` would be a no-op alongside `default_value`, so the
+    /// flag is `Option<String>` and the default is applied at use-site
+    /// when `--transcribe` is set.
+    #[arg(long, requires = "transcribe")]
+    pub(crate) model: Option<String>,
+
+    /// Language: ISO 639-1 code (e.g. `cs`, `en`) or `auto` for
+    /// autodetect. `requires` would be a no-op alongside
+    /// `default_value`, so the flag is `Option<String>` and the
+    /// default is applied at use-site when `--transcribe` is set.
+    #[arg(long, requires = "transcribe")]
+    pub(crate) lang: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -86,6 +113,61 @@ pub(crate) fn run_record(args: &RecordArgs) -> color_eyre::Result<()> {
         "recording complete",
     );
 
+    if let Some(backend) = &args.transcribe {
+        let model = args
+            .model
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
+        let language = args
+            .lang
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LANGUAGE.to_owned());
+
+        info!(
+            backend = %backend,
+            model = %model,
+            language = %language,
+            audio = %report.audio_path.display(),
+            "post-record transcribe starting",
+        );
+
+        let opts = TranscribeOpts {
+            backend: backend.clone(),
+            model,
+            language,
+        };
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("failed to build tokio runtime: {e}"))?;
+
+        match rt.block_on(transcribe::transcribe_file(&report.audio_path, &opts)) {
+            Ok(art) => {
+                info!(
+                    txt = %art.txt_path.display(),
+                    json = %art.json_path.display(),
+                    audio_duration_ms =
+                        u64::try_from(art.audio_duration.as_millis()).unwrap_or(u64::MAX),
+                    transcribe_duration_ms =
+                        u64::try_from(art.duration.as_millis()).unwrap_or(u64::MAX),
+                    language = %art.language,
+                    model = %art.model,
+                    "post-record transcribe complete",
+                );
+            }
+            Err(err) => {
+                // FLAC stays on disk — recording succeeded, only
+                // transcription failed. The captured audio is the
+                // M0 source-of-truth artefact (DoD #1).
+                return Err(color_eyre::eyre::eyre!(
+                    "recording succeeded ({}) but transcribe failed: {err}",
+                    report.audio_path.display(),
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -117,7 +199,7 @@ fn resolve_duration(duration_s: u64, max_minutes: u64) -> color_eyre::Result<u64
     Ok(duration_s)
 }
 
-pub(crate) fn run_transcribe(args: &TranscribeArgs) -> color_eyre::Result<()> {
+pub(crate) async fn run_transcribe_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
     info!(
         input = %args.input.display(),
         backend = %args.backend,
@@ -125,13 +207,68 @@ pub(crate) fn run_transcribe(args: &TranscribeArgs) -> color_eyre::Result<()> {
         language = %args.language,
         "transcribe requested",
     );
-    bail!("transcribe: not implemented yet — pending M1 whisper.cpp integration");
+
+    let opts = TranscribeOpts {
+        backend: args.backend.clone(),
+        model: args.model.clone(),
+        language: args.language.clone(),
+    };
+
+    let art = transcribe::transcribe_file(&args.input, &opts)
+        .await
+        .map_err(|err| color_eyre::eyre::eyre!("{err}"))?;
+
+    info!(
+        txt = %art.txt_path.display(),
+        json = %art.json_path.display(),
+        audio_duration_ms =
+            u64::try_from(art.audio_duration.as_millis()).unwrap_or(u64::MAX),
+        transcribe_duration_ms =
+            u64::try_from(art.duration.as_millis()).unwrap_or(u64::MAX),
+        language = %art.language,
+        model = %art.model,
+        "transcribe complete",
+    );
+
+    Ok(())
+}
+
+pub(crate) fn run_transcribe(args: &TranscribeArgs) -> color_eyre::Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| color_eyre::eyre::eyre!("failed to build tokio runtime: {e}"))?;
+    rt.block_on(run_transcribe_async(args))
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::match_wildcard_for_single_variants
+)]
 mod tests {
-    use super::resolve_duration;
+    use clap::Parser;
+
+    use super::{RecordArgs, TranscribeArgs, resolve_duration};
+
+    /// Local mirror of the binary's top-level CLI just for parser
+    /// tests — it lets us exercise `clap`'s `requires =` rules
+    /// against the same `RecordArgs` definition without dragging
+    /// in `init_tracing`/`init_gstreamer`.
+    #[derive(Debug, Parser)]
+    #[command(name = "zwhisper")]
+    struct TestCli {
+        #[command(subcommand)]
+        command: TestCommand,
+    }
+
+    #[derive(Debug, clap::Subcommand)]
+    enum TestCommand {
+        Record(RecordArgs),
+        Transcribe(TranscribeArgs),
+    }
 
     #[test]
     fn cap_disabled_passes_duration_through() {
@@ -156,5 +293,93 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("exceeds"), "unexpected message: {msg}");
         assert!(msg.contains("max-duration-minutes"), "unexpected message: {msg}");
+    }
+
+    #[test]
+    fn record_with_transcribe_flag_parses() {
+        let cli = TestCli::try_parse_from([
+            "zwhisper",
+            "record",
+            "--output",
+            "/tmp/x.flac",
+            "--duration",
+            "3",
+            "--transcribe",
+            "whisper-cpp",
+            "--model",
+            "small",
+            "--lang",
+            "en",
+        ])
+        .expect("parse should succeed");
+
+        match cli.command {
+            TestCommand::Record(args) => {
+                assert_eq!(args.output.to_str(), Some("/tmp/x.flac"));
+                assert_eq!(args.duration, 3);
+                assert_eq!(args.transcribe.as_deref(), Some("whisper-cpp"));
+                assert_eq!(args.model.as_deref(), Some("small"));
+                assert_eq!(args.lang.as_deref(), Some("en"));
+            }
+            other => panic!("expected Record, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_without_transcribe_leaves_post_record_options_unset() {
+        let cli = TestCli::try_parse_from([
+            "zwhisper",
+            "record",
+            "--output",
+            "/tmp/x.flac",
+            "--duration",
+            "3",
+        ])
+        .expect("parse should succeed");
+
+        match cli.command {
+            TestCommand::Record(args) => {
+                assert!(args.transcribe.is_none());
+                assert!(args.model.is_none());
+                assert!(args.lang.is_none());
+            }
+            other => panic!("expected Record, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_model_without_transcribe_is_rejected() {
+        let err = TestCli::try_parse_from([
+            "zwhisper",
+            "record",
+            "--output",
+            "/tmp/x.flac",
+            "--model",
+            "small",
+        ])
+        .expect_err("clap must reject --model without --transcribe");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--transcribe") || msg.contains("transcribe"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn record_lang_without_transcribe_is_rejected() {
+        let err = TestCli::try_parse_from([
+            "zwhisper",
+            "record",
+            "--output",
+            "/tmp/x.flac",
+            "--lang",
+            "en",
+        ])
+        .expect_err("clap must reject --lang without --transcribe");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--transcribe") || msg.contains("transcribe"),
+            "unexpected error message: {msg}"
+        );
     }
 }

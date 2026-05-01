@@ -95,13 +95,62 @@ fn record_writes_valid_flac() {
     );
 }
 
+/// `transcribe` against a missing file must surface a typed error
+/// from the façade — not the old "not implemented" `bail!` and not a
+/// panic. We do not pin the exact variant here because the failure
+/// host-dependently splits across `BackendUnavailable` (no whisper-cli
+/// on PATH) vs `InputAudio` (audio missing) — both are acceptable
+/// proofs that Phase 4 wired the call all the way to the backend.
 #[test]
-fn transcribe_is_not_implemented_yet() {
-    bin()
-        .args(["transcribe", "/tmp/does-not-exist.flac"])
+fn transcribe_missing_input_returns_typed_error() {
+    let assert = bin()
+        .args(["transcribe", "/tmp/zwhisper-does-not-exist.flac"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("not implemented"));
+        .failure();
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
+    assert!(
+        !stderr.contains("not implemented"),
+        "Phase 4 should have removed the placeholder bail message; stderr was:\n{stderr}"
+    );
+    let acceptable = stderr.contains("failed to open audio file")
+        || stderr.contains("no whisper.cpp binary found")
+        || stderr.contains("model")
+        || stderr.contains("whisper.cpp");
+    assert!(
+        acceptable,
+        "expected a typed transcribe error in stderr; got:\n{stderr}"
+    );
+}
+
+/// Unknown backend ids must be rejected by the façade up-front,
+/// before any subprocess work — so this test is reliable on every
+/// host regardless of whether whisper-cli is installed.
+#[test]
+fn transcribe_unknown_backend_returns_backend_unknown_error() {
+    let assert = bin()
+        .args([
+            "transcribe",
+            "/tmp/zwhisper-does-not-exist.flac",
+            "--backend",
+            "foobar",
+            "--model",
+            "small",
+            "--language",
+            "en",
+        ])
+        .assert()
+        .failure();
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
+    assert!(
+        stderr.contains("unknown backend"),
+        "expected `unknown backend` in stderr; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("whisper-cpp"),
+        "expected supported set listing `whisper-cpp` in stderr; got:\n{stderr}"
+    );
 }
 
 #[test]
