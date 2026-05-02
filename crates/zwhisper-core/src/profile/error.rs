@@ -5,10 +5,12 @@ use thiserror::Error;
 
 use super::schema::Mode;
 
-/// Identifiers `[transcription].backend` accepts in M2. The slice is
+/// Identifiers `[transcription].backend` accepts in M5. The slice is
 /// re-exported by `BackendUnknown` so users see exactly which set is
-/// supported in this build.
-pub const SUPPORTED_BACKENDS_M2: &[&str] = &["whisper-cpp"];
+/// supported in this build. M2 shipped with `whisper-cpp` only; M5
+/// adds the `deepgram` cloud backend per IDEA.md § 4.
+pub const SUPPORTED_BACKENDS_M5: &[&str] = &["whisper-cpp", "deepgram"];
+
 
 /// Errors surfaced by the profile module. Each variant maps to one
 /// failure class so the CLI / future daemon can dispatch on them
@@ -124,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn supported_backends_m2_advertises_whisper_cpp_only() {
-        assert_eq!(SUPPORTED_BACKENDS_M2, &["whisper-cpp"]);
+    fn supported_backends_m5_includes_whisper_cpp_and_deepgram() {
+        assert_eq!(SUPPORTED_BACKENDS_M5, &["whisper-cpp", "deepgram"]);
     }
 }

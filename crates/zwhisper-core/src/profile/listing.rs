@@ -26,6 +26,12 @@ pub struct ProfileEntry {
     pub source: String,
     pub schema_version: Option<u32>,
     pub description: Option<String>,
+    /// `[transcription].backend`, parsed from the TOML when present.
+    /// `None` when the file is malformed or the backend field is
+    /// absent; callers (`Profiles1.list_v2` wire emit) substitute
+    /// `"whisper-cpp"` as the legacy default in that case so the
+    /// tray gets a deterministic value.
+    pub backend: Option<String>,
 }
 
 /// Aggregate every visible profile, honouring the
@@ -165,11 +171,17 @@ fn entry_from_body(name: &str, source: &str, body: &str) -> ProfileEntry {
         .as_ref()
         .and_then(|d| d.get("description")?.as_str())
         .map(str::to_owned);
+    let backend = parsed
+        .as_ref()
+        .and_then(|d| d.get("transcription")?.as_table_like())
+        .and_then(|t| t.get("backend")?.as_str())
+        .map(str::to_owned);
     ProfileEntry {
         name: name.to_owned(),
         source: source.to_owned(),
         schema_version,
         description,
+        backend,
     }
 }
 

@@ -54,6 +54,15 @@ zvariant = "5.7"
 futures-util = "0.3"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 
+# Cloud transcription HTTP (M5)
+# `default-features = false` keeps reqwest out of `native-tls` / OpenSSL
+# linkage; `rustls-tls` is pure-Rust and matches `zwhisper` portability.
+# `stream` enables `Body::wrap_stream` for FLAC upload without buffering
+# the full file in RAM (M5-plan DoD #17).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+tokio-util = { version = "0.7", features = ["io"] }
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
 # Tray (M4)
 ksni = "0.3"
 # `z-with-tokio` swaps notify-rust's default async-io zbus backend for
@@ -68,6 +77,10 @@ async-channel = "2"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+# M5 cloud-backend integration tests use wiremock to stub Deepgram REST
+# without hitting the real API or burning credit.
+wiremock = "0.6"
+tracing-test = "0.2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

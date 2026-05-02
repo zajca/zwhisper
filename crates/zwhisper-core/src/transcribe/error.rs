@@ -97,6 +97,102 @@ pub enum TranscribeError {
         #[source]
         source: serde_json::Error,
     },
+
+    // ----- M5 cloud-backend variants (non-exhaustive growth area) -----
+
+    /// Cloud backend resolution failed because no API key was found.
+    /// Distinct from [`Self::BackendAuth`] (key found but rejected).
+    #[error("backend `{backend}` is missing API key: {source}")]
+    BackendKeyMissing {
+        backend: &'static str,
+        #[source]
+        source: crate::secrets::SecretsError,
+    },
+
+    /// Cloud backend rejected the request as unauthorized — the
+    /// resolved API key is invalid, expired, or insufficiently
+    /// scoped.
+    #[error(
+        "backend `{backend}` rejected the request as unauthorized (HTTP {status}); \
+         check that the API key is valid"
+    )]
+    BackendAuth { backend: &'static str, status: u16 },
+
+    /// Cloud backend rejected the request because the project ran
+    /// out of credit or hit a rate limit (HTTP 402 / 429). Caller
+    /// can treat this as exhausted.
+    #[error(
+        "backend `{backend}` reports quota exhaustion (HTTP {status}{}): {message}",
+        retry_after_s.map_or(String::new(), |s| format!(", retry-after {s}s"))
+    )]
+    BackendQuota {
+        backend: &'static str,
+        status: u16,
+        retry_after_s: Option<u64>,
+        message: String,
+    },
+
+    /// Network plumbing problem — DNS, TCP connect, TLS handshake.
+    /// Surfaced after the retry budget has been exhausted.
+    /// `source` is `Box`ed to keep [`TranscribeError`] under the
+    /// clippy `result_large_err` threshold.
+    #[error("backend `{backend}` network error: {source}")]
+    BackendNetwork {
+        backend: &'static str,
+        #[source]
+        source: Box<reqwest::Error>,
+    },
+
+    /// Per-call timeout elapsed before the backend produced a
+    /// response. Total timeout is capped by the profile's
+    /// `transcription.deepgram.timeout_s`.
+    #[error("backend `{backend}` timed out after {timeout_s}s")]
+    BackendTimeout {
+        backend: &'static str,
+        timeout_s: u64,
+    },
+
+    /// Backend returned a non-2xx response that does not fit
+    /// [`Self::BackendAuth`] / [`Self::BackendQuota`]. Body is
+    /// truncated to keep log lines bounded.
+    #[error(
+        "backend `{backend}` returned HTTP {status}: {}",
+        truncate_for_display(body_excerpt)
+    )]
+    BackendBadResponse {
+        backend: &'static str,
+        status: u16,
+        body_excerpt: String,
+    },
+
+    /// Misconfiguration caught before any network I/O — e.g., a
+    /// non-https endpoint URL, an empty base URL, an unsupported
+    /// model identifier. Always recoverable by editing the profile.
+    #[error("backend `{backend}` configuration error: {message}")]
+    BackendConfig {
+        backend: &'static str,
+        message: String,
+    },
+
+    /// Backend returned a 2xx but the JSON body did not match the
+    /// shape we deserialise. Distinct from [`Self::BackendBadResponse`]
+    /// because the HTTP layer succeeded.
+    #[error("backend `{backend}` returned JSON with unexpected shape: {source}")]
+    BackendJsonShape {
+        backend: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// Local I/O failure while writing the transcript artifacts to
+    /// disk after a successful backend call.
+    #[error("backend `{backend}` failed to write artifact at {}: {source}", path.display())]
+    ArtifactWrite {
+        backend: &'static str,
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// Truncate a stderr/stdout payload for embedding in `Display`

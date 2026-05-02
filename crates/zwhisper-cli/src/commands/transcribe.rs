@@ -11,7 +11,8 @@
 use color_eyre::eyre::eyre;
 use tracing::info;
 use zwhisper_core::profile;
-use zwhisper_core::transcribe::{self, TranscribeOpts};
+use zwhisper_core::profile::schema::{Backend, DeepgramSettings};
+use zwhisper_core::transcribe::{self, BackendConfig, TranscribeOpts};
 
 use crate::cli::TranscribeArgs;
 
@@ -25,16 +26,41 @@ pub(crate) fn run(args: &TranscribeArgs) -> color_eyre::Result<()> {
 async fn run_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
     let opts = if let Some(name) = &args.profile {
         let profile = profile::load(name).map_err(|e| eyre!("{e}"))?;
+        let backend_config = match profile.transcription.backend {
+            Backend::Deepgram => BackendConfig::Deepgram(
+                profile
+                    .transcription
+                    .deepgram
+                    .clone()
+                    .unwrap_or_default(),
+            ),
+            Backend::WhisperCpp => BackendConfig::WhisperCpp,
+            other => {
+                return Err(eyre!(
+                    "backend `{}` is not supported in this build",
+                    other.as_str()
+                ));
+            }
+        };
         TranscribeOpts {
             backend: profile.transcription.backend.as_str().to_owned(),
             model: profile.transcription.model.clone(),
             language: profile.transcription.language.clone(),
+            backend_config,
         }
     } else {
+        // CLI flags route through the legacy string only — adding
+        // a `--deepgram-settings` family of flags is out of M5
+        // scope (cloud-only flow goes via profiles).
+        let backend_config = match args.backend.as_str() {
+            "deepgram" => BackendConfig::Deepgram(DeepgramSettings::default()),
+            _ => BackendConfig::WhisperCpp,
+        };
         TranscribeOpts {
             backend: args.backend.clone(),
             model: args.model.clone(),
             language: args.language.clone(),
+            backend_config,
         }
     };
 

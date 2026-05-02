@@ -368,7 +368,7 @@ async fn snapshot(
     state_tx: &watch::Sender<TrayState>,
 ) -> zbus::Result<()> {
     let status = recorder.get_status().await?;
-    let profiles = profiles_proxy.list().await?;
+    let profiles = list_profiles(profiles_proxy).await?;
     let active = profiles_proxy.get_active().await?;
     let last_session = read_last_session().await;
 
@@ -433,7 +433,7 @@ async fn refresh_profiles(
     profiles_proxy: &Profiles1Proxy<'_>,
     state_tx: &watch::Sender<TrayState>,
 ) -> zbus::Result<()> {
-    let profiles = profiles_proxy.list().await?;
+    let profiles = list_profiles(profiles_proxy).await?;
     let active = profiles_proxy.get_active().await?;
     state_tx.send_modify(|s| {
         s.profiles = profiles;
@@ -442,8 +442,104 @@ async fn refresh_profiles(
     Ok(())
 }
 
+/// Wrap `Profiles1.list_v2` with a graceful fall-back to legacy
+/// `list` when the daemon is older than M5. The fall-back path
+/// tags every entry with `backend = "whisper-cpp"` so the cloud
+/// marker stays off — the user sees a degraded but still-correct
+/// menu (M5-plan.md Risk #6).
+/// Cross-module re-export for [`crate::cmd`]. The dispatcher path
+/// after `SetActive` needs the same fall-back behaviour as the pump
+/// snapshot, but cmd.rs cannot reach the private helper. Promoted to
+/// `pub(crate)` rather than copy-pasted to keep the fall-back logic
+/// in one place.
+pub(crate) async fn list_profiles_for_dispatcher(
+    profiles_proxy: &Profiles1Proxy<'_>,
+) -> zbus::Result<Vec<zwhisper_ipc::ProfileEntryV2>> {
+    list_profiles(profiles_proxy).await
+}
+
+async fn list_profiles(
+    profiles_proxy: &Profiles1Proxy<'_>,
+) -> zbus::Result<Vec<zwhisper_ipc::ProfileEntryV2>> {
+    match profiles_proxy.list_v2().await {
+        Ok(v) => Ok(v),
+        Err(err) if is_unknown_method(&err) => {
+            tracing::warn!(
+                "Profiles1.list_v2 not implemented by daemon — falling back to list (no cloud markers)"
+            );
+            let legacy = profiles_proxy.list().await?;
+            Ok(legacy
+                .into_iter()
+                .map(|e| zwhisper_ipc::ProfileEntryV2 {
+                    name: e.name,
+                    description: e.description,
+                    schema_version: e.schema_version,
+                    backend: "whisper-cpp".to_owned(),
+                })
+                .collect())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Detect "this method does not exist on the server" so the tray
+/// can fall back to the legacy `list()` when running against an
+/// M3/M4 daemon. zbus 5.x surfaces method-not-found as
+/// `Error::MethodError("org.freedesktop.DBus.Error.UnknownMethod",
+/// ..)`, NOT as `Error::FDO(UnknownMethod)`. Copilot review #3
+/// (2026-05-02) caught the wrong-variant match.
+fn is_unknown_method(err: &zbus::Error) -> bool {
+    const UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
+    match err {
+        zbus::Error::MethodError(name, _, _) => name.as_str() == UNKNOWN_METHOD,
+        // Defence-in-depth: keep matching the FDO variant too in
+        // case a future zbus version routes the error differently.
+        zbus::Error::FDO(boxed) => matches!(**boxed, zbus::fdo::Error::UnknownMethod(_)),
+        _ => false,
+    }
+}
+
 fn unix_ms_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn placeholder_message() -> zbus::Message {
+        zbus::Message::signal("/x", "a.b", "Sig")
+            .expect("builder")
+            .build(&())
+            .expect("build")
+    }
+
+    /// Copilot review #3 (2026-05-02): zbus 5.x routes
+    /// "method does not exist" as `MethodError("…UnknownMethod", …)`,
+    /// NOT as `FDO(UnknownMethod)`. The pump's V2-fallback predicate
+    /// must match the real wire shape.
+    #[test]
+    fn is_unknown_method_matches_method_error_variant() {
+        let err = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from("org.freedesktop.DBus.Error.UnknownMethod")
+                .unwrap(),
+            Some("list_v2 not implemented".to_owned()),
+            placeholder_message(),
+        );
+        assert!(is_unknown_method(&err));
+    }
+
+    #[test]
+    fn is_unknown_method_rejects_unrelated_method_errors() {
+        let err = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from("cz.zajca.Zwhisper1.Error.SessionInUse")
+                .unwrap(),
+            None,
+            placeholder_message(),
+        );
+        assert!(!is_unknown_method(&err));
+    }
 }

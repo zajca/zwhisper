@@ -92,6 +92,7 @@ impl RecorderInterface {
 impl RecorderInterface {
     /// Start a new recording. See `zwhisper_ipc::recorder` for the
     /// canonical signature.
+    #[allow(clippy::too_many_lines)] // M5: backend_config dispatch added a few lines.
     async fn start_recording(
         &self,
         profile_name: &str,
@@ -238,6 +239,18 @@ impl RecorderInterface {
         let iface_ref: InterfaceRef<RecorderInterface> =
             conn.object_server().interface(OBJECT_PATH).await?;
 
+        let backend_config = match profile.transcription.backend {
+            zwhisper_core::profile::schema::Backend::Deepgram => {
+                zwhisper_core::transcribe::BackendConfig::Deepgram(
+                    profile
+                        .transcription
+                        .deepgram
+                        .clone()
+                        .unwrap_or_default(),
+                )
+            }
+            _ => zwhisper_core::transcribe::BackendConfig::WhisperCpp,
+        };
         let hooks = LifecycleHooks {
             iface_ref,
             sessions: Arc::clone(&self.sessions),
@@ -247,6 +260,7 @@ impl RecorderInterface {
             transcribe_backend: profile.transcription.backend.as_str().to_owned(),
             transcribe_model: profile.transcription.model.clone(),
             transcribe_language: profile.transcription.language.clone(),
+            transcribe_backend_config: backend_config,
         };
 
         spawn_lifecycle(recorder, hooks);

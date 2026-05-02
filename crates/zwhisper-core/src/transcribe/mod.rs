@@ -1,8 +1,20 @@
 //! Transcription backend abstractions and implementations (M1+).
+//!
+//! `clippy::result_large_err` is intentionally allowed across this
+//! module: [`TranscribeError`] is the public surface for typed
+//! backend failures and grows by design as new backends land. The
+//! callers who care about cheap returns in the hot path (the daemon
+//! lifecycle and the CLI entry points) are not measurably affected
+//! by the enum size — they map the error to the wire on the cold
+//! path, then propagate. Boxing every variant just to silence the
+//! lint pollutes pattern matching for no observable win.
+#![allow(clippy::result_large_err)]
 
+pub mod deepgram;
 pub(crate) mod discovery;
 pub mod error;
 pub(crate) mod models;
+pub mod speakers;
 pub(crate) mod whisper_cpp;
 
 use std::path::{Path, PathBuf};
@@ -14,6 +26,34 @@ use std::time::Duration;
 pub(crate) use discovery::locate_whisper_cli;
 #[allow(unused_imports)]
 pub use error::TranscribeError;
+pub use speakers::SpeakerSegment;
+
+use crate::profile::schema::DeepgramSettings;
+
+/// Backend-specific configuration carried by [`TranscribeOpts`].
+/// M5 introduces this enum as the typed alternative to the legacy
+/// `backend: String` routing key — the goal is M6 to drop the
+/// string and dispatch purely on this enum. Variants stay additive:
+/// `AssemblyAI` / `OpenAI` lands as new variants without touching
+/// this surface.
+#[derive(Debug, Clone, Default)]
+pub enum BackendConfig {
+    #[default]
+    WhisperCpp,
+    Deepgram(DeepgramSettings),
+}
+
+impl BackendConfig {
+    /// Routing key matching `[transcription].backend` strings in the
+    /// profile schema. Used while the legacy
+    /// [`TranscribeOpts::backend`] string field still exists.
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::WhisperCpp => "whisper-cpp",
+            Self::Deepgram(_) => "deepgram",
+        }
+    }
+}
 
 /// Static description of what a backend can do. Drives M2 profile
 /// validation and M5 backend-selection logic; M1 only exposes a
@@ -30,15 +70,22 @@ pub struct Capabilities {
 /// Plain-Rust input shape for [`transcribe_file`]. Stays free of
 /// whisper.cpp-specific types so M5 can add cloud backends without
 /// changing this struct.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[allow(dead_code)] // Phase 4 wires the constructor into run_transcribe.
 pub struct TranscribeOpts {
     /// Backend identifier, e.g. `"whisper-cpp"`. M5 widens the set.
+    /// **Deprecated for M6 removal**; new code routes via
+    /// [`BackendConfig`]. Kept for one milestone so wire formats
+    /// (D-Bus + CLI flags) stay stable.
     pub backend: String,
     /// Model name (no path, no `ggml-` prefix), e.g. `"small"`.
     pub model: String,
     /// ISO 639-1 language code or `"auto"`.
     pub language: String,
+    /// Typed backend config. Defaults to [`BackendConfig::WhisperCpp`]
+    /// so existing call sites compile unchanged.
+    #[allow(dead_code)]
+    pub backend_config: BackendConfig,
 }
 
 /// Result of a successful transcription. Mirrors the shape M3 will
@@ -59,6 +106,13 @@ pub struct TranscriptArtifacts {
     pub language: String,
     /// Resolved model name (echoed back from `TranscribeOpts`).
     pub model: String,
+    /// Speaker-attributed utterances, when the backend produced them.
+    /// `None` for backends without diarization (whisper.cpp). M5 adds
+    /// this; whisper-cpp callers MUST pass `None` so the resulting
+    /// `transcript.json` omits the `speakers` array entirely (kept
+    /// out via `serde(skip_serializing_if = "Option::is_none")` at
+    /// the JSON-writer site).
+    pub speakers: Option<Vec<SpeakerSegment>>,
 }
 
 /// Backend-side trait. M1 ships a single implementation
@@ -75,22 +129,42 @@ pub trait Transcriber: Send + Sync {
     ) -> Result<TranscriptArtifacts, TranscribeError>;
 }
 
-/// Public façade used by the CLI in Phase 4. Selects a backend by
-/// id and dispatches; unknown ids surface
+/// Public façade used by the CLI and daemon. Selects a backend by
+/// looking at [`TranscribeOpts::backend_config`] first; falls back
+/// to the legacy [`TranscribeOpts::backend`] string for cross-version
+/// compatibility. Unknown ids surface
 /// [`TranscribeError::BackendUnknown`] with the supported set.
 #[allow(dead_code)] // Phase 4 wires this into run_transcribe.
 pub async fn transcribe_file(
     audio: &Path,
     opts: &TranscribeOpts,
 ) -> Result<TranscriptArtifacts, TranscribeError> {
-    match opts.backend.as_str() {
-        "whisper-cpp" => {
-            let backend = whisper_cpp::WhisperCppLocal::new();
+    // Prefer the typed `backend_config` enum; the legacy
+    // `backend: String` field is checked only when the enum is at
+    // its `Default` (`WhisperCpp`) and the user explicitly asked
+    // for a different cloud backend via the legacy CLI surface.
+    match &opts.backend_config {
+        BackendConfig::Deepgram(settings) => {
+            let backend = deepgram::DeepgramBatch::new(settings.clone());
             backend.transcribe_file(audio, opts).await
         }
-        other => Err(TranscribeError::BackendUnknown {
-            name: other.to_owned(),
-            supported: vec!["whisper-cpp"],
-        }),
+        BackendConfig::WhisperCpp => match opts.backend.as_str() {
+            // Legacy routing: a CLI/daemon caller built `TranscribeOpts`
+            // with the default `backend_config` and only the string
+            // field. Honour it so the M5 cutover does not break the
+            // M3 wire format.
+            "deepgram" => {
+                let backend = deepgram::DeepgramBatch::new(DeepgramSettings::default());
+                backend.transcribe_file(audio, opts).await
+            }
+            "whisper-cpp" | "" => {
+                let backend = whisper_cpp::WhisperCppLocal::new();
+                backend.transcribe_file(audio, opts).await
+            }
+            other => Err(TranscribeError::BackendUnknown {
+                name: other.to_owned(),
+                supported: vec!["whisper-cpp", "deepgram"],
+            }),
+        },
     }
 }

@@ -57,7 +57,7 @@ pub mod types;
 pub use error::{RpcError, parse_error_name, parse_error_name_from_zbus};
 pub use profiles::Profiles1Proxy;
 pub use recorder::Recorder1Proxy;
-pub use types::{ProfileEntry, Status};
+pub use types::{ProfileEntry, ProfileEntryV2, Status};
 
 /// Well-known D-Bus name registered by `zwhisperd` on the session bus.
 pub const BUS_NAME: &str = "cz.zajca.Zwhisper1";

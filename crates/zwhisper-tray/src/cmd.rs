@@ -162,8 +162,10 @@ async fn dispatch_set_active_profile(
     }
 
     // Refresh the cached profile list so the radio mark moves
-    // immediately without waiting for the next pump tick.
-    match profiles.list().await {
+    // immediately without waiting for the next pump tick. Uses the
+    // M5 list_v2 surface with graceful fall-back so older daemons
+    // do not break the dispatcher.
+    match crate::pump::list_profiles_for_dispatcher(profiles).await {
         Ok(list) => {
             state_tx.send_modify(|s| {
                 s.profiles = list;

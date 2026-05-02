@@ -584,7 +584,7 @@ na fíčury, které stojí na nezralých externích závislostech (libei, true P
 | **M2 — Profiles** | TOML profily, `schema_version=1`, validation, migrations | `zwhisper record --profile meeting`, schema versioning enforced, replace-not-merge |
 | **M3 — Daemon + CLI** | Rozdělit na `zwhisperd` + `zwhisper-cli`, D-Bus IPC | start přes CLI, daemon nahrává nezávisle, signal `TranscriptComplete` doručí cestu; CLI funguje bez tray |
 | **M4 — Tray (ksni)** | Tray ovládá daemon, profile switching, session-bound sinky | menu funkční, recording indicator viditelný; clipboard a notify deliver z tray, FileSink nezávislý |
-| **M5 — Cloud backend (Deepgram)** | První remote transcriber, secret-service integrace | API key v keyring, streaming, ☁ marker v tray menu |
+| **M5 — Cloud backend (Deepgram)** ✅ shipped 2026-05-02 | První remote transcriber | API key v env / chmod-600 `secrets.toml` (keyring deferred), batch REST upload (streaming odložen na M9), ☁ marker v tray menu, word-level diarization v `transcript.json` |
 | **M6 — Hotkey toggle (portal)** | xdg-desktop-portal GlobalShortcuts, toggle start/stop | KDE Plasma 6 funguje; GNOME a wlroots empirically tested, dokumentovaný stav |
 | **M7 — Settings GUI (FLTK)** | Profile editor, model downloader | rare-use, on-demand spawn |
 | **M8 — Packaging** | Arch PKGBUILD, systemd units, systémové testy | install + enable na čistém Arch dává funkční daemon |

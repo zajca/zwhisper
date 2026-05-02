@@ -35,6 +35,12 @@ include_dir = { workspace = true }
 shellexpand = { workspace = true }
 # tempfile used by both profile migrations and transcribe whisper_cpp
 tempfile = { workspace = true }
+# M5 cloud-backend HTTP + secret zeroize. Gated behind the `transcribe`
+# feature so a profile-only consumer (e.g. tray reading TOML) does not
+# pay the reqwest TLS cost.
+reqwest = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true, optional = true }
@@ -48,12 +54,34 @@ audio = ["dep:gstreamer", "dep:tokio", "dep:libc"]
 # transitively through `audio`, but Phase 4 split CLI (transcribe-only)
 # and daemon (audio + transcribe) so transcribe must declare it
 # directly. `libc` is target-gated to `cfg(unix)`; on Windows the dep
-# is a no-op.
-transcribe = ["dep:async-trait", "dep:tokio", "dep:serde_json", "dep:which", "dep:libc"]
+# is a no-op. M5 also adds reqwest + tokio-util + zeroize for the
+# Deepgram cloud backend.
+transcribe = [
+    "dep:async-trait",
+    "dep:tokio",
+    "dep:serde_json",
+    "dep:which",
+    "dep:libc",
+    "dep:reqwest",
+    "dep:tokio-util",
+    "dep:zeroize",
+]
+# `test-utils` exposes the test-only escape hatches on the Deepgram
+# backend (`with_base_url`, `transcribe_file_with_key`) that would
+# otherwise be unreachable from external integration tests. Production
+# callers MUST NOT depend on this feature — the daemon and CLI build
+# with `default-features` only. Security review #2 (2026-05-02).
+test-utils = ["transcribe"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+wiremock = { workspace = true }
+tracing-test = { workspace = true }
+tokio = { workspace = true }
+# Self-dep enables `test-utils` for integration tests in this crate
+# without leaking the feature into downstream production binaries.
+zwhisper-core = { path = ".", features = ["test-utils"] }
 
 [lints]
 workspace = true

@@ -46,12 +46,14 @@ pub use crate::config::COMMAND_CHANNEL_CAPACITY;
 ///
 /// `active = true` produces a checked radio mark; `enabled = false`
 /// dims the row (`DoD` #20 — switching profiles mid-recording is a
-/// stress-test fix).
+/// stress-test fix). `cloud = true` causes the rendered label to be
+/// prefixed with `☁ ` (M5 `DoD` #8).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileMenuEntry {
     pub name: String,
     pub active: bool,
     pub enabled: bool,
+    pub cloud: bool,
 }
 
 /// Pure-data view of which menu items should be enabled and what the
@@ -78,6 +80,15 @@ pub struct MenuFlags {
     /// `true` only when the daemon is fully idle and no command is
     /// in flight (`DoD` #20 + #21).
     pub profiles_submenu_enabled: bool,
+}
+
+/// Returns `true` for any backend identifier that is not the local
+/// `whisper-cpp` engine. Empty / unknown backends fall through as
+/// `false` so a corrupted `Profiles1.list_v2` row never paints a
+/// false ☁ marker. M5 `DoD` #8.
+#[must_use]
+pub fn is_cloud_backend(backend: &str) -> bool {
+    !backend.is_empty() && backend != "whisper-cpp"
 }
 
 /// Compute [`MenuFlags`] for a given snapshot. See module docs for
@@ -116,6 +127,7 @@ pub fn menu_flags_for(state: &TrayState) -> MenuFlags {
             name: p.name.clone(),
             active: p.name == state.active_profile,
             enabled: profiles_submenu_enabled,
+            cloud: is_cloud_backend(&p.backend),
         })
         .collect();
 
@@ -241,8 +253,13 @@ impl Tray for ZwhisperTray {
             .map(|p| {
                 let name = p.name.clone();
                 let cmd_tx = self.cmd_tx.clone();
+                let label = if p.cloud {
+                    format!("☁ {}", p.name)
+                } else {
+                    p.name.clone()
+                };
                 CheckmarkItem {
-                    label: p.name.clone(),
+                    label,
                     enabled: p.enabled,
                     visible: true,
                     checked: p.active,
@@ -500,12 +517,53 @@ mod tests {
         );
     }
 
-    fn profile(name: &str) -> zwhisper_ipc::ProfileEntry {
-        zwhisper_ipc::ProfileEntry {
+    fn profile(name: &str) -> zwhisper_ipc::ProfileEntryV2 {
+        profile_with_backend(name, "whisper-cpp")
+    }
+
+    fn profile_with_backend(name: &str, backend: &str) -> zwhisper_ipc::ProfileEntryV2 {
+        zwhisper_ipc::ProfileEntryV2 {
             name: name.to_owned(),
             description: String::new(),
             schema_version: 1,
+            backend: backend.to_owned(),
         }
+    }
+
+    #[test]
+    fn is_cloud_backend_truth_table() {
+        assert!(is_cloud_backend("deepgram"));
+        assert!(is_cloud_backend("assemblyai"));
+        assert!(!is_cloud_backend("whisper-cpp"));
+        assert!(!is_cloud_backend(""));
+    }
+
+    #[test]
+    fn cloud_marker_set_for_remote_backend_only() {
+        let mut s = empty_state(IconState::Idle);
+        s.profiles = vec![
+            profile_with_backend("meeting", "whisper-cpp"),
+            profile_with_backend("cloud-meeting", "deepgram"),
+        ];
+        s.active_profile = "meeting".to_owned();
+        let flags = menu_flags_for(&s);
+        assert_eq!(flags.profiles.len(), 2);
+        let meeting = &flags.profiles[0];
+        let cloud = &flags.profiles[1];
+        assert!(!meeting.cloud, "whisper-cpp profile must not be marked cloud");
+        assert!(cloud.cloud, "deepgram profile must be marked cloud");
+    }
+
+    #[test]
+    fn cloud_marker_clears_when_backend_switches_to_local() {
+        let mut s = empty_state(IconState::Idle);
+        s.profiles = vec![profile_with_backend("p", "deepgram")];
+        let flags1 = menu_flags_for(&s);
+        assert!(flags1.profiles[0].cloud);
+
+        s.profiles = vec![profile_with_backend("p", "whisper-cpp")];
+        let flags2 = menu_flags_for(&s);
+        assert!(!flags2.profiles[0].cloud);
     }
 
     #[test]

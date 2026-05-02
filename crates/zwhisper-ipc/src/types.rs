@@ -43,6 +43,21 @@ pub struct ProfileEntry {
     pub schema_version: u32,
 }
 
+/// One entry in the response of `Profiles1.list_v2` (M5).
+///
+/// Wire signature: `(ssus)` — name, description, `schema_version`,
+/// **backend** (e.g., `"whisper-cpp"`, `"deepgram"`). Added so the
+/// tray can render a cloud marker (`☁`) next to cloud-backed profiles
+/// without a per-profile follow-up RPC. The legacy
+/// [`ProfileEntry`] / `list` surface stays untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ProfileEntryV2 {
+    pub name: String,
+    pub description: String,
+    pub schema_version: u32,
+    pub backend: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,5 +73,13 @@ mod tests {
     fn profile_entry_serializes_to_dbus_signature_ssu() {
         // M3 lock-in § 3: `ProfileEntry` is `(ssu)`.
         assert_eq!(ProfileEntry::SIGNATURE.to_string(), "(ssu)");
+    }
+
+    #[test]
+    fn profile_entry_v2_serializes_to_dbus_signature_ssus() {
+        // M5 § "Profiles1 D-Bus contract decision": list_v2 returns
+        // `a(ssus)`. Drift here means the tray will silently drop or
+        // mis-render the backend column.
+        assert_eq!(ProfileEntryV2::SIGNATURE.to_string(), "(ssus)");
     }
 }

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::error::{ProfileError, SUPPORTED_BACKENDS_M2};
+use super::error::{ProfileError, SUPPORTED_BACKENDS_M5};
 
 /// `IDEA.md` § 6 sources mode. `MonoMix` is the only mode the engine
 /// honours in M2; `StereoSplit` deserializes cleanly so v1 files that
@@ -78,6 +78,68 @@ pub struct Transcription {
     pub language: String,
     /// Run transcription automatically after recording stops.
     pub auto: bool,
+
+    /// Per-cloud-backend tuning. M5 ships only the `[transcription.deepgram]`
+    /// sub-table; future cloud backends will land alongside it as
+    /// optional siblings. Absent block → Deepgram defaults are used
+    /// when `backend = "deepgram"`. Round-trips unchanged for
+    /// whisper-cpp profiles (the field is `Option`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deepgram: Option<DeepgramSettings>,
+}
+
+/// Deepgram-specific knobs read from `[transcription.deepgram]`. All
+/// fields are optional in TOML; `Default` provides sensible values.
+/// IDEA.md § 4 + M5-plan.md Phase 2 lock the field set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeepgramSettings {
+    /// Deepgram model identifier. M5 default: `nova-3` (current best
+    /// general-purpose model per the researcher's 2026-05-02 sweep).
+    pub model: String,
+    /// Word-level speaker diarization. Maps to `diarize=true` query
+    /// param. Profile UI surfaces this as "speaker labels".
+    pub diarize: bool,
+    /// When `transcription.language == "auto"`, the daemon also sends
+    /// `detect_language=true`; this flag is reserved for future
+    /// fine-grained control (e.g., constrain candidate languages).
+    pub language_detection: bool,
+    /// Optional Deepgram tier override (`enhanced`, `nova`, `base`).
+    /// Modern accounts ignore this; kept as escape hatch per
+    /// M5-plan.md Risk #8.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    /// Per-call HTTP timeout in seconds (covers connect + body
+    /// transfer + server processing). Default 600 s — Deepgram batch
+    /// can buffer several minutes for long files.
+    pub timeout_s: u64,
+    /// TCP/TLS connect timeout in seconds (subset of `timeout_s`,
+    /// applies only to the connect phase). Default 15 s. Separated
+    /// because a connect storm should fail faster than a slow
+    /// server-side decode (security review #4, 2026-05-02).
+    pub connect_timeout_s: u64,
+    /// Cap on the retry attempt count for transient failures
+    /// (5xx, 408, 429, connect errors). Hard upper bound.
+    pub max_retries: u32,
+    /// Wall-clock budget across ALL retry attempts. Set to keep a
+    /// flapping network from inflating Deepgram billing
+    /// (M5-plan § C4). The retry loop exits early when this elapses.
+    pub retry_total_budget_s: u64,
+}
+
+impl Default for DeepgramSettings {
+    fn default() -> Self {
+        Self {
+            model: "nova-3".to_owned(),
+            diarize: true,
+            language_detection: false,
+            tier: None,
+            timeout_s: 600,
+            connect_timeout_s: 15,
+            max_retries: 4,
+            retry_total_budget_s: 90,
+        }
+    }
 }
 
 /// Output destinations. M2 honours `File`; `Clipboard` and
@@ -188,11 +250,34 @@ impl Profile {
             });
         }
 
-        if !matches!(self.transcription.backend, Backend::WhisperCpp) {
+        if !SUPPORTED_BACKENDS_M5.contains(&self.transcription.backend.as_str()) {
             return Err(ProfileError::BackendUnknown {
                 backend: self.transcription.backend.as_str().to_owned(),
-                supported: SUPPORTED_BACKENDS_M2,
+                supported: SUPPORTED_BACKENDS_M5,
             });
+        }
+
+        if matches!(self.transcription.backend, Backend::Deepgram) {
+            if let Some(dg) = &self.transcription.deepgram {
+                if dg.model.is_empty() {
+                    return Err(ProfileError::Validation {
+                        profile: self.name.clone(),
+                        message: "transcription.deepgram.model must not be empty".into(),
+                    });
+                }
+                if dg.timeout_s == 0 {
+                    return Err(ProfileError::Validation {
+                        profile: self.name.clone(),
+                        message: "transcription.deepgram.timeout_s must be > 0".into(),
+                    });
+                }
+                if dg.retry_total_budget_s == 0 {
+                    return Err(ProfileError::Validation {
+                        profile: self.name.clone(),
+                        message: "transcription.deepgram.retry_total_budget_s must be > 0".into(),
+                    });
+                }
+            }
         }
 
         for out in &self.outputs {
@@ -290,6 +375,7 @@ mod tests {
                 model: "small".into(),
                 language: "auto".into(),
                 auto: true,
+                deepgram: None,
             },
             outputs: vec![OutputDest::File {
                 path: "~/Recordings/zwhisper/{profile}/{timestamp}.flac".into(),
@@ -352,11 +438,98 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_non_whisper_backend_in_m2() {
+    fn validate_accepts_deepgram_backend_with_default_settings() {
         let mut p = ok_profile();
         p.transcription.backend = Backend::Deepgram;
+        // deepgram block omitted → defaults are used; profile validates.
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_deepgram_backend_with_explicit_settings() {
+        let mut p = ok_profile();
+        p.transcription.backend = Backend::Deepgram;
+        p.transcription.deepgram = Some(DeepgramSettings::default());
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_assemblyai_until_m6() {
+        let mut p = ok_profile();
+        p.transcription.backend = Backend::AssemblyAi;
         let err = p.validate().unwrap_err();
         assert!(matches!(err, ProfileError::BackendUnknown { .. }));
+        assert!(err.to_string().contains("assemblyai"));
+    }
+
+    #[test]
+    fn validate_rejects_openai_until_m6() {
+        let mut p = ok_profile();
+        p.transcription.backend = Backend::OpenAi;
+        let err = p.validate().unwrap_err();
+        assert!(matches!(err, ProfileError::BackendUnknown { .. }));
+    }
+
+    #[test]
+    fn validate_rejects_empty_deepgram_model() {
+        let mut p = ok_profile();
+        p.transcription.backend = Backend::Deepgram;
+        p.transcription.deepgram = Some(DeepgramSettings {
+            model: String::new(),
+            ..Default::default()
+        });
+        let err = p.validate().unwrap_err();
+        assert!(matches!(err, ProfileError::Validation { .. }));
+        assert!(err.to_string().contains("deepgram.model"));
+    }
+
+    #[test]
+    fn validate_rejects_zero_deepgram_timeout() {
+        let mut p = ok_profile();
+        p.transcription.backend = Backend::Deepgram;
+        p.transcription.deepgram = Some(DeepgramSettings {
+            timeout_s: 0,
+            ..Default::default()
+        });
+        let err = p.validate().unwrap_err();
+        assert!(err.to_string().contains("timeout_s"));
+    }
+
+    #[test]
+    fn whisper_profile_unchanged_after_m5() {
+        // Existing whisper-cpp profiles must validate without
+        // touching the new `deepgram` field — that is the whole
+        // point of the field being `Option`.
+        let p = ok_profile();
+        assert!(matches!(p.transcription.backend, Backend::WhisperCpp));
+        assert!(p.transcription.deepgram.is_none());
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn deepgram_settings_round_trip_via_toml() {
+        let dg = DeepgramSettings {
+            model: "nova-3".to_owned(),
+            diarize: true,
+            language_detection: true,
+            tier: Some("enhanced".to_owned()),
+            timeout_s: 300,
+            connect_timeout_s: 10,
+            max_retries: 5,
+            retry_total_budget_s: 120,
+        };
+        let toml = toml_edit::ser::to_string(&dg).unwrap();
+        let parsed: DeepgramSettings = toml_edit::de::from_str(&toml).unwrap();
+        assert_eq!(dg, parsed);
+    }
+
+    #[test]
+    fn deepgram_settings_rejects_unknown_keys() {
+        // deny_unknown_fields prevents typos like `diarise = true`
+        // from silently no-op'ing.
+        let bad = "model = \"nova-3\"\ndiarise = true\n";
+        let res: Result<DeepgramSettings, _> = toml_edit::de::from_str(bad);
+        assert!(res.is_err());
     }
 
     #[test]

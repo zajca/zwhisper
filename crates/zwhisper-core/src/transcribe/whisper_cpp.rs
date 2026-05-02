@@ -416,6 +416,11 @@ impl Transcriber for WhisperCppLocal {
             audio_duration,
             language: opts.language.clone(),
             model: opts.model.clone(),
+            // whisper.cpp does not emit speaker labels; M5 callers
+            // observing `speakers.is_none()` know diarization is
+            // unavailable for this backend. See § Capabilities and
+            // M5-plan.md DoD #7.
+            speakers: None,
         };
 
         info!(
@@ -872,6 +877,7 @@ mod tests {
             backend: "whisper-cpp".into(),
             model: model.into(),
             language: "auto".into(),
+            ..Default::default()
         }
     }
 
@@ -907,6 +913,18 @@ mod tests {
         assert_eq!(artifacts.audio_duration, Duration::from_millis(2500));
         assert_eq!(artifacts.language, "auto");
         assert_eq!(artifacts.model, "small");
+        // M5 DoD #7: whisper.cpp never produces speaker labels, so
+        // `speakers` is None and the resulting JSON file (whisper-cli's
+        // own output) does not contain a `speakers` array.
+        assert!(
+            artifacts.speakers.is_none(),
+            "whisper-cpp must not synthesise speaker labels"
+        );
+        let json_body = std::fs::read_to_string(&expected_json).unwrap();
+        assert!(
+            !json_body.contains("\"speakers\""),
+            "whisper-cli output must not contain a `speakers` array"
+        );
     }
 
     #[tokio::test]
@@ -1054,17 +1072,18 @@ mod tests {
     #[tokio::test]
     async fn unknown_backend_via_facade_returns_backend_unknown() {
         let opts = TranscribeOpts {
-            backend: "deepgram".into(),
+            backend: "vaporware".into(),
             model: "small".into(),
             language: "auto".into(),
+            ..Default::default()
         };
         let err = super::super::transcribe_file(Path::new("/tmp/x.flac"), &opts)
             .await
             .unwrap_err();
         match err {
             TranscribeError::BackendUnknown { name, supported } => {
-                assert_eq!(name, "deepgram");
-                assert_eq!(supported, vec!["whisper-cpp"]);
+                assert_eq!(name, "vaporware");
+                assert_eq!(supported, vec!["whisper-cpp", "deepgram"]);
             }
             other => panic!("expected BackendUnknown, got {other:?}"),
         }

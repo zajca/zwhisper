@@ -13,4 +13,6 @@ pub mod audio;
 #[cfg(feature = "profile")]
 pub mod profile;
 #[cfg(feature = "transcribe")]
+pub mod secrets;
+#[cfg(feature = "transcribe")]
 pub mod transcribe;

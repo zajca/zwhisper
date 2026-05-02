@@ -1,0 +1,32 @@
+{
+  "metadata": {
+    "transaction_key": "deprecated",
+    "request_id": "fixture-uuid-0001",
+    "sha256": "fixture",
+    "created": "2026-05-02T15:30:00Z",
+    "duration": 4.32,
+    "channels": 1,
+    "models": ["nova-3"]
+  },
+  "results": {
+    "channels": [
+      {
+        "alternatives": [
+          {
+            "transcript": "Hello there how are you fine thanks",
+            "confidence": 0.97,
+            "words": [
+              { "word": "hello",  "punctuated_word": "Hello",  "start": 0.00, "end": 0.40, "confidence": 0.99, "speaker": 0, "speaker_confidence": 0.94 },
+              { "word": "there",  "punctuated_word": "there",  "start": 0.42, "end": 0.78, "confidence": 0.96, "speaker": 0, "speaker_confidence": 0.94 },
+              { "word": "how",    "punctuated_word": "How",    "start": 1.20, "end": 1.45, "confidence": 0.97, "speaker": 1, "speaker_confidence": 0.91 },
+              { "word": "are",    "punctuated_word": "are",    "start": 1.46, "end": 1.65, "confidence": 0.98, "speaker": 1, "speaker_confidence": 0.91 },
+              { "word": "you",    "punctuated_word": "you?",   "start": 1.66, "end": 1.95, "confidence": 0.99, "speaker": 1, "speaker_confidence": 0.91 },
+              { "word": "fine",   "punctuated_word": "Fine",   "start": 2.50, "end": 2.85, "confidence": 0.95, "speaker": 0, "speaker_confidence": 0.94 },
+              { "word": "thanks", "punctuated_word": "thanks", "start": 2.86, "end": 3.30, "confidence": 0.97, "speaker": 0, "speaker_confidence": 0.94 }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

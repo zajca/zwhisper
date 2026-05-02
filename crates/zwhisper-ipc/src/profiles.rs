@@ -29,7 +29,7 @@
 //!   `Reload` is effectively a no-op cache buster — but it stays in
 //!   the API for forward-compat with M4-shaped property notifications.
 
-use crate::types::ProfileEntry;
+use crate::types::{ProfileEntry, ProfileEntryV2};
 
 /// Client-side proxy for the `cz.zajca.Zwhisper1.Profiles1` interface.
 #[zbus::proxy(
@@ -41,6 +41,13 @@ use crate::types::ProfileEntry;
 pub trait Profiles1 {
     /// Enumerate every profile the daemon currently knows about.
     fn list(&self) -> zbus::Result<Vec<ProfileEntry>>;
+
+    /// Enumerate every profile, including the `backend` field (M5+).
+    /// Tray prefers this over `list` to render the ☁ marker. Falls
+    /// back to `list` on `UnknownMethod` for cross-version
+    /// compatibility — see § "Profiles1 D-Bus contract decision" in
+    /// `docs/M5-plan.md`.
+    fn list_v2(&self) -> zbus::Result<Vec<ProfileEntryV2>>;
 
     /// Return the in-memory "last used" profile hint. Empty string if
     /// the daemon has not seen a profile this lifetime.

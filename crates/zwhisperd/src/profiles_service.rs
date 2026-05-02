@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 use zwhisper_core::profile;
-use zwhisper_ipc::{ProfileEntry, RpcError};
+use zwhisper_ipc::{ProfileEntry, ProfileEntryV2, RpcError};
 
 /// State held by the `Profiles1` interface impl.
 #[derive(Debug)]
@@ -57,6 +57,35 @@ impl ProfilesInterface {
             })
             .collect();
         info!(count = wire.len(), "Profiles1.List");
+        Ok(wire)
+    }
+
+    /// `Profiles1.list_v2` — same data as `list` plus the resolved
+    /// `[transcription].backend` string per entry. Tray uses this to
+    /// render a cloud marker. Older clients keep using `list` and
+    /// see no behaviour change.
+    #[allow(clippy::unused_async)] // zbus #[interface] requires `async fn`.
+    async fn list_v2(&self) -> zbus::fdo::Result<Vec<ProfileEntryV2>> {
+        let entries = profile::listing::list_entries().map_err(|e| {
+            zbus::fdo::Error::from(RpcError::ProfileLoadFailed {
+                name: "<list_v2>".into(),
+                reason: e.to_string(),
+            })
+        })?;
+        let wire: Vec<ProfileEntryV2> = entries
+            .into_iter()
+            .map(|e| ProfileEntryV2 {
+                name: e.name,
+                description: e.description.unwrap_or_default(),
+                schema_version: e.schema_version.unwrap_or(0),
+                // Default to legacy whisper-cpp when the TOML did
+                // not declare a backend (corrupted files, prepared
+                // user files): the tray still renders the row but
+                // without the cloud marker.
+                backend: e.backend.unwrap_or_else(|| "whisper-cpp".to_owned()),
+            })
+            .collect();
+        info!(count = wire.len(), "Profiles1.list_v2");
         Ok(wire)
     }
 

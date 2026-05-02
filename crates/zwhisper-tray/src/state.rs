@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use serde::Deserialize;
 use thiserror::Error;
-use zwhisper_ipc::ProfileEntry;
+use zwhisper_ipc::ProfileEntryV2;
 
 /// User-visible state of the daemon, as rendered by the tray icon.
 ///
@@ -223,7 +223,7 @@ pub struct TrayState {
     pub active_session_id: Option<String>,
     pub recording_started_at: Option<Instant>,
     pub last_session: Option<LastCompleted>,
-    pub profiles: Vec<ProfileEntry>,
+    pub profiles: Vec<ProfileEntryV2>,
     pub pending_cmd: Option<PendingCmd>,
 }
 

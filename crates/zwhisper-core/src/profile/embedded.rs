@@ -40,7 +40,7 @@ mod tests {
     #[test]
     fn names_contains_shipped_profiles() {
         let names = names();
-        for required in ["default", "meeting", "voicememo"] {
+        for required in ["default", "meeting", "voicememo", "cloud-meeting"] {
             assert!(
                 names.contains(&required),
                 "embedded names missing {required}: {names:?}"
