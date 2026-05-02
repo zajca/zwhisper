@@ -54,7 +54,7 @@ pub mod profiles;
 pub mod recorder;
 pub mod types;
 
-pub use error::{RpcError, parse_error_name};
+pub use error::{RpcError, parse_error_name, parse_error_name_from_zbus};
 pub use profiles::Profiles1Proxy;
 pub use recorder::Recorder1Proxy;
 pub use types::{ProfileEntry, Status};

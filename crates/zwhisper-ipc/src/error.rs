@@ -99,10 +99,53 @@ pub fn parse_error_name(err: &zbus::fdo::Error) -> Option<&'static str> {
     let zbus::fdo::Error::Failed(msg) = err else {
         return None;
     };
+    parse_typed_suffix(msg)
+}
+
+/// Wire-level reverse of [`From<RpcError> for zbus::fdo::Error`].
+///
+/// `parse_error_name` only sees an `fdo::Error`. In practice a client
+/// receives `RpcError` payloads as `zbus::Error::MethodError(name,
+/// body, ...)` where `name == "org.freedesktop.DBus.Error.Failed"`
+/// and the typed `cz.zajca.Zwhisper1.Error.<Variant>: <msg>` prefix
+/// rides in `body`. Some zbus call sites surface the same payload
+/// through `zbus::Error::FDO(Box<fdo::Error::Failed(...)>)` instead.
+/// This helper handles both shapes plus the (rare) case where a
+/// future daemon learns to set the typed wire name directly.
+///
+/// Returns `None` when the error did not originate from `zwhisperd`
+/// or the body does not carry a recognised variant suffix.
+#[must_use]
+pub fn parse_error_name_from_zbus(err: &zbus::Error) -> Option<&'static str> {
+    match err {
+        zbus::Error::MethodError(name, body, _) => {
+            // Future-proofing: if the daemon ever escapes the
+            // `Failed` workaround and sets the typed wire name
+            // directly, accept it.
+            let raw_name: &str = name.as_str();
+            if let Some(suffix) = raw_name.strip_prefix(ERROR_NAME_PREFIX) {
+                return match_known_variant(suffix);
+            }
+            if raw_name == "org.freedesktop.DBus.Error.Failed" {
+                return parse_typed_suffix(body.as_deref()?);
+            }
+            None
+        }
+        zbus::Error::FDO(boxed) => match boxed.as_ref() {
+            zbus::fdo::Error::Failed(msg) => parse_typed_suffix(msg),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn parse_typed_suffix(msg: &str) -> Option<&'static str> {
     let suffix = msg.strip_prefix(ERROR_NAME_PREFIX)?;
-    // Take everything up to the first ':' separator we put in.
     let (name, _rest) = suffix.split_once(':')?;
-    // Only return string literals so callers get `&'static str`.
+    match_known_variant(name)
+}
+
+fn match_known_variant(name: &str) -> Option<&'static str> {
     match name {
         "SessionInUse" => Some("SessionInUse"),
         "SessionUnknown" => Some("SessionUnknown"),
@@ -115,6 +158,12 @@ pub fn parse_error_name(err: &zbus::fdo::Error) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::match_wildcard_for_single_variants
+)]
 mod tests {
     use super::*;
 
@@ -211,5 +260,82 @@ mod tests {
             "{ERROR_NAME_PREFIX}WhoKnowsWhat: some message",
         ));
         assert_eq!(parse_error_name(&fdo), None);
+    }
+
+    /// Build a `zbus::Error::MethodError` whose wire shape matches
+    /// what the daemon actually sends after `From<RpcError> for
+    /// fdo::Error::Failed`: name = `org.freedesktop.DBus.Error.Failed`,
+    /// body = `"cz.zajca.Zwhisper1.Error.<Variant>: <msg>"`.
+    fn typed_method_error(variant: &str, msg: &str) -> zbus::Error {
+        let placeholder = zbus::Message::signal("/", "test.Iface", "Sig")
+            .expect("builder")
+            .build(&())
+            .expect("build");
+        let body = format!("{ERROR_NAME_PREFIX}{variant}: {msg}");
+        zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from("org.freedesktop.DBus.Error.Failed")
+                .expect("valid name"),
+            Some(body),
+            placeholder,
+        )
+    }
+
+    #[test]
+    fn parse_from_zbus_decodes_real_wire_method_error() {
+        for variant in ["RecordingFailed", "SessionInUse", "ProfileNotFound"] {
+            let err = typed_method_error(variant, "details here");
+            assert_eq!(
+                parse_error_name_from_zbus(&err),
+                Some(variant),
+                "variant {variant} did not round-trip through MethodError",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_from_zbus_decodes_fdo_wrapped_error() {
+        let fdo = zbus::fdo::Error::Failed(format!(
+            "{ERROR_NAME_PREFIX}RecordingFailed: gst init failed",
+        ));
+        let err = zbus::Error::FDO(Box::new(fdo));
+        assert_eq!(parse_error_name_from_zbus(&err), Some("RecordingFailed"));
+    }
+
+    #[test]
+    fn parse_from_zbus_returns_none_for_unrelated_method_error() {
+        let placeholder = zbus::Message::signal("/", "test.Iface", "Sig")
+            .expect("builder")
+            .build(&())
+            .expect("build");
+        let err = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from("org.example.Other").expect("valid"),
+            Some("nope".into()),
+            placeholder,
+        );
+        assert_eq!(parse_error_name_from_zbus(&err), None);
+    }
+
+    #[test]
+    fn parse_from_zbus_decodes_typed_wire_name_directly() {
+        // Forward-compat: if the daemon ever escapes the `Failed`
+        // workaround, the typed wire name is also accepted.
+        let placeholder = zbus::Message::signal("/", "test.Iface", "Sig")
+            .expect("builder")
+            .build(&())
+            .expect("build");
+        let err = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from("cz.zajca.Zwhisper1.Error.SessionInUse")
+                .expect("valid"),
+            None,
+            placeholder,
+        );
+        assert_eq!(parse_error_name_from_zbus(&err), Some("SessionInUse"));
+    }
+
+    #[test]
+    fn parse_from_zbus_returns_none_for_non_method_error_variants() {
+        // Address parse failure is a non-MethodError, non-FDO branch.
+        let err = zbus::Error::Address("bad address".into());
+        assert_eq!(parse_error_name_from_zbus(&err), None);
     }
 }

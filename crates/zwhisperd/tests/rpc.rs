@@ -79,15 +79,12 @@ async fn try_fixture(test_name: &str) -> Option<DbusFixture> {
 /// True when `err` is the typed `RecordingFailed` error name. Used
 /// to differentiate "`PipeWire` missing" from "real bug" in the
 /// audio-driving tests.
+///
+/// The daemon emits `RpcError::RecordingFailed` as
+/// `org.freedesktop.DBus.Error.Failed` with the typed prefix in the
+/// body — `parse_error_name_from_zbus` decodes both wire shapes.
 fn is_recording_failed(err: &zbus::Error) -> bool {
-    matches!(
-        err,
-        zbus::Error::FDO(boxed)
-            if matches!(
-                boxed.as_ref(),
-                zbus::fdo::Error::Failed(msg) if msg.contains("RecordingFailed")
-            )
-    )
+    zwhisper_ipc::parse_error_name_from_zbus(err) == Some("RecordingFailed")
 }
 
 #[tokio::test(flavor = "current_thread")]

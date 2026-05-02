@@ -57,24 +57,31 @@ pub(crate) const DAEMON_DOWN_HINT: &str = "daemon not running. Start it manually
 ///
 /// - `MethodError` whose name is `ServiceUnknown` / `NameHasNoOwner`
 ///   means the daemon is not on the bus → exit 2.
-/// - `MethodError` whose name starts with `cz.zajca.Zwhisper1.Error.`
-///   is a typed `RpcError`. `RecordingFailed` → 1, everything else
-///   (`SessionInUse`, `ProfileNotFound`, `ProfileLoadFailed`,
-///   `SessionUnknown`, `Transient`) → 2.
+/// - Any error whose body carries the typed
+///   `cz.zajca.Zwhisper1.Error.<Variant>` prefix is a `RpcError`.
+///   `RecordingFailed` → 1, everything else (`SessionInUse`,
+///   `ProfileNotFound`, `ProfileLoadFailed`, `SessionUnknown`,
+///   `Transient`) → 2.
 /// - Any other `zbus::Error` (transport, marshalling, address) → 3.
+///
+/// On the wire the daemon emits typed errors as
+/// `org.freedesktop.DBus.Error.Failed` with the `cz.zajca…:` prefix
+/// stuffed in the message body (zbus 5.15 `fdo::Error` has no
+/// arbitrary-name variant). The `MethodError.name` field is therefore
+/// almost never the typed name — the typed name lives in the body.
+/// [`zwhisper_ipc::parse_error_name_from_zbus`] handles both wire
+/// shapes (and the future possibility that the daemon sets the typed
+/// wire name directly).
 #[must_use]
 pub(crate) fn classify_error(err: &zbus::Error) -> i32 {
-    if let zbus::Error::MethodError(name, ..) = err {
-        let name_str: &str = name.as_str();
-        if name_str == ERR_SERVICE_UNKNOWN || name_str == ERR_NAME_HAS_NO_OWNER {
-            return EXIT_PROTOCOL_ERROR;
-        }
-        if let Some(suffix) = name_str.strip_prefix(zwhisper_ipc::ERROR_NAME_PREFIX) {
-            return match suffix {
-                "RecordingFailed" => EXIT_RECORDING_FAILED,
-                _ => EXIT_PROTOCOL_ERROR,
-            };
-        }
+    if is_daemon_down(err) {
+        return EXIT_PROTOCOL_ERROR;
+    }
+    if let Some(variant) = zwhisper_ipc::parse_error_name_from_zbus(err) {
+        return match variant {
+            "RecordingFailed" => EXIT_RECORDING_FAILED,
+            _ => EXIT_PROTOCOL_ERROR,
+        };
     }
     EXIT_IPC_FAILURE
 }
@@ -114,65 +121,88 @@ mod tests {
     /// one without a live bus. The mapper only consults the name —
     /// we use a placeholder signal `Message` so the third tuple
     /// element parses without a real reply.
-    fn synthetic_method_error(name: &'static str) -> zbus::Error {
+    fn synthetic_method_error(name: &'static str, body: Option<String>) -> zbus::Error {
         let placeholder = zbus::Message::signal("/", "test.Iface", "Sig")
             .expect("builder")
             .build(&())
             .expect("build");
         zbus::Error::MethodError(
             zbus::names::OwnedErrorName::try_from(name).expect("valid name"),
-            None,
+            body,
             placeholder,
         )
     }
 
+    /// The realistic wire shape: daemon sends typed errors as
+    /// `org.freedesktop.DBus.Error.Failed` with
+    /// `cz.zajca.Zwhisper1.Error.<Variant>: <msg>` in the body.
+    /// Mirrors `From<RpcError> for zbus::fdo::Error` exactly so unit
+    /// tests catch the bug that misled the original M3 review.
+    fn typed_method_error(variant: &str, msg: &str) -> zbus::Error {
+        let body = format!(
+            "{}{variant}: {msg}",
+            zwhisper_ipc::ERROR_NAME_PREFIX
+        );
+        synthetic_method_error("org.freedesktop.DBus.Error.Failed", Some(body))
+    }
+
     #[test]
     fn classify_service_unknown_is_protocol_error() {
-        let err = synthetic_method_error("org.freedesktop.DBus.Error.ServiceUnknown");
+        let err = synthetic_method_error("org.freedesktop.DBus.Error.ServiceUnknown", None);
         assert_eq!(classify_error(&err), EXIT_PROTOCOL_ERROR);
         assert!(is_daemon_down(&err));
     }
 
     #[test]
     fn classify_name_has_no_owner_is_protocol_error() {
-        let err = synthetic_method_error("org.freedesktop.DBus.Error.NameHasNoOwner");
+        let err = synthetic_method_error("org.freedesktop.DBus.Error.NameHasNoOwner", None);
         assert_eq!(classify_error(&err), EXIT_PROTOCOL_ERROR);
         assert!(is_daemon_down(&err));
     }
 
     #[test]
     fn classify_recording_failed_is_exit_1() {
-        let err = synthetic_method_error("cz.zajca.Zwhisper1.Error.RecordingFailed");
+        let err = typed_method_error("RecordingFailed", "gstreamer init: …");
         assert_eq!(classify_error(&err), EXIT_RECORDING_FAILED);
         assert!(!is_daemon_down(&err));
     }
 
     #[test]
     fn classify_session_in_use_is_protocol_error() {
-        let err = synthetic_method_error("cz.zajca.Zwhisper1.Error.SessionInUse");
+        let err = typed_method_error("SessionInUse", "id=abc");
         assert_eq!(classify_error(&err), EXIT_PROTOCOL_ERROR);
     }
 
     #[test]
     fn classify_profile_not_found_is_protocol_error() {
-        let err = synthetic_method_error("cz.zajca.Zwhisper1.Error.ProfileNotFound");
+        let err = typed_method_error("ProfileNotFound", "name=\"meeting\"");
         assert_eq!(classify_error(&err), EXIT_PROTOCOL_ERROR);
     }
 
     #[test]
-    fn classify_unknown_zwhisper_variant_falls_back_to_protocol() {
-        // Forward-compat: a future RpcError variant the CLI doesn't
-        // yet recognise should not be misclassified as IPC noise. We
-        // bias towards "user-facing protocol error" so the user sees
-        // the daemon's message rather than a generic exit-3.
-        let err = synthetic_method_error("cz.zajca.Zwhisper1.Error.WhoKnowsWhat");
-        assert_eq!(classify_error(&err), EXIT_PROTOCOL_ERROR);
+    fn classify_unknown_zwhisper_variant_falls_back_to_ipc_failure() {
+        // A future RpcError variant the CLI does not yet recognise
+        // is not in the suffix table → returns None from
+        // parse_error_name_from_zbus → exit 3. Forward-compat is
+        // explicit: add the new variant to the IPC crate first, then
+        // the CLI table.
+        let err = typed_method_error("WhoKnowsWhat", "future variant");
+        assert_eq!(classify_error(&err), EXIT_IPC_FAILURE);
     }
 
     #[test]
     fn classify_unrelated_method_error_is_ipc_failure() {
-        let err = synthetic_method_error("org.example.Other");
+        let err = synthetic_method_error("org.example.Other", Some("nope".into()));
         assert_eq!(classify_error(&err), EXIT_IPC_FAILURE);
         assert!(!is_daemon_down(&err));
+    }
+
+    /// Regression: even if the daemon ever switches to setting the
+    /// typed wire name directly (skipping the `Failed` workaround)
+    /// the classifier must still pick it up.
+    #[test]
+    fn classify_typed_wire_name_directly_is_recognised() {
+        let err = synthetic_method_error("cz.zajca.Zwhisper1.Error.RecordingFailed", None);
+        assert_eq!(classify_error(&err), EXIT_RECORDING_FAILED);
     }
 }
