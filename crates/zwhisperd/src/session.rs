@@ -21,6 +21,7 @@
 //! original `session_id` regardless of which session is active by
 //! then.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::task::JoinHandle;
@@ -76,6 +77,13 @@ impl std::fmt::Debug for ActiveSession {
 pub(crate) struct SessionManager {
     inner: Mutex<Option<ActiveSession>>,
     lifecycle_tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// Counter of `start_recording` calls that have begun but not yet
+    /// returned. Shutdown waits for this to drop to zero before
+    /// draining `lifecycle_tasks` so a SIGTERM landing in the
+    /// `try_reserve` → `spawn_lifecycle` window cannot terminate the
+    /// daemon while a freshly-spawned recorder still has no
+    /// registered `JoinHandle`.
+    inflight_starts: AtomicUsize,
 }
 
 impl std::fmt::Debug for SessionManager {
@@ -88,6 +96,10 @@ impl std::fmt::Debug for SessionManager {
                     "<{} task(s)>",
                     self.lifecycle_tasks.lock().map_or(0, |v| v.len())
                 ),
+            )
+            .field(
+                "inflight_starts",
+                &self.inflight_starts.load(Ordering::SeqCst),
             )
             .finish()
     }
@@ -225,6 +237,25 @@ impl SessionManager {
         })
     }
 
+    /// RAII guard for an in-flight `start_recording` call. Created
+    /// at the very top of `start_recording`, before the first
+    /// `await`, so shutdown can detect "a start is in progress, the
+    /// lifecycle handle has not been registered yet" and wait for
+    /// the call to finish (or fail) instead of dropping the bus
+    /// connection mid-spawn.
+    pub(crate) fn begin_start(self: &Arc<Self>) -> InflightStartGuard {
+        self.inflight_starts.fetch_add(1, Ordering::SeqCst);
+        InflightStartGuard {
+            sessions: Arc::clone(self),
+        }
+    }
+
+    /// Snapshot of the in-flight start count. Used by shutdown to
+    /// decide whether to wait before draining lifecycle handles.
+    pub(crate) fn inflight_starts(&self) -> usize {
+        self.inflight_starts.load(Ordering::SeqCst)
+    }
+
     /// Register a lifecycle task's `JoinHandle` so shutdown can
     /// await it. Called by `spawn_lifecycle` immediately after
     /// `tokio::spawn`. Drops handles whose tasks have already
@@ -260,6 +291,27 @@ impl SessionManager {
             .lock()
             .expect("session manager mutex poisoned");
         slot.as_ref().is_some_and(|s| s.session_id == *id)
+    }
+}
+
+/// RAII handle for a `begin_start`. Decrements the in-flight count
+/// on drop so `start_recording` cannot leak the counter on any
+/// error path (`?`, `return`, panic). The guard intentionally does
+/// not own the `SessionManager`; it holds an `Arc` clone so dropping
+/// it is cheap and never blocks.
+pub(crate) struct InflightStartGuard {
+    sessions: Arc<SessionManager>,
+}
+
+impl Drop for InflightStartGuard {
+    fn drop(&mut self) {
+        self.sessions.inflight_starts.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl std::fmt::Debug for InflightStartGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InflightStartGuard").finish()
     }
 }
 
@@ -411,6 +463,37 @@ mod tests {
             StopAttempt::Stopped,
         );
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn inflight_start_guard_increments_then_decrements() {
+        let mgr = Arc::new(SessionManager::new());
+        assert_eq!(mgr.inflight_starts(), 0);
+        let g1 = mgr.begin_start();
+        assert_eq!(mgr.inflight_starts(), 1);
+        let g2 = mgr.begin_start();
+        assert_eq!(mgr.inflight_starts(), 2);
+        drop(g1);
+        assert_eq!(mgr.inflight_starts(), 1);
+        drop(g2);
+        assert_eq!(mgr.inflight_starts(), 0);
+    }
+
+    #[test]
+    fn inflight_start_guard_decrements_on_panic_unwind() {
+        // RAII via Drop must hold even if the body panics, so the
+        // shutdown path cannot wedge on a stuck counter.
+        let mgr = Arc::new(SessionManager::new());
+        let result = std::panic::catch_unwind({
+            let mgr = Arc::clone(&mgr);
+            move || {
+                let _g = mgr.begin_start();
+                assert_eq!(mgr.inflight_starts(), 1);
+                panic!("simulated start failure");
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(mgr.inflight_starts(), 0);
     }
 
     #[test]

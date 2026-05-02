@@ -173,11 +173,44 @@ async fn run_async(profile_name: &str) -> i32 {
     let mut transcript: Option<TranscriptInfo> = None;
     let mut ctrl_c = std::pin::pin!(tokio::signal::ctrl_c());
     let mut sent_stop = false;
+    // One flag per signal stream so a stream that yielded `None`
+    // (broker closed, daemon disconnected) stops being polled.
+    // tokio::select! disables a branch whose `if` guard is false, so
+    // setting these to `true` removes the dead arm; the
+    // `state_done && recording_done && transcript_done` check at
+    // the top of the loop turns the all-streams-dead state into a
+    // clean EXIT_IPC_FAILURE return instead of a panic.
+    let mut state_done = false;
+    let mut recording_done = false;
+    let mut transcript_done = false;
 
     loop {
+        // Daemon-disconnect detection. When zwhisperd disappears
+        // without emitting a terminal `StateChanged`, all three
+        // signal streams resolve to `None` and stay disabled in
+        // `tokio::select!`. Without this guard the loop would
+        // either spin forever (with `ctrl_c` still pending) or
+        // panic ("all branches are disabled and there is no else
+        // branch") once the user pressed Ctrl+C and `sent_stop`
+        // disabled the last live arm. Detect the all-streams-dead
+        // condition explicitly and bail with EXIT_IPC_FAILURE.
+        if state_done && recording_done && transcript_done {
+            eprintln!(
+                "daemon disconnected before terminal StateChanged for session {session_id}; \
+                 audio file (if any) is at the path the daemon last reported"
+            );
+            print_artifacts(audio_path.as_ref(), transcript.as_ref(), auto_transcribe);
+            return EXIT_IPC_FAILURE;
+        }
+
         tokio::select! {
             // Branch 1 — StateChanged
-            Some(signal) = state_stream.next() => {
+            maybe_signal = state_stream.next(), if !state_done => {
+                let Some(signal) = maybe_signal else {
+                    debug!("StateChanged stream closed");
+                    state_done = true;
+                    continue;
+                };
                 let args_res = signal.args();
                 let Ok(args) = args_res else {
                     debug!("StateChanged with malformed args, dropping");
@@ -212,7 +245,12 @@ async fn run_async(profile_name: &str) -> i32 {
             }
 
             // Branch 2 — RecordingComplete
-            Some(signal) = recording_complete_stream.next() => {
+            maybe_signal = recording_complete_stream.next(), if !recording_done => {
+                let Some(signal) = maybe_signal else {
+                    debug!("RecordingComplete stream closed");
+                    recording_done = true;
+                    continue;
+                };
                 let Ok(args) = signal.args() else {
                     debug!("RecordingComplete with malformed args, dropping");
                     continue;
@@ -230,7 +268,12 @@ async fn run_async(profile_name: &str) -> i32 {
             }
 
             // Branch 3 — TranscriptComplete
-            Some(signal) = transcript_complete_stream.next() => {
+            maybe_signal = transcript_complete_stream.next(), if !transcript_done => {
+                let Some(signal) = maybe_signal else {
+                    debug!("TranscriptComplete stream closed");
+                    transcript_done = true;
+                    continue;
+                };
                 let Ok(args) = signal.args() else {
                     debug!("TranscriptComplete with malformed args, dropping");
                     continue;
@@ -271,6 +314,18 @@ async fn run_async(profile_name: &str) -> i32 {
                     // terminal StateChanged.
                 }
                 sent_stop = true;
+            }
+
+            // Defensive: tokio::select! requires an `else` arm when
+            // every branch can become disabled (all three streams
+            // closed AND `sent_stop = true`). Without it the macro
+            // panics with "all branches are disabled and there is
+            // no else branch". The check at the top of the loop
+            // turns the all-streams-dead state into a clean
+            // EXIT_IPC_FAILURE return, so this arm just yields
+            // control once to break out of the macro's poll cycle.
+            else => {
+                tokio::task::yield_now().await;
             }
         }
     }

@@ -108,6 +108,13 @@ impl RecorderInterface {
         // via `start_recording_emits_state_changed_starting`. None
         // of the state mutated below requires `&mut self`: every
         // touched field is `Arc<...>` already.
+        // In-flight start counter: decremented on Drop. Held for
+        // the entire body so SIGTERM landing in the await-heavy
+        // window between `try_reserve` and `spawn_lifecycle` cannot
+        // make `shutdown()` see "no lifecycle to wait for" and
+        // terminate the process while we are mid-construction.
+        let _inflight = self.sessions.begin_start();
+
         // Defensive lock: a flood of concurrent StartRecording calls
         // could otherwise interleave their try_reserve / GStreamer
         // init / spawn_blocking phases and leave the SessionManager

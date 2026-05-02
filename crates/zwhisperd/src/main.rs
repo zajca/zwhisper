@@ -39,6 +39,14 @@ use crate::session::SessionManager;
 /// when the recorder is wedged.
 const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Maximum time the daemon waits for in-flight `start_recording`
+/// calls to finish (so their lifecycle handles get registered)
+/// before draining lifecycle tasks. Short on purpose: the
+/// synchronous prelude inside `start_recording` only takes a few
+/// hundred milliseconds even on slow hardware.
+const INFLIGHT_START_DRAIN_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -106,6 +114,27 @@ async fn main() -> color_eyre::Result<()> {
 /// `whisper-cli`. The CLI would then never see `TranscriptComplete`
 /// or terminal `StateChanged "idle"` and would hang forever.
 async fn shutdown(connection: &zbus::Connection, sessions: &SessionManager) {
+    // Wait for any in-flight `start_recording` to finish so its
+    // lifecycle handle is registered before we drain. Without this
+    // a SIGTERM landing in the brief await-heavy window between
+    // `try_reserve` and `spawn_lifecycle` would skip the lifecycle
+    // entirely (the JoinHandle has not been pushed yet) and the
+    // daemon would tear down a freshly-started recorder without
+    // emitting a terminal signal.
+    let inflight_deadline = tokio::time::Instant::now() + INFLIGHT_START_DRAIN_TIMEOUT;
+    while sessions.inflight_starts() > 0 {
+        if tokio::time::Instant::now() >= inflight_deadline {
+            warn!(
+                inflight = sessions.inflight_starts(),
+                "in-flight StartRecording calls did not finish within {:?}; \
+                 lifecycle handles may not be registered",
+                INFLIGHT_START_DRAIN_TIMEOUT,
+            );
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
     if sessions.snapshot().is_some() {
         info!("active session detected on shutdown; requesting drain");
         if !sessions.request_stop_active(StopReason::UserRequested) {
