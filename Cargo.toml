@@ -54,6 +54,13 @@ zvariant = "5.7"
 futures-util = "0.3"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 
+# Tray (M4)
+ksni = "0.3"
+notify-rust = "4.11"
+arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
+xdg = "2.5"
+async-channel = "2"
+
 # Testing helpers
 assert_cmd = "2"
 predicates = "3"

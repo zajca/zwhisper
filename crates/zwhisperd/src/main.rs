@@ -23,6 +23,7 @@ use tracing::{error, info, warn};
 use zwhisper_core::audio::state::StopReason;
 use zwhisper_ipc::{BUS_NAME, OBJECT_PATH};
 
+mod last_session;
 mod lifecycle;
 mod profiles_service;
 mod recorder_service;
@@ -44,8 +45,7 @@ const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// before draining lifecycle tasks. Short on purpose: the
 /// synchronous prelude inside `start_recording` only takes a few
 /// hundred milliseconds even on slow hardware.
-const INFLIGHT_START_DRAIN_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(5);
+const INFLIGHT_START_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> color_eyre::Result<()> {
@@ -56,8 +56,7 @@ async fn main() -> color_eyre::Result<()> {
     let sessions = Arc::new(SessionManager::new());
     let active_profile = Arc::new(AsyncMutex::new(String::new()));
 
-    let recorder_iface =
-        RecorderInterface::new(Arc::clone(&sessions), Arc::clone(&active_profile));
+    let recorder_iface = RecorderInterface::new(Arc::clone(&sessions), Arc::clone(&active_profile));
     let profiles_iface = ProfilesInterface::new(Arc::clone(&active_profile));
 
     // zbus 5.15 connection builder pattern (per the
@@ -74,7 +73,11 @@ async fn main() -> color_eyre::Result<()> {
         .await
         .map_err(|e| eyre!("failed to register on session bus as {BUS_NAME}: {e}"))?;
 
-    info!(bus_name = BUS_NAME, object_path = OBJECT_PATH, "daemon ready");
+    info!(
+        bus_name = BUS_NAME,
+        object_path = OBJECT_PATH,
+        "daemon ready"
+    );
 
     // Install POSIX signal handlers via signal-hook-tokio. We do NOT
     // call `tokio::signal::ctrl_c()` anywhere in the daemon — POSIX

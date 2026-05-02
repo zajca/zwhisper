@@ -50,8 +50,7 @@ fn validate_name(name: &str) -> Result<(), TranscribeError> {
     if name == "auto" {
         return Err(TranscribeError::InvalidModelName {
             name: name.to_owned(),
-            reason:
-                "`auto` is reserved for language autodetect, not a model name",
+            reason: "`auto` is reserved for language autodetect, not a model name",
         });
     }
 
@@ -60,15 +59,11 @@ fn validate_name(name: &str) -> Result<(), TranscribeError> {
     // but path separators are not, so `../etc/passwd` fails on `/`),
     // spaces, `:`, and any other punctuation.
     for ch in name.chars() {
-        let allowed = ch.is_ascii_alphanumeric()
-            || ch == '.'
-            || ch == '_'
-            || ch == '-';
+        let allowed = ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-';
         if !allowed {
             return Err(TranscribeError::InvalidModelName {
                 name: name.to_owned(),
-                reason:
-                    "model name contains forbidden characters; allowed: A-Z a-z 0-9 . _ -",
+                reason: "model name contains forbidden characters; allowed: A-Z a-z 0-9 . _ -",
             });
         }
     }

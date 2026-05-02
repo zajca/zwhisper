@@ -9,16 +9,13 @@
 
 use include_dir::{Dir, include_dir};
 
-static PROFILES: Dir<'static> =
-    include_dir!("$CARGO_MANIFEST_DIR/profiles");
+static PROFILES: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/profiles");
 
 /// Look up an embedded profile by basename (no `.toml` suffix). Used
 /// by `paths::resolve_source` after both filesystem candidates miss.
 pub(crate) fn lookup(name: &str) -> Option<&'static str> {
     let filename = format!("{name}.toml");
-    PROFILES
-        .get_file(&filename)?
-        .contents_utf8()
+    PROFILES.get_file(&filename)?.contents_utf8()
 }
 
 /// All embedded profile names (without `.toml`). Surfaces in
@@ -37,8 +34,8 @@ pub(crate) fn names() -> Vec<&'static str> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::*;
     use super::super::loader::load_from_str;
+    use super::*;
 
     #[test]
     fn names_contains_shipped_profiles() {

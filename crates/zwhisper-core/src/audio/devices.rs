@@ -78,12 +78,13 @@ impl WpctlRunner for WpctlCommandRunner {
     }
 
     fn list_node_names(&self) -> Result<Vec<String>, DeviceError> {
-        let output = Command::new("pw-cli").args(["ls", "Node"]).output().map_err(
-            |e| DeviceError::CommandFailed {
+        let output = Command::new("pw-cli")
+            .args(["ls", "Node"])
+            .output()
+            .map_err(|e| DeviceError::CommandFailed {
                 tool: "pw-cli",
                 message: format!("could not spawn `pw-cli ls Node`: {e}"),
-            },
-        )?;
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -232,7 +233,10 @@ fn ensure_node_exists(
         return Ok(());
     }
     Err(DeviceError::InvalidArgument {
-        value: format!("{name} (available {kind} candidates: {})", sample_names(&names)),
+        value: format!(
+            "{name} (available {kind} candidates: {})",
+            sample_names(&names)
+        ),
         reason: "node name not found in `pw-cli ls Node`",
     })
 }
@@ -439,7 +443,9 @@ mod tests {
     #[test]
     fn missing_node_name_in_wpctl_output_surfaces_error() {
         let runner = MockRunner {
-            source_body: Ok("id 62, type PipeWire:Interface:Node\n  some.other.prop = \"x\"\n".into()),
+            source_body: Ok(
+                "id 62, type PipeWire:Interface:Node\n  some.other.prop = \"x\"\n".into(),
+            ),
             sink_body: Ok(SINK_FIXTURE.to_owned()),
             node_names: Ok(vec![]),
         };

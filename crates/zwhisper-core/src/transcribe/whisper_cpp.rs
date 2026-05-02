@@ -28,7 +28,7 @@ use tokio::process::Command;
 use tracing::{debug, error, info, warn};
 
 use super::error::TranscribeError;
-use super::{Capabilities, TranscribeOpts, TranscriptArtifacts, Transcriber};
+use super::{Capabilities, TranscribeOpts, Transcriber, TranscriptArtifacts};
 use super::{discovery, models};
 
 const STEM: &str = "transcript";
@@ -53,11 +53,7 @@ pub(crate) trait Runner: Send + Sync {
     /// because tests need to know where to drop the simulated
     /// output files; the production runner already configured
     /// `cmd.current_dir(workdir)` and ignores the extra arg.
-    async fn run(
-        &self,
-        cmd: Command,
-        workdir: &Path,
-    ) -> Result<RunOutput, TranscribeError>;
+    async fn run(&self, cmd: Command, workdir: &Path) -> Result<RunOutput, TranscribeError>;
 }
 
 /// Production runner: spawns the command via `tokio::process` and
@@ -67,11 +63,7 @@ pub(crate) struct SystemRunner;
 
 #[async_trait]
 impl Runner for SystemRunner {
-    async fn run(
-        &self,
-        mut cmd: Command,
-        _workdir: &Path,
-    ) -> Result<RunOutput, TranscribeError> {
+    async fn run(&self, mut cmd: Command, _workdir: &Path) -> Result<RunOutput, TranscribeError> {
         // Use `output()` to await the process and capture both
         // pipes in one shot. Spawn errors map straight to
         // `BackendSpawn`; the caller already populated `tool` via
@@ -216,8 +208,15 @@ impl Transcriber for WhisperCppLocal {
                     path: audio.to_path_buf(),
                     source,
                 };
-                write_backtest_log(audio, opts, "err:input-audio", started_at.elapsed(), None, None)
-                    .await;
+                write_backtest_log(
+                    audio,
+                    opts,
+                    "err:input-audio",
+                    started_at.elapsed(),
+                    None,
+                    None,
+                )
+                .await;
                 return Err(err);
             }
         };
@@ -226,8 +225,15 @@ impl Transcriber for WhisperCppLocal {
         let binary = match self.resolve_binary() {
             Ok(p) => p,
             Err(e) => {
-                write_backtest_log(audio, opts, "err:backend-unavailable",
-                    started_at.elapsed(), None, None).await;
+                write_backtest_log(
+                    audio,
+                    opts,
+                    "err:backend-unavailable",
+                    started_at.elapsed(),
+                    None,
+                    None,
+                )
+                .await;
                 return Err(e);
             }
         };
@@ -325,8 +331,15 @@ impl Transcriber for WhisperCppLocal {
                 status: output.status,
                 stderr,
             };
-            write_backtest_log(audio, opts, "err:nonzero-exit", started_at.elapsed(), None, None)
-                .await;
+            write_backtest_log(
+                audio,
+                opts,
+                "err:nonzero-exit",
+                started_at.elapsed(),
+                None,
+                None,
+            )
+            .await;
             return Err(err);
         }
 
@@ -345,11 +358,16 @@ impl Transcriber for WhisperCppLocal {
         let json_in_temp = tempdir.path().join(format!("{STEM}.json"));
         for p in [&txt_in_temp, &json_in_temp] {
             if !p.is_file() {
-                let err = TranscribeError::OutputMissing {
-                    path: p.clone(),
-                };
-                write_backtest_log(audio, opts, "err:output-missing",
-                    started_at.elapsed(), None, None).await;
+                let err = TranscribeError::OutputMissing { path: p.clone() };
+                write_backtest_log(
+                    audio,
+                    opts,
+                    "err:output-missing",
+                    started_at.elapsed(),
+                    None,
+                    None,
+                )
+                .await;
                 return Err(err);
             }
         }
@@ -366,13 +384,27 @@ impl Transcriber for WhisperCppLocal {
         let txt_target = append_extension(audio, ".txt");
         let json_target = append_extension(audio, ".json");
         if let Err(e) = move_or_copy(&txt_in_temp, &txt_target).await {
-            write_backtest_log(audio, opts, "err:move-txt", started_at.elapsed(), None, None)
-                .await;
+            write_backtest_log(
+                audio,
+                opts,
+                "err:move-txt",
+                started_at.elapsed(),
+                None,
+                None,
+            )
+            .await;
             return Err(e);
         }
         if let Err(e) = move_or_copy(&json_in_temp, &json_target).await {
-            write_backtest_log(audio, opts, "err:move-json", started_at.elapsed(), None, None)
-                .await;
+            write_backtest_log(
+                audio,
+                opts,
+                "err:move-json",
+                started_at.elapsed(),
+                None,
+                None,
+            )
+            .await;
             return Err(e);
         }
 
@@ -566,15 +598,14 @@ pub(crate) fn parse_segments(s: &str) -> Result<Vec<Segment>, serde_json::Error>
 /// are mapped to [`TranscribeError::OutputUnreadable`] for symmetry
 /// with the rest of the post-process pipeline.
 #[allow(dead_code)] // Wired up in M1 phase 6+; keeps the shape-validation entry point exposed.
-pub(crate) async fn parse_segments_file(
-    path: &Path,
-) -> Result<Vec<Segment>, TranscribeError> {
-    let bytes = tokio::fs::read(path).await.map_err(|source| {
-        TranscribeError::OutputUnreadable {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?;
+pub(crate) async fn parse_segments_file(path: &Path) -> Result<Vec<Segment>, TranscribeError> {
+    let bytes =
+        tokio::fs::read(path)
+            .await
+            .map_err(|source| TranscribeError::OutputUnreadable {
+                path: path.to_path_buf(),
+                source,
+            })?;
     let s = std::str::from_utf8(&bytes).map_err(|utf8_err| {
         // Map non-UTF-8 bytes to a `JsonShape` parse error so the
         // user still gets a path-bearing diagnostic.
@@ -781,11 +812,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for MockRunner {
-        async fn run(
-            &self,
-            _cmd: Command,
-            workdir: &Path,
-        ) -> Result<RunOutput, TranscribeError> {
+        async fn run(&self, _cmd: Command, workdir: &Path) -> Result<RunOutput, TranscribeError> {
             if let Some(e) = self.spawn_error.lock().unwrap().take() {
                 return Err(e);
             }
@@ -1077,9 +1104,15 @@ mod tests {
     #[test]
     fn is_cross_device_ignores_unrelated_errors() {
         let enoent = std::io::Error::from_raw_os_error(2);
-        assert!(!is_cross_device(&enoent), "ENOENT must not trigger fallback");
+        assert!(
+            !is_cross_device(&enoent),
+            "ENOENT must not trigger fallback"
+        );
         let synthetic = std::io::Error::other("no errno");
-        assert!(!is_cross_device(&synthetic), "errors without raw_os_error must not trigger fallback");
+        assert!(
+            !is_cross_device(&synthetic),
+            "errors without raw_os_error must not trigger fallback"
+        );
     }
 
     #[tokio::test]
@@ -1095,10 +1128,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let p = tmp.path().join("t.json");
         fs::write(&p, one_segment_json()).await.unwrap();
-        assert_eq!(
-            parse_audio_duration(&p).await,
-            Duration::from_millis(2500)
-        );
+        assert_eq!(parse_audio_duration(&p).await, Duration::from_millis(2500));
     }
 
     // ---- M1 Phase 5a: parse_segments shape validation ----------
@@ -1106,9 +1136,7 @@ mod tests {
     /// Committed fixture mirroring `whisper-cli --output-json`.
     /// Re-loaded at compile time so a missing/renamed file is a
     /// build failure, not a runtime skip.
-    const FIXTURE_JSON: &str = include_str!(
-        "../../tests/fixtures/whisper-cpp-segments.json"
-    );
+    const FIXTURE_JSON: &str = include_str!("../../tests/fixtures/whisper-cpp-segments.json");
 
     #[test]
     fn parse_segments_accepts_valid_fixture() {
@@ -1127,8 +1155,8 @@ mod tests {
 
     #[test]
     fn parse_segments_handles_empty_array() {
-        let segments = parse_segments(r#"{ "transcription": [] }"#)
-            .expect("empty array is a valid shape");
+        let segments =
+            parse_segments(r#"{ "transcription": [] }"#).expect("empty array is a valid shape");
         assert!(segments.is_empty());
     }
 
@@ -1142,8 +1170,7 @@ mod tests {
         //
         // What MUST be rejected: input that isn't an object at
         // all. Use a top-level scalar (number) to lock that.
-        let err = parse_segments("42")
-            .expect_err("top-level scalar is not the documented shape");
+        let err = parse_segments("42").expect_err("top-level scalar is not the documented shape");
         let msg = err.to_string();
         assert!(
             msg.contains("expected") || msg.contains("invalid"),
@@ -1168,8 +1195,7 @@ mod tests {
             .expect_err("string is not Vec<Segment>");
         let msg = err.to_string();
         assert!(
-            msg.contains("expected") || msg.contains("sequence")
-                || msg.contains("string"),
+            msg.contains("expected") || msg.contains("sequence") || msg.contains("string"),
             "expected a type-mismatch error, got: {msg}"
         );
     }

@@ -80,12 +80,11 @@ pub fn clone_to_user(src: &str, dst: &str) -> Result<PathBuf, ProfileError> {
         })?;
     }
 
-    let body = toml_edit::ser::to_string_pretty(&profile).map_err(|e| {
-        ProfileError::Validation {
+    let body =
+        toml_edit::ser::to_string_pretty(&profile).map_err(|e| ProfileError::Validation {
             profile: dst.to_owned(),
             message: format!("could not serialize cloned profile: {e}"),
-        }
-    })?;
+        })?;
 
     let mut f = match fs::OpenOptions::new()
         .write(true)
@@ -103,10 +102,11 @@ pub fn clone_to_user(src: &str, dst: &str) -> Result<PathBuf, ProfileError> {
             });
         }
     };
-    f.write_all(body.as_bytes()).map_err(|source| ProfileError::Io {
-        path: target.clone(),
-        source,
-    })?;
+    f.write_all(body.as_bytes())
+        .map_err(|source| ProfileError::Io {
+            path: target.clone(),
+            source,
+        })?;
     f.sync_all().map_err(|source| ProfileError::Io {
         path: target.clone(),
         source,
@@ -145,10 +145,8 @@ pub fn resolved_source(name: &str) -> Result<ProfileSource, ProfileError> {
 }
 
 fn shipped_profiles_dir() -> PathBuf {
-    let root = std::env::var_os("ZWHISPER_DATA_DIR").map_or_else(
-        || PathBuf::from("/usr/share/zwhisper"),
-        PathBuf::from,
-    );
+    let root = std::env::var_os("ZWHISPER_DATA_DIR")
+        .map_or_else(|| PathBuf::from("/usr/share/zwhisper"), PathBuf::from);
     root.join("profiles")
 }
 
@@ -208,11 +206,7 @@ fn scan_dir(dir: &Path, source: &str, entries: &mut BTreeMap<String, ProfileEntr
 /// destination path so unit tests do not pollute the developer's
 /// real config dir.
 #[cfg(test)]
-pub(crate) fn clone_into_dir(
-    src: &str,
-    dst: &str,
-    target: &Path,
-) -> Result<Profile, ProfileError> {
+pub(crate) fn clone_into_dir(src: &str, dst: &str, target: &Path) -> Result<Profile, ProfileError> {
     paths::validate_name(dst)?;
     let mut profile = super::load(src)?;
     dst.clone_into(&mut profile.name);
@@ -222,12 +216,11 @@ pub(crate) fn clone_into_dir(
             source,
         })?;
     }
-    let body = toml_edit::ser::to_string_pretty(&profile).map_err(|e| {
-        ProfileError::Validation {
+    let body =
+        toml_edit::ser::to_string_pretty(&profile).map_err(|e| ProfileError::Validation {
             profile: dst.to_owned(),
             message: format!("serialize: {e}"),
-        }
-    })?;
+        })?;
     let mut f = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -246,10 +239,11 @@ pub(crate) fn clone_into_dir(
             });
         }
     };
-    f.write_all(body.as_bytes()).map_err(|source| ProfileError::Io {
-        path: target.to_owned(),
-        source,
-    })?;
+    f.write_all(body.as_bytes())
+        .map_err(|source| ProfileError::Io {
+            path: target.to_owned(),
+            source,
+        })?;
     f.sync_all().map_err(|source| ProfileError::Io {
         path: target.to_owned(),
         source,

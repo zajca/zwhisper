@@ -139,10 +139,7 @@ mod tests {
     /// Mirrors `From<RpcError> for zbus::fdo::Error` exactly so unit
     /// tests catch the bug that misled the original M3 review.
     fn typed_method_error(variant: &str, msg: &str) -> zbus::Error {
-        let body = format!(
-            "{}{variant}: {msg}",
-            zwhisper_ipc::ERROR_NAME_PREFIX
-        );
+        let body = format!("{}{variant}: {msg}", zwhisper_ipc::ERROR_NAME_PREFIX);
         synthetic_method_error("org.freedesktop.DBus.Error.Failed", Some(body))
     }
 

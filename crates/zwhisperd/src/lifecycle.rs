@@ -35,7 +35,7 @@
 //! `StateChanged "failed"` instead of `"idle"`. The audio file is
 //! preserved on disk for the user to retry.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tracing::{error, info, warn};
@@ -44,6 +44,7 @@ use zwhisper_core::audio::recorder::Recorder;
 use zwhisper_core::audio::state::{SessionId, StopReason};
 use zwhisper_core::transcribe::{TranscribeOpts, transcribe_file};
 
+use crate::last_session::{self, LastSession};
 use crate::recorder_service::{RecorderInterface, RecorderInterfaceSignals};
 use crate::session::SessionManager;
 
@@ -87,6 +88,7 @@ pub(crate) fn spawn_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
     sessions.register_lifecycle(handle);
 }
 
+#[allow(clippy::too_many_lines)] // C2 wiring inflated past 100; the function is a single coherent state machine and splitting it obscures the signal-ordering invariant.
 async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
     let session_id_str = hooks.session_id.to_string();
     info!(session_id = %session_id_str, "lifecycle task running");
@@ -147,6 +149,13 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
 
             // C9: emit StateChanged "stopping" before RecordingComplete.
             emit_state_changed(&hooks.iface_ref, "stopping", &session_id_str).await;
+
+            // C2 (M4): persist audio-only state-file BEFORE emitting
+            // the signal so a tray that bootstraps inside the
+            // signal-delivery window observes the just-completed
+            // session.
+            persist_last_session_audio_only(&session_id_str, &report.audio_path).await;
+
             emit_recording_complete(
                 &hooks.iface_ref,
                 &session_id_str,
@@ -167,8 +176,7 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                 };
                 match transcribe_file(&report.audio_path, &opts).await {
                     Ok(art) => {
-                        let bytes = std::fs::metadata(&art.txt_path)
-                            .map_or(0, |m| m.len());
+                        let bytes = std::fs::metadata(&art.txt_path).map_or(0, |m| m.len());
                         info!(
                             session_id = %session_id_str,
                             transcript_path = %art.txt_path.display(),
@@ -176,6 +184,18 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                             backend = %hooks.transcribe_backend,
                             "transcript complete (daemon)",
                         );
+
+                        // C2 (M4): persist full state-file BEFORE
+                        // emitting the signal — same race window as
+                        // the audio-only phase above.
+                        persist_last_session_with_transcript(
+                            &session_id_str,
+                            &report.audio_path,
+                            &art.txt_path,
+                            &hooks.transcribe_backend,
+                        )
+                        .await;
+
                         emit_transcript_complete(
                             &hooks.iface_ref,
                             &session_id_str,
@@ -196,8 +216,7 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                         // the wire contract is "fired iff transcript
                         // exists". Surface the failure as terminal
                         // state.
-                        emit_state_changed(&hooks.iface_ref, "failed", &session_id_str)
-                            .await;
+                        emit_state_changed(&hooks.iface_ref, "failed", &session_id_str).await;
                     }
                 }
             } else {
@@ -212,6 +231,7 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
             // The audio path was reserved before recorder start, so
             // the file may or may not exist; emitting the path
             // gives the CLI something to inspect.
+            persist_last_session_audio_only(&session_id_str, &hooks.audio_path).await;
             emit_recording_complete(
                 &hooks.iface_ref,
                 &session_id_str,
@@ -256,6 +276,37 @@ async fn emit_transcript_complete(
         .await
     {
         warn!(error = %e, %session_id, "failed to emit TranscriptComplete");
+    }
+}
+
+async fn persist_last_session_audio_only(session_id: &str, audio_path: &Path) {
+    let state = LastSession::audio_only(session_id, audio_path);
+    persist_last_session(state).await;
+}
+
+async fn persist_last_session_with_transcript(
+    session_id: &str,
+    audio_path: &Path,
+    transcript_path: &Path,
+    backend: &str,
+) {
+    let state = LastSession::with_transcript(session_id, audio_path, transcript_path, backend);
+    persist_last_session(state).await;
+}
+
+/// Run the synchronous file-write on the blocking pool so the
+/// runtime worker keeps dispatching D-Bus calls while the kernel
+/// flushes the write. The C2 ordering is enforced by `await`-ing
+/// here before any signal is emitted.
+async fn persist_last_session(state: LastSession) {
+    match tokio::task::spawn_blocking(move || last_session::write_atomic(&state)).await {
+        Ok(Ok(_path)) => {}
+        Ok(Err(e)) => {
+            warn!(error = %e, "could not persist last-session.json");
+        }
+        Err(join_err) => {
+            warn!(error = %join_err, "spawn_blocking panicked while writing last-session.json");
+        }
     }
 }
 

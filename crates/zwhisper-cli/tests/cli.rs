@@ -63,7 +63,10 @@ fn record_without_profile_returns_exit_2() {
         .assert()
         .failure();
     let code = assert.get_output().status.code().expect("exit code");
-    assert_eq!(code, 2, "expected exit 2 for M3 narrow violation, got {code}");
+    assert_eq!(
+        code, 2,
+        "expected exit 2 for M3 narrow violation, got {code}"
+    );
     let stderr =
         String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
     assert!(

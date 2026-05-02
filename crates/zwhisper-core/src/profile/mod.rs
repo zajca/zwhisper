@@ -139,6 +139,9 @@ mod tests {
         // but exercises the full load path.
         let profile = load("default").unwrap();
         assert_eq!(profile.name, "default");
-        assert_eq!(profile.schema_version, super::loader::CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            profile.schema_version,
+            super::loader::CURRENT_SCHEMA_VERSION
+        );
     }
 }

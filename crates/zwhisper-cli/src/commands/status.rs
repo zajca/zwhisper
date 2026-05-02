@@ -11,8 +11,7 @@ use tracing::debug;
 use zwhisper_ipc::Recorder1Proxy;
 
 use super::{
-    DAEMON_DOWN_HINT, EXIT_IPC_FAILURE, EXIT_OK, EXIT_PROTOCOL_ERROR, build_runtime,
-    is_daemon_down,
+    DAEMON_DOWN_HINT, EXIT_IPC_FAILURE, EXIT_OK, EXIT_PROTOCOL_ERROR, build_runtime, is_daemon_down,
 };
 
 /// Synchronous entry point. Wraps the async dispatcher in a one-shot

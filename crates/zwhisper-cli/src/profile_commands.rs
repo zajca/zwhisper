@@ -21,7 +21,10 @@ pub(crate) fn list() -> color_eyre::Result<()> {
         return Ok(());
     }
 
-    println!("{:<24}  {:<10}  {:<6}  description", "name", "source", "ver");
+    println!(
+        "{:<24}  {:<10}  {:<6}  description",
+        "name", "source", "ver"
+    );
     println!("{}", "-".repeat(72));
     for entry in entries {
         let version_label = entry
@@ -41,7 +44,11 @@ pub(crate) fn list() -> color_eyre::Result<()> {
 /// TOML body (post-migration if migration ran).
 pub(crate) fn show(name: &str) -> color_eyre::Result<()> {
     let source = listing::resolved_source(name).map_err(eyre_from)?;
-    println!("source: {} ({})", source.label(), source_path_label(&source));
+    println!(
+        "source: {} ({})",
+        source.label(),
+        source_path_label(&source)
+    );
 
     let profile = profile::load(name).map_err(eyre_from)?;
     println!("---");

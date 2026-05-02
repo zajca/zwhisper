@@ -66,9 +66,7 @@ fn profile_clone_creates_user_override_and_refuses_overwrite() {
         .success()
         .stdout(predicate::str::contains("cloned meeting"));
 
-    let target = home
-        .path()
-        .join("zwhisper/profiles/custom-meeting.toml");
+    let target = home.path().join("zwhisper/profiles/custom-meeting.toml");
     assert!(target.is_file(), "{} not created", target.display());
     let body = std::fs::read_to_string(&target).unwrap();
     assert!(body.contains("name = \"custom-meeting\""), "{body}");
@@ -122,7 +120,10 @@ fn profile_migrate_no_op_at_current_version() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     let any_backup = entries.iter().any(|n| n.contains(".bak."));
-    assert!(!any_backup, "migrate at current version must not back up: {entries:?}");
+    assert!(
+        !any_backup,
+        "migrate at current version must not back up: {entries:?}"
+    );
 }
 
 #[test]
@@ -159,8 +160,7 @@ fn record_with_unknown_profile_surfaces_typed_error() {
         .failure();
     let code = assert.get_output().status.code().expect("exit code");
     assert_eq!(code, 2, "expected exit 2, got {code}");
-    let stderr =
-        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     assert!(
         stderr.contains("not found") || stderr.contains("daemon not running"),
         "expected typed not-found or daemon-down hint, got:\n{stderr}"
@@ -171,13 +171,7 @@ fn record_with_unknown_profile_surfaces_typed_error() {
 fn record_profile_and_output_are_mutually_exclusive() {
     let home = TempDir::new().unwrap();
     bin(home.path())
-        .args([
-            "record",
-            "--profile",
-            "meeting",
-            "--output",
-            "/tmp/x.flac",
-        ])
+        .args(["record", "--profile", "meeting", "--output", "/tmp/x.flac"])
         .assert()
         .failure();
 }
@@ -210,7 +204,10 @@ fn migration_chain_writes_backup_then_loads() {
     assert!(
         backups.is_empty(),
         "v1 -> v1 must not back up: {:?}",
-        backups.iter().map(std::fs::DirEntry::file_name).collect::<Vec<_>>()
+        backups
+            .iter()
+            .map(std::fs::DirEntry::file_name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -282,9 +279,7 @@ fn record_with_meeting_profile_runs_end_to_end() {
         return;
     }
     if !whisper_cli_present() {
-        eprintln!(
-            "[SKIP] record_with_meeting_profile_runs_end_to_end: no whisper-cli on PATH"
-        );
+        eprintln!("[SKIP] record_with_meeting_profile_runs_end_to_end: no whisper-cli on PATH");
         return;
     }
     let Some(model) = first_installed_model() else {
@@ -387,12 +382,7 @@ fn pipewire_socket_present() -> bool {
 fn daemon_alive() -> bool {
     use std::process::Command;
     let Ok(output) = Command::new("busctl")
-        .args([
-            "--user",
-            "list",
-            "--no-pager",
-            "--no-legend",
-        ])
+        .args(["--user", "list", "--no-pager", "--no-legend"])
         .output()
     else {
         return false;
@@ -421,7 +411,10 @@ fn first_installed_model() -> Option<String> {
     for ent in entries.flatten() {
         let name = ent.file_name();
         let name = name.to_string_lossy();
-        if let Some(stripped) = name.strip_prefix("ggml-").and_then(|s| s.strip_suffix(".bin")) {
+        if let Some(stripped) = name
+            .strip_prefix("ggml-")
+            .and_then(|s| s.strip_suffix(".bin"))
+        {
             return Some(stripped.to_owned());
         }
     }

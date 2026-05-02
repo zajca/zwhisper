@@ -28,10 +28,7 @@ pub enum TranscribeError {
     ModelNotFound { name: String, expected: PathBuf },
 
     #[error("invalid model name `{name}`: {reason}")]
-    InvalidModelName {
-        name: String,
-        reason: &'static str,
-    },
+    InvalidModelName { name: String, reason: &'static str },
 
     #[error("failed to open audio file {}: {source}", path.display())]
     InputAudio {

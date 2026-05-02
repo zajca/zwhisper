@@ -134,9 +134,8 @@ impl RecorderInterface {
             }
             .into());
         }
-        let profile = profile::load(profile_name).map_err(|e| {
-            map_profile_error(profile_name, e)
-        })?;
+        let profile =
+            profile::load(profile_name).map_err(|e| map_profile_error(profile_name, e))?;
         if let Err(e) = profile.validate() {
             return Err(RpcError::ProfileLoadFailed {
                 name: profile_name.to_owned(),
@@ -180,9 +179,7 @@ impl RecorderInterface {
         // signal pairs with the StateChanged "failed" the lifecycle
         // emits on Recorder::start error.
         let session_id_str = session_id.to_string();
-        if let Err(e) =
-            Self::state_changed(&emitter, "starting", &session_id_str).await
-        {
+        if let Err(e) = Self::state_changed(&emitter, "starting", &session_id_str).await {
             warn!(error = %e, "failed to emit StateChanged starting");
         }
 
@@ -198,9 +195,7 @@ impl RecorderInterface {
             Err(e) => {
                 error!(error = %e, "Recorder::start failed");
                 self.sessions.release();
-                if let Err(em) =
-                    Self::state_changed(&emitter, "failed", &session_id_str).await
-                {
+                if let Err(em) = Self::state_changed(&emitter, "failed", &session_id_str).await {
                     warn!(error = %em, "failed to emit StateChanged failed");
                 }
                 return Err(RpcError::RecordingFailed {
@@ -211,9 +206,7 @@ impl RecorderInterface {
         };
 
         // Emit StateChanged "recording" after the pipeline is up.
-        if let Err(e) =
-            Self::state_changed(&emitter, "recording", &session_id_str).await
-        {
+        if let Err(e) = Self::state_changed(&emitter, "recording", &session_id_str).await {
             warn!(error = %e, "failed to emit StateChanged recording");
         }
 
@@ -334,7 +327,9 @@ fn map_profile_error(name: &str, err: profile::ProfileError) -> zbus::fdo::Error
             name: name.to_owned(),
         }
         .into(),
-        profile::ProfileError::InvalidName { name: n } => RpcError::ProfileNotFound { name: n }.into(),
+        profile::ProfileError::InvalidName { name: n } => {
+            RpcError::ProfileNotFound { name: n }.into()
+        }
         other => RpcError::ProfileLoadFailed {
             name: name.to_owned(),
             reason: other.to_string(),
@@ -342,4 +337,3 @@ fn map_profile_error(name: &str, err: profile::ProfileError) -> zbus::fdo::Error
         .into(),
     }
 }
-

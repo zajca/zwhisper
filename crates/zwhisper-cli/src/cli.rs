@@ -77,14 +77,22 @@ pub(crate) struct RecordArgs {
     /// `--transcribe` is set; M2 dropped the previously-hardcoded
     /// `small` default to honour the no-hidden-defaults rule
     /// (CLAUDE.md). Use `--profile default` for the previous behaviour.
-    #[arg(long, requires = "transcribe", required_if_eq("transcribe", "whisper-cpp"))]
+    #[arg(
+        long,
+        requires = "transcribe",
+        required_if_eq("transcribe", "whisper-cpp")
+    )]
     pub(crate) model: Option<String>,
 
     /// Language: ISO 639-1 code (e.g. `cs`, `en`) or `auto` for
     /// autodetect. Required when `--transcribe` is set; M2 dropped the
     /// previously-hardcoded `auto` default for the same reason as
     /// `--model`.
-    #[arg(long, requires = "transcribe", required_if_eq("transcribe", "whisper-cpp"))]
+    #[arg(
+        long,
+        requires = "transcribe",
+        required_if_eq("transcribe", "whisper-cpp")
+    )]
     pub(crate) lang: Option<String>,
 }
 
@@ -212,7 +220,10 @@ mod tests {
         let err = resolve_duration(240 * 60 + 1, 240).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("exceeds"), "unexpected message: {msg}");
-        assert!(msg.contains("max-duration-minutes"), "unexpected message: {msg}");
+        assert!(
+            msg.contains("max-duration-minutes"),
+            "unexpected message: {msg}"
+        );
     }
 
     #[test]
@@ -257,8 +268,7 @@ mod tests {
             "whisper-cpp",
         ])
         .expect_err("clap must reject --profile + --transcribe");
-        assert!(err.to_string().contains("conflict")
-            || err.to_string().contains("--transcribe"));
+        assert!(err.to_string().contains("conflict") || err.to_string().contains("--transcribe"));
     }
 
     #[test]
@@ -305,7 +315,10 @@ mod tests {
         .expect("parse should succeed");
         match cli.command {
             TestCommand::Record(args) => {
-                assert_eq!(args.output.as_deref().unwrap().to_str(), Some("/tmp/x.flac"));
+                assert_eq!(
+                    args.output.as_deref().unwrap().to_str(),
+                    Some("/tmp/x.flac")
+                );
                 assert_eq!(args.transcribe.as_deref(), Some("whisper-cpp"));
                 assert_eq!(args.model.as_deref(), Some("small"));
                 assert_eq!(args.lang.as_deref(), Some("en"));

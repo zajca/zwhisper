@@ -86,9 +86,7 @@ pub struct Transcription {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutputDest {
-    File {
-        path: String,
-    },
+    File { path: String },
     Clipboard,
     Notification,
 }
@@ -185,7 +183,9 @@ impl Profile {
         }
 
         if matches!(self.sources.mode, Mode::StereoSplit) {
-            return Err(ProfileError::UnsupportedMode { mode: self.sources.mode });
+            return Err(ProfileError::UnsupportedMode {
+                mode: self.sources.mode,
+            });
         }
 
         if !matches!(self.transcription.backend, Backend::WhisperCpp) {
@@ -219,9 +219,7 @@ impl Profile {
     }
 
     fn expand_template(&self, template: &str) -> PathBuf {
-        let timestamp = chrono::Local::now()
-            .format("%Y-%m-%dT%H-%M-%S")
-            .to_string();
+        let timestamp = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         let with_tokens = template
             .replace("{timestamp}", &timestamp)
             .replace("{profile}", &self.name);
@@ -238,9 +236,9 @@ fn preflight_path_template(template: &str) -> Result<(), String> {
     let mut rest = template;
     while let Some(start) = rest.find('{') {
         let after = &rest[start + 1..];
-        let end = after.find('}').ok_or_else(|| {
-            format!("unterminated {{ in path template {template:?}")
-        })?;
+        let end = after
+            .find('}')
+            .ok_or_else(|| format!("unterminated {{ in path template {template:?}"))?;
         let token = &after[..end];
         if !matches!(token, "timestamp" | "profile") {
             return Err(format!(
@@ -261,9 +259,9 @@ fn is_valid_language(s: &str) -> bool {
     let parts: Vec<&str> = s.split('-').collect();
     let lang_ok = matches!(parts.first(), Some(p) if (2..=3).contains(&p.len())
         && p.chars().all(|c| c.is_ascii_lowercase()));
-    let region_ok = parts.get(1).is_none_or(|r| {
-        r.len() == 2 && r.chars().all(|c| c.is_ascii_uppercase())
-    });
+    let region_ok = parts
+        .get(1)
+        .is_none_or(|r| r.len() == 2 && r.chars().all(|c| c.is_ascii_uppercase()));
     lang_ok && region_ok && parts.len() <= 2
 }
 
@@ -345,7 +343,12 @@ mod tests {
         let mut p = ok_profile();
         p.sources.mode = Mode::StereoSplit;
         let err = p.validate().unwrap_err();
-        assert!(matches!(err, ProfileError::UnsupportedMode { mode: Mode::StereoSplit }));
+        assert!(matches!(
+            err,
+            ProfileError::UnsupportedMode {
+                mode: Mode::StereoSplit
+            }
+        ));
     }
 
     #[test]
@@ -359,7 +362,9 @@ mod tests {
     #[test]
     fn validate_rejects_unknown_path_token() {
         let mut p = ok_profile();
-        p.outputs = vec![OutputDest::File { path: "/tmp/{wat}".into() }];
+        p.outputs = vec![OutputDest::File {
+            path: "/tmp/{wat}".into(),
+        }];
         let err = p.validate().unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("{wat}"), "got: {msg}");
@@ -368,7 +373,9 @@ mod tests {
     #[test]
     fn validate_rejects_unterminated_path_token() {
         let mut p = ok_profile();
-        p.outputs = vec![OutputDest::File { path: "/tmp/{nope".into() }];
+        p.outputs = vec![OutputDest::File {
+            path: "/tmp/{nope".into(),
+        }];
         let err = p.validate().unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unterminated"), "got: {msg}");

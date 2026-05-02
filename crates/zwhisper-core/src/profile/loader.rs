@@ -26,12 +26,10 @@ pub fn load_from_path(path: &Path) -> Result<Profile, ProfileError> {
         source,
     })?;
 
-    let mut doc: DocumentMut = body
-        .parse()
-        .map_err(|source| ProfileError::TomlParse {
-            path: path.to_owned(),
-            source,
-        })?;
+    let mut doc: DocumentMut = body.parse().map_err(|source| ProfileError::TomlParse {
+        path: path.to_owned(),
+        source,
+    })?;
 
     let found = read_schema_version(&doc, path)?;
 
@@ -63,12 +61,10 @@ pub fn load_from_path(path: &Path) -> Result<Profile, ProfileError> {
 pub fn load_from_str(body: &str, identity: &str) -> Result<Profile, ProfileError> {
     let synthetic_path = PathBuf::from(format!("<embedded:{identity}>"));
 
-    let doc: DocumentMut = body
-        .parse()
-        .map_err(|source| ProfileError::TomlParse {
-            path: synthetic_path.clone(),
-            source,
-        })?;
+    let doc: DocumentMut = body.parse().map_err(|source| ProfileError::TomlParse {
+        path: synthetic_path.clone(),
+        source,
+    })?;
 
     let found = read_schema_version(&doc, &synthetic_path)?;
     if found != CURRENT_SCHEMA_VERSION {
@@ -110,11 +106,12 @@ fn read_schema_version(doc: &DocumentMut, path: &Path) -> Result<u32, ProfileErr
 }
 
 fn deserialize_validated(doc: &DocumentMut, path: &Path) -> Result<Profile, ProfileError> {
-    let profile: Profile =
-        toml_edit::de::from_document(doc.clone()).map_err(|source| ProfileError::TomlDeserialize {
+    let profile: Profile = toml_edit::de::from_document(doc.clone()).map_err(|source| {
+        ProfileError::TomlDeserialize {
             path: path.to_owned(),
             source,
-        })?;
+        }
+    })?;
     profile.validate()?;
     Ok(profile)
 }

@@ -16,10 +16,7 @@ pub const SUPPORTED_BACKENDS_M2: &[&str] = &["whisper-cpp"];
 #[derive(Debug, Error)]
 pub enum ProfileError {
     #[error("profile {name:?} not found (searched: {searched:?})")]
-    NotFound {
-        name: String,
-        searched: Vec<String>,
-    },
+    NotFound { name: String, searched: Vec<String> },
 
     #[error("invalid profile name {name:?}: only [A-Za-z0-9._-]+ allowed")]
     InvalidName { name: String },
@@ -38,9 +35,7 @@ pub enum ProfileError {
         source: toml_edit::TomlError,
     },
 
-    #[error(
-        "could not deserialize profile in {path}: {source}"
-    )]
+    #[error("could not deserialize profile in {path}: {source}")]
     TomlDeserialize {
         path: PathBuf,
         #[source]
@@ -97,9 +92,7 @@ pub enum ProfileError {
         supported: &'static [&'static str],
     },
 
-    #[error(
-        "refusing to overwrite {path}; remove it manually or pick a different name"
-    )]
+    #[error("refusing to overwrite {path}; remove it manually or pick a different name")]
     OverwriteRefused { path: PathBuf },
 }
 

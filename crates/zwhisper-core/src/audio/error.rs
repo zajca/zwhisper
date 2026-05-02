@@ -49,14 +49,9 @@ pub enum RecordingError {
 #[derive(Debug, Error)]
 pub enum DeviceError {
     #[error("`{tool}` invocation failed: {message}")]
-    CommandFailed {
-        tool: &'static str,
-        message: String,
-    },
+    CommandFailed { tool: &'static str, message: String },
 
-    #[error(
-        "`wpctl inspect {alias}` did not contain a `node.name` line — output:\n{output}"
-    )]
+    #[error("`wpctl inspect {alias}` did not contain a `node.name` line — output:\n{output}")]
     NodeNameMissing { alias: String, output: String },
 
     #[error("invalid device argument `{value}`: {reason}")]

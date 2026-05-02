@@ -115,7 +115,8 @@ enum RaceOutcome {
 #[derive(Debug)]
 pub struct Recorder {
     pipeline: gst::Pipeline,
-    #[allow(dead_code)] // kept for forensics/D-Bus probes once watch-channel becomes the canonical signal source.
+    #[allow(dead_code)]
+    // kept for forensics/D-Bus probes once watch-channel becomes the canonical signal source.
     bus: gst::Bus,
     bus_thread: Option<JoinHandle<()>>,
     stop_tx: watch::Sender<StopReason>,
@@ -318,23 +319,19 @@ impl Recorder {
             }
         }
 
-        let null_result = self
-            .pipeline
-            .set_state(gst::State::Null)
-            .map_err(|e| RecordingError::PipelineFailed {
-                stage: "set_state_null".into(),
-                source: Box::new(e),
-            });
+        let null_result =
+            self.pipeline
+                .set_state(gst::State::Null)
+                .map_err(|e| RecordingError::PipelineFailed {
+                    stage: "set_state_null".into(),
+                    source: Box::new(e),
+                });
 
         null_result?;
 
         let final_reason = self.stop_rx_anchor.borrow().clone();
         let duration = self.started_at.elapsed();
-        let warnings = self
-            .warnings
-            .lock()
-            .expect("poisoned warnings vec")
-            .clone();
+        let warnings = self.warnings.lock().expect("poisoned warnings vec").clone();
         let underruns = self.underruns.load(Ordering::Relaxed);
 
         match final_reason {
@@ -373,13 +370,10 @@ impl Recorder {
                 // wall-clock duration (DoD #3). Without this gate,
                 // a structurally valid header claiming 0 samples on
                 // a multi-minute recording would still return Ok.
-                if let Err(e) = verify_samples_match_duration(
-                    samples_written,
-                    duration,
-                    &self.output_path,
-                ) {
-                    *self.state.lock().expect("poisoned recorder state") =
-                        RecorderState::Failed;
+                if let Err(e) =
+                    verify_samples_match_duration(samples_written, duration, &self.output_path)
+                {
+                    *self.state.lock().expect("poisoned recorder state") = RecorderState::Failed;
                     return Err(e);
                 }
                 *self.state.lock().expect("poisoned recorder state") = RecorderState::Idle;
@@ -645,7 +639,6 @@ fn wait_for_stop_signal(stop_rx: &mut watch::Receiver<StopReason>) -> bool {
     }
 }
 
-
 /// Convenience wrapper used by the M0 CLI: starts a `Recorder`, races
 /// Ctrl+C against `--duration`, then runs the EOS finalisation. M3
 /// will call `Recorder::start`/`stop` directly from the D-Bus handler
@@ -774,9 +767,7 @@ mod tests {
 
     #[test]
     fn stop_reason_device_lost_is_an_error() {
-        let r = StopReason::DeviceLost {
-            node: "x".into(),
-        };
+        let r = StopReason::DeviceLost { node: "x".into() };
         assert!(r.is_error());
     }
 
@@ -810,8 +801,10 @@ mod tests {
         let path = dir.path().join("not-flac.bin");
         std::fs::write(&path, b"definitely not a flac stream").unwrap();
         let err = read_flac_total_samples(&path).unwrap_err();
-        assert!(matches!(err, RecordingError::EncoderFailed(_)),
-            "expected EncoderFailed, got {err:?}");
+        assert!(
+            matches!(err, RecordingError::EncoderFailed(_)),
+            "expected EncoderFailed, got {err:?}"
+        );
     }
 
     #[test]
@@ -819,8 +812,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.flac");
         let err = read_flac_total_samples(&path).unwrap_err();
-        assert!(matches!(err, RecordingError::EncoderFailed(_)),
-            "expected EncoderFailed, got {err:?}");
+        assert!(
+            matches!(err, RecordingError::EncoderFailed(_)),
+            "expected EncoderFailed, got {err:?}"
+        );
     }
 
     #[test]
@@ -830,8 +825,10 @@ mod tests {
         // Has the magic but is shorter than 42 bytes.
         std::fs::write(&path, b"fLaC\x00\x00\x00\x22").unwrap();
         let err = read_flac_total_samples(&path).unwrap_err();
-        assert!(matches!(err, RecordingError::EncoderFailed(_)),
-            "expected EncoderFailed, got {err:?}");
+        assert!(
+            matches!(err, RecordingError::EncoderFailed(_)),
+            "expected EncoderFailed, got {err:?}"
+        );
     }
 
     #[test]
@@ -878,8 +875,8 @@ mod tests {
     fn verify_samples_match_duration_rejects_overshoot() {
         let path = std::path::Path::new("/tmp/synthetic.flac");
         // 60 s expected = 960 000; +50 000 overshoots tolerance.
-        let err = verify_samples_match_duration(1_010_000, Duration::from_secs(60), path)
-            .unwrap_err();
+        let err =
+            verify_samples_match_duration(1_010_000, Duration::from_secs(60), path).unwrap_err();
         assert!(matches!(err, RecordingError::EncoderFailed(_)));
     }
 

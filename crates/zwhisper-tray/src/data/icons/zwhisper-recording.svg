@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  zwhisper tray icon: recording.
+  Placeholder shipped with the M4 milestone. Final artwork lands in M8
+  (packaging). 24x24 viewbox; the red dot is intentional so it reads
+  as "recording" without theme-tinting.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <circle cx="12" cy="12" r="6" fill="#d92020"/>
+</svg>

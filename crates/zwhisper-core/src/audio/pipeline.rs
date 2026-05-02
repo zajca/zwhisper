@@ -20,7 +20,10 @@ pub(crate) fn build(
     output_path: &Path,
 ) -> Result<(gst::Pipeline, BuiltOutput), RecordingError> {
     let owned = precreate_output(output_path)?;
-    let token = BuiltOutput { path: output_path.to_owned(), owned };
+    let token = BuiltOutput {
+        path: output_path.to_owned(),
+        owned,
+    };
 
     match build_inner(selection, output_path) {
         Ok(pipeline) => Ok((pipeline, token)),
@@ -165,10 +168,7 @@ mod tests {
 
     #[test]
     fn escape_handles_quotes_and_backslash() {
-        assert_eq!(
-            escape_for_parse_launch(r#"a"b\c"#),
-            r#"a\"b\\c"#
-        );
+        assert_eq!(escape_for_parse_launch(r#"a"b\c"#), r#"a\"b\\c"#);
     }
 
     #[test]
@@ -178,7 +178,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("phase3.flac");
         let owned = precreate_output(&path).unwrap();
-        assert!(owned, "precreate must report ownership for the file it just created");
+        assert!(
+            owned,
+            "precreate must report ownership for the file it just created"
+        );
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }

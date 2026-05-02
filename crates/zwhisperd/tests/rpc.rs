@@ -108,8 +108,7 @@ async fn bus_name_is_owned_after_serve_at() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn get_status_returns_idle_on_fresh_daemon() {
-    let Some(fixture) = try_fixture("get_status_returns_idle_on_fresh_daemon").await
-    else {
+    let Some(fixture) = try_fixture("get_status_returns_idle_on_fresh_daemon").await else {
         return;
     };
     let proxy = fixture.proxy_recorder().await.expect("Recorder1 proxy");
@@ -125,14 +124,10 @@ async fn get_status_returns_idle_on_fresh_daemon() {
 #[tokio::test(flavor = "current_thread")]
 async fn start_recording_emits_state_changed_starting() {
     if !pipewire_socket_present() {
-        eprintln!(
-            "[SKIP] start_recording_emits_state_changed_starting: PipeWire unavailable",
-        );
+        eprintln!("[SKIP] start_recording_emits_state_changed_starting: PipeWire unavailable");
         return;
     }
-    let Some(fixture) =
-        try_fixture("start_recording_emits_state_changed_starting").await
-    else {
+    let Some(fixture) = try_fixture("start_recording_emits_state_changed_starting").await else {
         return;
     };
     let proxy = fixture.proxy_recorder().await.expect("Recorder1 proxy");
@@ -184,13 +179,10 @@ async fn start_recording_emits_state_changed_starting() {
 #[tokio::test(flavor = "current_thread")]
 async fn concurrent_start_recording_returns_session_in_use() {
     if !pipewire_socket_present() {
-        eprintln!(
-            "[SKIP] concurrent_start_recording_returns_session_in_use: PipeWire unavailable",
-        );
+        eprintln!("[SKIP] concurrent_start_recording_returns_session_in_use: PipeWire unavailable");
         return;
     }
-    let Some(fixture) =
-        try_fixture("concurrent_start_recording_returns_session_in_use").await
+    let Some(fixture) = try_fixture("concurrent_start_recording_returns_session_in_use").await
     else {
         return;
     };
@@ -246,8 +238,7 @@ async fn concurrent_start_recording_returns_session_in_use() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn stop_recording_unknown_id_returns_session_unknown() {
-    let Some(fixture) =
-        try_fixture("stop_recording_unknown_id_returns_session_unknown").await
+    let Some(fixture) = try_fixture("stop_recording_unknown_id_returns_session_unknown").await
     else {
         return;
     };
@@ -265,8 +256,7 @@ async fn stop_recording_unknown_id_returns_session_unknown() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn profiles_list_matches_local_list_entries() {
-    let Some(fixture) = try_fixture("profiles_list_matches_local_list_entries").await
-    else {
+    let Some(fixture) = try_fixture("profiles_list_matches_local_list_entries").await else {
         return;
     };
     let proxy = fixture.proxy_profiles().await.expect("Profiles1 proxy");
@@ -286,8 +276,14 @@ async fn profiles_list_matches_local_list_entries() {
     // names ("default" and "meeting") are present and every entry
     // has schema_version == CURRENT_SCHEMA_VERSION (C12).
     let names: Vec<&str> = wire.iter().map(|e| e.name.as_str()).collect();
-    assert!(names.contains(&"default"), "wire list must include `default`; got {names:?}");
-    assert!(names.contains(&"meeting"), "wire list must include `meeting`; got {names:?}");
+    assert!(
+        names.contains(&"default"),
+        "wire list must include `default`; got {names:?}"
+    );
+    assert!(
+        names.contains(&"meeting"),
+        "wire list must include `meeting`; got {names:?}"
+    );
     for entry in &wire {
         assert_eq!(
             entry.schema_version,
@@ -302,8 +298,7 @@ async fn profiles_list_matches_local_list_entries() {
 #[tokio::test(flavor = "current_thread")]
 async fn profiles_set_active_unknown_name_returns_profile_not_found() {
     let Some(fixture) =
-        try_fixture("profiles_set_active_unknown_name_returns_profile_not_found")
-            .await
+        try_fixture("profiles_set_active_unknown_name_returns_profile_not_found").await
     else {
         return;
     };
@@ -321,8 +316,7 @@ async fn profiles_set_active_unknown_name_returns_profile_not_found() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn profiles_set_active_empty_returns_profile_not_found() {
-    let Some(fixture) =
-        try_fixture("profiles_set_active_empty_returns_profile_not_found").await
+    let Some(fixture) = try_fixture("profiles_set_active_empty_returns_profile_not_found").await
     else {
         return;
     };
@@ -360,8 +354,7 @@ async fn recording_complete_arrives_before_state_changed_idle() {
         );
         return;
     }
-    let Some(fixture) =
-        try_fixture("recording_complete_arrives_before_state_changed_idle").await
+    let Some(fixture) = try_fixture("recording_complete_arrives_before_state_changed_idle").await
     else {
         return;
     };
@@ -425,8 +418,7 @@ async fn recording_complete_arrives_before_state_changed_idle() {
              saw_recording_complete={saw_recording_complete}, \
              saw_idle={saw_idle}",
         );
-        let remaining = outer_deadline
-            .saturating_duration_since(tokio::time::Instant::now());
+        let remaining = outer_deadline.saturating_duration_since(tokio::time::Instant::now());
         tokio::select! {
             biased;
             sig = rec_complete_stream.next() => {

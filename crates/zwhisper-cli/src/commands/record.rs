@@ -64,8 +64,7 @@ use super::{
 /// M3 narrow message — surfaced as exit 2 when the bare-flag form is
 /// used at runtime. The clap surface still parses the flags so the
 /// existing tests stay green; the runtime gate lives here.
-pub(crate) const M3_NARROW_HINT: &str =
-    "M3 narrowed `record` to require --profile. Use `--profile default` for the M0/M1 invocation shape.";
+pub(crate) const M3_NARROW_HINT: &str = "M3 narrowed `record` to require --profile. Use `--profile default` for the M0/M1 invocation shape.";
 
 pub(crate) fn run(args: &RecordArgs) -> color_eyre::Result<()> {
     let Some(profile_name) = args.profile.clone() else {
@@ -166,7 +165,10 @@ async fn run_async(profile_name: &str) -> i32 {
             false
         }
     };
-    info!(auto_transcribe, "profile loaded for transcript-aware printing");
+    info!(
+        auto_transcribe,
+        "profile loaded for transcript-aware printing"
+    );
 
     // 6. Lifecycle loop.
     let mut audio_path: Option<String> = None;
@@ -347,7 +349,10 @@ fn print_artifacts(audio: Option<&String>, transcript: Option<&TranscriptInfo>, 
     }
     if auto {
         if let Some(t) = transcript {
-            println!("transcript: {} ({} bytes, backend={})", t.path, t.bytes, t.backend);
+            println!(
+                "transcript: {} ({} bytes, backend={})",
+                t.path, t.bytes, t.backend
+            );
         } else {
             // auto = true but no TranscriptComplete arrived — daemon
             // emitted "failed" before the transcribe step finished.
@@ -388,8 +393,17 @@ mod tests {
         let pos_start = source
             .find("proxy.start_recording(profile_name)")
             .expect("call start_recording");
-        assert!(pos_state < pos_start, "state_changed must subscribe BEFORE StartRecording");
-        assert!(pos_rec < pos_start, "recording_complete must subscribe BEFORE StartRecording");
-        assert!(pos_tr < pos_start, "transcript_complete must subscribe BEFORE StartRecording");
+        assert!(
+            pos_state < pos_start,
+            "state_changed must subscribe BEFORE StartRecording"
+        );
+        assert!(
+            pos_rec < pos_start,
+            "recording_complete must subscribe BEFORE StartRecording"
+        );
+        assert!(
+            pos_tr < pos_start,
+            "transcript_complete must subscribe BEFORE StartRecording"
+        );
     }
 }

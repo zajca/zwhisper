@@ -217,14 +217,17 @@ mod tests {
 
     #[test]
     fn env_var_set_but_missing_returns_unavailable() {
-        let l = MockLocator::default()
-            .with_env("ZWHISPER_WHISPER_CLI", "/does/not/exist/whisper-cli");
+        let l =
+            MockLocator::default().with_env("ZWHISPER_WHISPER_CLI", "/does/not/exist/whisper-cli");
 
         let err = locate_with(&l).unwrap_err();
         let TranscribeError::BackendUnavailable { searched } = &err else {
             panic!("expected BackendUnavailable, got {err:?}");
         };
-        assert_eq!(searched, &vec![PathBuf::from("/does/not/exist/whisper-cli")]);
+        assert_eq!(
+            searched,
+            &vec![PathBuf::from("/does/not/exist/whisper-cli")]
+        );
     }
 
     #[test]

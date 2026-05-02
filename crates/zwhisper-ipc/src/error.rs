@@ -256,9 +256,8 @@ mod tests {
         // A future RpcError variant we do not yet recognise should
         // surface as `None` rather than a wrong typed name. This
         // protects the CLI exit-code mapper from silent drift.
-        let fdo = zbus::fdo::Error::Failed(format!(
-            "{ERROR_NAME_PREFIX}WhoKnowsWhat: some message",
-        ));
+        let fdo =
+            zbus::fdo::Error::Failed(format!("{ERROR_NAME_PREFIX}WhoKnowsWhat: some message"));
         assert_eq!(parse_error_name(&fdo), None);
     }
 

@@ -233,9 +233,7 @@ mod tests {
         let structure = gst::Structure::builder("node-removed")
             .field("node-name", "alsa_input.usb-Foo-00.analog-stereo")
             .build();
-        let msg = gst::message::Element::builder(structure)
-            .src(&bin)
-            .build();
+        let msg = gst::message::Element::builder(structure).src(&bin).build();
         match classify(&msg) {
             Classification::Stop(StopReason::DeviceLost { node }) => {
                 assert_eq!(node, "alsa_input.usb-Foo-00.analog-stereo");
@@ -249,9 +247,7 @@ mod tests {
         ensure_init();
         let bin = gst::Bin::builder().name("test-bin").build();
         let structure = gst::Structure::builder("some-other").build();
-        let msg = gst::message::Element::builder(structure)
-            .src(&bin)
-            .build();
+        let msg = gst::message::Element::builder(structure).src(&bin).build();
         match classify(&msg) {
             Classification::Ignore => {}
             other => panic!("unexpected classification: {other:?}"),

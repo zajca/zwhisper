@@ -85,10 +85,7 @@ mod tests {
             "...",
             "",
         ] {
-            assert!(
-                validate_name(bad).is_err(),
-                "expected reject for {bad:?}"
-            );
+            assert!(validate_name(bad).is_err(), "expected reject for {bad:?}");
         }
     }
 

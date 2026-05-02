@@ -40,10 +40,7 @@ fn write_backup(path: &Path, body: &str) -> Result<PathBuf, ProfileError> {
     let pid = std::process::id();
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let backup = path.with_extension(match path.extension() {
-        Some(ext) => format!(
-            "{}.bak.{unix_nanos}_{pid}_{seq}",
-            ext.to_string_lossy()
-        ),
+        Some(ext) => format!("{}.bak.{unix_nanos}_{pid}_{seq}", ext.to_string_lossy()),
         None => format!("bak.{unix_nanos}_{pid}_{seq}"),
     });
 
@@ -280,7 +277,10 @@ path = "~/x/{profile}/{timestamp}.flac"
 
         // Empty registry — chain cannot be walked.
         let err = run_in_place_with(&path, &body, &mut doc, 0, 1, &[]).unwrap_err();
-        assert!(matches!(err, ProfileError::MigrationFailed { from: 0, to: 1, .. }));
+        assert!(matches!(
+            err,
+            ProfileError::MigrationFailed { from: 0, to: 1, .. }
+        ));
     }
 
     #[test]
@@ -291,10 +291,11 @@ path = "~/x/{profile}/{timestamp}.flac"
         let mut doc: DocumentMut = body.parse().unwrap();
 
         let registry: &[(u32, u32, MigrationFn)] = &[(0, 1, always_fail_v0_to_v1)];
-        let err =
-            run_in_place_with(&path, &body, &mut doc, 0, 1, registry).unwrap_err();
+        let err = run_in_place_with(&path, &body, &mut doc, 0, 1, registry).unwrap_err();
         match err {
-            ProfileError::MigrationFailed { from, to, source, .. } => {
+            ProfileError::MigrationFailed {
+                from, to, source, ..
+            } => {
                 assert_eq!(from, 0);
                 assert_eq!(to, 1);
                 assert!(source.to_string().contains("intentional test failure"));

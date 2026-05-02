@@ -119,10 +119,7 @@ impl SessionManager {
         session_id: SessionId,
         profile_name: &str,
     ) -> Result<(), RpcError> {
-        let mut slot = self
-            .inner
-            .lock()
-            .expect("session manager mutex poisoned");
+        let mut slot = self.inner.lock().expect("session manager mutex poisoned");
         if let Some(existing) = slot.as_ref() {
             return Err(RpcError::SessionInUse {
                 existing: existing.session_id.to_string(),
@@ -144,10 +141,7 @@ impl SessionManager {
     /// only realistic caller is the lifecycle task itself, which
     /// just reserved the slot).
     pub(crate) fn install_stop_hook(&self, hook: StopHook) {
-        let mut slot = self
-            .inner
-            .lock()
-            .expect("session manager mutex poisoned");
+        let mut slot = self.inner.lock().expect("session manager mutex poisoned");
         if let Some(session) = slot.as_mut() {
             session.stop_hook = Some(hook);
         }
@@ -163,10 +157,7 @@ impl SessionManager {
         // happens after we drop the mutex; the hook itself runs the
         // recorder's `request_stop` which only touches a channel.
         let hook = {
-            let slot = self
-                .inner
-                .lock()
-                .expect("session manager mutex poisoned");
+            let slot = self.inner.lock().expect("session manager mutex poisoned");
             slot.as_ref().and_then(|s| s.stop_hook.clone())
         };
         match hook {
@@ -193,10 +184,7 @@ impl SessionManager {
     /// helper rolls both checks under the same mutex.
     pub(crate) fn try_stop(&self, id: &SessionId, reason: StopReason) -> StopAttempt {
         let hook = {
-            let slot = self
-                .inner
-                .lock()
-                .expect("session manager mutex poisoned");
+            let slot = self.inner.lock().expect("session manager mutex poisoned");
             match slot.as_ref() {
                 Some(active) if active.session_id == *id => match active.stop_hook.clone() {
                     Some(hook) => Some(hook),
@@ -216,10 +204,7 @@ impl SessionManager {
     /// from both the success and failure branches without
     /// double-bookkeeping.
     pub(crate) fn release(&self) {
-        let mut slot = self
-            .inner
-            .lock()
-            .expect("session manager mutex poisoned");
+        let mut slot = self.inner.lock().expect("session manager mutex poisoned");
         *slot = None;
     }
 
@@ -227,10 +212,7 @@ impl SessionManager {
     /// lock is released before the caller does any signal emission
     /// or other awaitable work.
     pub(crate) fn snapshot(&self) -> Option<SessionSnapshot> {
-        let slot = self
-            .inner
-            .lock()
-            .expect("session manager mutex poisoned");
+        let slot = self.inner.lock().expect("session manager mutex poisoned");
         slot.as_ref().map(|s| SessionSnapshot {
             session_id: s.session_id,
             started_at: s.started_at,
@@ -286,10 +268,7 @@ impl SessionManager {
     /// session. Used by `StopRecording` to validate the caller.
     #[allow(dead_code)] // `try_stop` superseded the two-call pattern; helper kept for tests.
     pub(crate) fn matches(&self, id: &SessionId) -> bool {
-        let slot = self
-            .inner
-            .lock()
-            .expect("session manager mutex poisoned");
+        let slot = self.inner.lock().expect("session manager mutex poisoned");
         slot.as_ref().is_some_and(|s| s.session_id == *id)
     }
 }
@@ -344,7 +323,6 @@ pub(crate) struct SessionSnapshot {
     pub(crate) session_id: SessionId,
     pub(crate) started_at: std::time::Instant,
 }
-
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]

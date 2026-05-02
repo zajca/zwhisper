@@ -91,7 +91,10 @@ async fn fetch_list_via_dbus() -> Result<Vec<ProfileEntry>, zbus::Error> {
 
 #[allow(clippy::print_stderr)]
 fn fallback_to_local(op: &str, err: &zbus::Error) {
-    info!(?op, "daemon unreachable, falling back to local profile {op}");
+    info!(
+        ?op,
+        "daemon unreachable, falling back to local profile {op}"
+    );
     eprintln!("daemon not running, listing from local files only ({err})");
 }
 

@@ -63,10 +63,9 @@ pub enum FixtureSkip {
 impl std::fmt::Display for FixtureSkip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoDbusDaemon => write!(
-                f,
-                "dbus-daemon not on PATH; install dbus to run this test"
-            ),
+            Self::NoDbusDaemon => {
+                write!(f, "dbus-daemon not on PATH; install dbus to run this test")
+            }
             Self::NoDbusConfig => write!(
                 f,
                 "no dbus session.conf at /etc/dbus-1/session.conf or /usr/share/dbus-1/session.conf"
@@ -80,10 +79,7 @@ impl std::fmt::Display for FixtureSkip {
 /// keep it under `/etc/dbus-1/`; Debian-likes keep it under
 /// `/usr/share/dbus-1/`. Returns the first one found.
 fn locate_session_conf() -> Option<PathBuf> {
-    for candidate in [
-        "/etc/dbus-1/session.conf",
-        "/usr/share/dbus-1/session.conf",
-    ] {
+    for candidate in ["/etc/dbus-1/session.conf", "/usr/share/dbus-1/session.conf"] {
         let p = PathBuf::from(candidate);
         if p.is_file() {
             return Some(p);
@@ -158,9 +154,7 @@ impl DbusFixture {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| {
-                FixtureSkip::Other(format!("failed to spawn dbus-daemon: {e}"))
-            })?;
+            .map_err(|e| FixtureSkip::Other(format!("failed to spawn dbus-daemon: {e}")))?;
 
         // 5. Wait for the socket to appear on disk. Up to 2 s in
         // 20 ms slices = 100 attempts. Hosts under load see
@@ -189,6 +183,13 @@ impl DbusFixture {
     /// stomp on the real session bus.
     pub fn address(&self) -> &str {
         &self.daemon_addr
+    }
+
+    /// The `XDG_STATE_HOME` the spawned daemon writes under. Tests
+    /// read `<state_home>/zwhisper/last-session.json` to verify the
+    /// C2 ordering invariant (M4-plan § "Stress-test corrections").
+    pub fn state_home(&self) -> PathBuf {
+        self.tmp.path().join("state")
     }
 
     /// Spawn the `zwhisperd` binary against this fixture's bus and
@@ -336,11 +337,7 @@ fn kill_child(mut child: Child) -> std::io::Result<()> {
     Ok(())
 }
 
-fn wait_for_socket(
-    path: &Path,
-    attempts: u32,
-    interval: Duration,
-) -> Result<(), String> {
+fn wait_for_socket(path: &Path, attempts: u32, interval: Duration) -> Result<(), String> {
     for _ in 0..attempts {
         if std::fs::metadata(path).is_ok() {
             return Ok(());
