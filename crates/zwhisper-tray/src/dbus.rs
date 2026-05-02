@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, warn};
 
-use crate::state::LastCompleted;
+use crate::state::{ActiveSessionInfo, LastCompleted};
 
 /// Connect to the user session bus.
 ///
@@ -84,13 +84,84 @@ pub async fn read_last_session_at(path: &Path) -> Option<LastCompleted> {
         }
     };
 
-    match LastCompleted::from_state_file_bytes(&bytes) {
+    parse_last_session_or_log(&bytes, path)
+}
+
+fn parse_last_session_or_log(bytes: &[u8], path: &Path) -> Option<LastCompleted> {
+    match LastCompleted::from_state_file_bytes(bytes) {
         Ok(parsed) => Some(parsed),
         Err(err) => {
             warn!(
                 path = %path.display(),
                 error = %err,
                 "failed to parse last-session.json",
+            );
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// active-session.json (post-2026-05-02 review fix)
+// ---------------------------------------------------------------------------
+
+/// Resolve the path of the daemon's `active-session.json`.
+///
+/// Mirrors `zwhisperd::active_session::state_file_path` byte-for-byte
+/// using the same `XDG_STATE_HOME` resolution as
+/// [`last_session_path`].
+#[must_use]
+pub fn active_session_path() -> PathBuf {
+    active_session_path_for_xdg_state_home(std::env::var_os("XDG_STATE_HOME").as_deref())
+}
+
+/// Test-friendly variant of [`active_session_path`].
+#[must_use]
+pub fn active_session_path_for_xdg_state_home(xdg_state_home: Option<&std::ffi::OsStr>) -> PathBuf {
+    let base = xdg_state_home
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(dirs::state_dir)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("state")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("zwhisper").join("active-session.json")
+}
+
+/// Read and parse the daemon's `active-session.json`.
+///
+/// Returns `None` when the file is missing (no session active —
+/// debug-logged) or when parsing fails (warn-logged: indicates the
+/// daemon wrote an unexpected shape).
+pub async fn read_active_session() -> Option<ActiveSessionInfo> {
+    let path = active_session_path();
+    read_active_session_at(&path).await
+}
+
+/// Test-friendly variant: read from an explicit path.
+pub async fn read_active_session_at(path: &Path) -> Option<ActiveSessionInfo> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            debug!(path = %path.display(), "no active-session.json on disk");
+            return None;
+        }
+        Err(err) => {
+            warn!(
+                path = %path.display(),
+                error = %err,
+                "failed to read active-session.json",
+            );
+            return None;
+        }
+    };
+
+    match ActiveSessionInfo::from_state_file_bytes(&bytes) {
+        Ok(parsed) => Some(parsed),
+        Err(err) => {
+            warn!(
+                path = %path.display(),
+                error = %err,
+                "failed to parse active-session.json",
             );
             None
         }
@@ -167,5 +238,42 @@ mod tests {
         let path = dir.path().join("last-session.json");
         tokio::fs::write(&path, b"not json").await.unwrap();
         assert!(read_last_session_at(&path).await.is_none());
+    }
+
+    #[test]
+    fn active_session_path_resolves_under_xdg_state_home() {
+        let xdg = OsString::from("/abs/state");
+        let p = active_session_path_for_xdg_state_home(Some(xdg.as_os_str()));
+        assert_eq!(p, PathBuf::from("/abs/state/zwhisper/active-session.json"));
+    }
+
+    #[tokio::test]
+    async fn read_active_session_at_missing_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.json");
+        assert!(read_active_session_at(&path).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_active_session_at_parses_valid_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("active-session.json");
+        let body = br#"{
+            "schema_version": 1,
+            "session_id": "live-sid",
+            "profile": "default",
+            "started_at_unix_ms": 1700000000000
+        }"#;
+        tokio::fs::write(&path, body).await.unwrap();
+        let parsed = read_active_session_at(&path).await.unwrap();
+        assert_eq!(parsed.session_id, "live-sid");
+    }
+
+    #[tokio::test]
+    async fn read_active_session_at_invalid_json_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("active-session.json");
+        tokio::fs::write(&path, b"not json").await.unwrap();
+        assert!(read_active_session_at(&path).await.is_none());
     }
 }

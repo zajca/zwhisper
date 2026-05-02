@@ -327,7 +327,33 @@ Tests (integration, gated on PipeWire):
 
 The "Open in editor" action button is wired end-to-end (post-2026-05-02 review fix); see § 5. The body still carries the path as a secondary affordance for desktops that strip action buttons.
 
-### 24. `docs/M4-verification.md` ticks all items with file:line evidence
+### 24. Daemon-side `active-session.json` recovers `active_session_id` after a tray reconnect mid-recording (post-2026-05-02 review fix)
+
+**The bug.** Before the fix, `pump.rs::snapshot` populated `icon` and `recording_started_at` from `Recorder1.GetStatus` (whose wire format `(s state, s active_profile, t duration_ms)` does NOT carry the session id) but left `active_session_id = None`. After a tray reconnect mid-recording, `Stop recording` was enabled in the menu (state == Recording), but the dispatcher's `plan_stop` returned `Skip` ("no active session id") and silently dropped the RPC. Practical effect: a user could not stop a recording from the tray after a tray restart.
+
+**The fix.** A new daemon-side state file, mirroring the C2 pattern from `last-session.json`:
+
+- Daemon module: `crates/zwhisperd/src/active_session.rs::write_atomic_to` writes `{schema_version, session_id, profile, started_at_unix_ms}` with `File::sync_all()` BEFORE `StateChanged "recording"` is emitted (`crates/zwhisperd/src/recorder_service.rs`, right above the `state_changed("recording", ...)` call). The terminal `StateChanged "idle"|"failed"` calls now go through a single `emit_terminal_state` helper in `lifecycle.rs` that emits the signal and removes the file (best-effort) — making it impossible to forget the cleanup at any of the five terminal-emit sites.
+- Tray module: `crates/zwhisper-tray/src/dbus.rs::read_active_session` parses the file. `crates/zwhisper-tray/src/state.rs::ActiveSessionInfo::from_state_file_bytes` does schema validation and rejects empty `session_id`. `pump.rs::snapshot` now reads it whenever the daemon reports `state == "recording" | "stopping"`, populating `state.active_session_id`. When the daemon is idle, the snapshot clears any stale id so a future Stop click cannot reach a session that no longer exists.
+
+Tests:
+
+- `zwhisperd::active_session::tests::write_atomic_creates_file_with_0600_perms`
+- `zwhisperd::active_session::tests::write_atomic_round_trips`
+- `zwhisperd::active_session::tests::clear_removes_existing_file`
+- `zwhisperd::active_session::tests::clear_on_missing_file_is_noop`
+- `zwhisperd::active_session::tests::no_temp_file_left_behind_on_success`
+- `zwhisper-tray::state::active_session_info_parses_valid_payload`
+- `zwhisper-tray::state::active_session_info_rejects_unsupported_schema`
+- `zwhisper-tray::state::active_session_info_rejects_empty_session_id`
+- `zwhisper-tray::dbus::active_session_path_resolves_under_xdg_state_home`
+- `zwhisper-tray::dbus::read_active_session_at_missing_returns_none`
+- `zwhisper-tray::dbus::read_active_session_at_parses_valid_payload`
+- `zwhisper-tray::dbus::read_active_session_at_invalid_json_returns_none`
+
+Wire format unchanged — this is an internal state-file contract just like `last-session.json`.
+
+### 25. `docs/M4-verification.md` ticks all items with file:line evidence
 
 This document.
 

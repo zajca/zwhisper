@@ -41,7 +41,7 @@ use tracing::{debug, info, warn};
 use zwhisper_ipc::{BUS_NAME, Profiles1Proxy, Recorder1Proxy};
 
 use crate::config::{BACKOFF_SCHEDULE_MS, PROFILE_REFRESH_PERIOD};
-use crate::dbus::{connect_session, read_last_session};
+use crate::dbus::{connect_session, read_active_session, read_last_session};
 use crate::sink::dispatch::TranscriptJob;
 use crate::state::{
     TrayState, apply_recording_complete, apply_state_changed, apply_transcript_complete,
@@ -372,19 +372,54 @@ async fn snapshot(
     let active = profiles_proxy.get_active().await?;
     let last_session = read_last_session().await;
 
+    // Recover `active_session_id` for the in-flight session when we
+    // bootstrap mid-recording (post-2026-05-02 review fix). The
+    // wire-format `Status` does not carry the session id, so we
+    // consult the daemon's `active-session.json` written before
+    // every `StateChanged "recording"` (same C2 ordering pattern as
+    // last-session.json). Without this, `Stop recording` from a
+    // freshly-restarted tray would reach the dispatcher with no
+    // session id and the daemon would correctly reject it.
     let icon = crate::state::IconState::from_wire(&status.state);
+    let active_session = if matches!(
+        icon,
+        crate::state::IconState::Recording | crate::state::IconState::Stopping
+    ) {
+        read_active_session().await
+    } else {
+        None
+    };
+
     state_tx.send_modify(|s| {
         s.icon = icon;
         s.active_profile = active;
         s.profiles = profiles;
         if matches!(icon, crate::state::IconState::Recording) {
             // We don't know the original start time; approximate as
-            // (now - duration_ms). Phase P3 polls duration via
-            // GetStatus to keep the timer in sync.
+            // (now - duration_ms). The active-session.json carries
+            // an absolute `started_at_unix_ms` but the tray timer
+            // ticks against `Instant`, which is monotonic — so we
+            // keep the duration-based approximation as the cleanest
+            // mapping.
             let approx = std::time::Instant::now()
                 .checked_sub(Duration::from_millis(status.duration_ms))
                 .unwrap_or_else(std::time::Instant::now);
             s.recording_started_at = Some(approx);
+        }
+        if let Some(active) = active_session {
+            // Trust the file unconditionally when the daemon says
+            // we are mid-recording. If the file's session_id is
+            // empty (parser would have rejected it) we get None
+            // here and the cached value (typically also None) wins.
+            s.active_session_id = Some(active.session_id);
+        } else if !matches!(
+            icon,
+            crate::state::IconState::Recording | crate::state::IconState::Stopping
+        ) {
+            // Daemon is idle/failed/etc — clear any stale id so
+            // a future race cannot stop a session that no longer
+            // exists.
+            s.active_session_id = None;
         }
         if let Some(ls) = last_session {
             s.last_session = Some(ls);

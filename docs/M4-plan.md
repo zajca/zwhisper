@@ -142,14 +142,31 @@ corrections.
     `RecordingComplete` with `transcript_path: null`, again after
     `TranscriptComplete` with both paths populated. Permissions
     `0600` (mirrors FileSink invariant in IDEA.md § 5).
-23. **`NotificationSink` is non-blocking**: uses
-    `notify-rust::show()` (non-blocking) and registers a
-    `org.freedesktop.Notifications.ActionInvoked` D-Bus signal
-    listener for the returned notification id. No accumulating
-    `spawn_blocking` per notification (see M3-stress-test).
-24. `docs/M4-verification.md` ticks all of the above with file:line
+23. **`NotificationSink` is non-blocking**: uses `notify-rust`'s
+    `show_async()` against the zbus `tokio` backend (workspace dep
+    `notify-rust = { features = ["z-with-tokio"] }`) and spawns one
+    detached tokio task per notification awaiting
+    `wait_for_action_async`. On `ActionResponse::Custom("open-in-editor")`
+    the task spawns `xdg-open <transcript_path>`. Tokio tasks are
+    cheap (~few KB each) — no `spawn_blocking` thread-pool
+    accumulation even on a busy session. The body still carries the
+    absolute transcript path as a secondary affordance for desktops
+    that strip action buttons.
+24. **Daemon-side `active-session.json`** (post-2026-05-02 review
+    fix): written under `$XDG_STATE_HOME/zwhisper/active-session.json`
+    (default `~/.local/state/zwhisper/`) with `File::sync_all()`
+    BEFORE the daemon emits `StateChanged "recording"` and removed
+    after the terminal `StateChanged "idle"`/`"failed"`. Schema:
+    `{schema_version: u32, session_id: String, profile: String,
+    started_at_unix_ms: u64}`. The tray reads this on snapshot when
+    the daemon reports `state == "recording" | "stopping"` so a
+    tray that bootstraps mid-recording (reconnect window) recovers
+    `active_session_id` and the `Stop recording` menu item can
+    actually drive the daemon's stop RPC. Internal contract; wire
+    format unchanged. Permissions `0o600`.
+25. `docs/M4-verification.md` ticks all of the above with file:line
     evidence (test name, log line, manual screenshot, `dbus-monitor`
-    capture). Verdict line "M4 closes …" only after all 24 are
+    capture). Verdict line "M4 closes …" only after all 25 are
     ticked.
 
 ## Out of scope (deferred to M5+)
@@ -572,8 +589,9 @@ require manual verification on the maintainer's machine.
 - `crates/zwhisper-tray/src/sink/clipboard.rs` (new) —
   `ClipboardSink` with persistent `arboard::Clipboard` handle (C1).
 - `crates/zwhisper-tray/src/sink/notification.rs` (new) —
-  `NotificationSink` using non-blocking `notify-rust::show()` +
-  `ActionInvoked` D-Bus subscription (DoD #23).
+  `NotificationSink` using non-blocking `show_async()` plus a
+  detached tokio task awaiting `wait_for_action_async` for the
+  "Open in editor" action button (DoD #5 + #23).
 - `crates/zwhisper-tray/src/sink/dispatch.rs` (new) — Task C; on
   `TranscriptComplete` reads file, applies size guard (DoD #19),
   calls sinks in order.
@@ -674,13 +692,15 @@ the tray refreshes its own cached profile list every 60 s and after
 every successful `SetActive`. A "ProfilesChanged" signal is the
 right long-term answer (OQ-4) but stays out of M4 scope.
 
-### 7. notify-rust `ActionInvoked` D-Bus signal subscription
+### 7. notify-rust action button
 
-The architecture document mentions the non-blocking pattern; concrete
-implementation needs to subscribe to
-`org.freedesktop.Notifications.ActionInvoked` filtered by the
-notification id returned from `show()`. This is a Phase 5 detail;
-budgeted within the 5 h estimate.
+Wired in P5 + post-2026-05-02 review fix: `show_async().await` plus
+a detached tokio task awaiting `wait_for_action_async`. On click of
+"Open in editor", the task spawns `xdg-open <transcript_path>` and
+logs spawn-error vs non-zero-exit separately (M4 fix L2). Workspace
+dep is `notify-rust = { default-features = false, features =
+["z-with-tokio"] }` so the inner zbus connection lives on our tokio
+runtime — no `spawn_blocking` thread accumulation (DoD #23 preserved).
 
 ### 8. TOCTOU on transcript file
 

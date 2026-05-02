@@ -130,7 +130,7 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
             // emit `RecordingComplete`; emit `StateChanged "failed"`
             // and bail.
             hooks.sessions.release();
-            emit_state_changed(&hooks.iface_ref, "failed", &session_id_str).await;
+            emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
             return;
         }
     };
@@ -204,7 +204,7 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                             &hooks.transcribe_backend,
                         )
                         .await;
-                        emit_state_changed(&hooks.iface_ref, "idle", &session_id_str).await;
+                        emit_terminal_state(&hooks.iface_ref, "idle", &session_id_str).await;
                     }
                     Err(e) => {
                         error!(
@@ -216,12 +216,12 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                         // the wire contract is "fired iff transcript
                         // exists". Surface the failure as terminal
                         // state.
-                        emit_state_changed(&hooks.iface_ref, "failed", &session_id_str).await;
+                        emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
                     }
                 }
             } else {
                 // No auto-transcribe: terminal state is plain idle.
-                emit_state_changed(&hooks.iface_ref, "idle", &session_id_str).await;
+                emit_terminal_state(&hooks.iface_ref, "idle", &session_id_str).await;
             }
         }
         Err(rec_err) => {
@@ -239,7 +239,7 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
             )
             .await;
             hooks.sessions.release();
-            emit_state_changed(&hooks.iface_ref, "failed", &session_id_str).await;
+            emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
         }
     }
 }
@@ -251,6 +251,35 @@ async fn emit_state_changed(
 ) {
     if let Err(e) = iface_ref.state_changed(new_state, session_id).await {
         warn!(error = %e, %new_state, %session_id, "failed to emit StateChanged");
+    }
+}
+
+/// Emit a TERMINAL `StateChanged` (`"idle"` or `"failed"`) and
+/// remove the daemon's `active-session.json` afterwards. Wrapping
+/// the two operations in one helper makes it impossible to forget
+/// the cleanup at any of the five terminal-emit sites — if a
+/// future edit adds a sixth path it must go through this helper to
+/// stay consistent. The clear runs on the blocking pool to keep
+/// the lifecycle's tokio worker free; failure is logged inside
+/// `clear_at` and never surfaces here (a stale file is only
+/// consulted by the tray when state is `recording`/`stopping`,
+/// which is no longer the case after this emit).
+async fn emit_terminal_state(
+    iface_ref: &InterfaceRef<RecorderInterface>,
+    new_state: &str,
+    session_id: &str,
+) {
+    debug_assert!(
+        matches!(new_state, "idle" | "failed"),
+        "emit_terminal_state should only be used for terminal states",
+    );
+    emit_state_changed(iface_ref, new_state, session_id).await;
+    if let Err(je) = tokio::task::spawn_blocking(crate::active_session::clear).await {
+        warn!(
+            error = %je,
+            %session_id,
+            "spawn_blocking panicked while clearing active-session.json",
+        );
     }
 }
 

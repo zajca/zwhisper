@@ -23,6 +23,7 @@ use tracing::{error, info, warn};
 use zwhisper_core::audio::state::StopReason;
 use zwhisper_ipc::{BUS_NAME, OBJECT_PATH};
 
+mod active_session;
 mod config;
 mod last_session;
 mod lifecycle;

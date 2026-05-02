@@ -88,6 +88,53 @@ pub enum ParseError {
     UnsupportedSchemaVersion(u32),
     #[error("audio_path is empty")]
     EmptyAudioPath,
+    #[error("session_id is empty")]
+    EmptySessionId,
+}
+
+/// Parsed `active-session.json` produced by the daemon while a
+/// recording is in flight (post-2026-05-02 review fix).
+///
+/// The tray reads this file on snapshot when the daemon reports a
+/// `recording` / `stopping` state but the live signal stream has
+/// not yet delivered a matching `StateChanged` (typical when the
+/// tray reconnects mid-recording). Without this fallback the
+/// `Stop recording` menu item would dispatch with no `session_id`
+/// and the daemon would correctly reject it as `SessionUnknown`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveSessionInfo {
+    pub session_id: String,
+    pub profile: String,
+    pub started_at_unix_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActiveSessionWire {
+    schema_version: u32,
+    session_id: String,
+    profile: String,
+    started_at_unix_ms: u64,
+}
+
+impl ActiveSessionInfo {
+    /// Parse the bytes of an `active-session.json` file. The file
+    /// is removed by the daemon on terminal `StateChanged`, so any
+    /// successful parse means the daemon believed a session was
+    /// active at the moment of the most recent `recording` emit.
+    pub fn from_state_file_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
+        let wire: ActiveSessionWire = serde_json::from_slice(bytes)?;
+        if wire.schema_version != 1 {
+            return Err(ParseError::UnsupportedSchemaVersion(wire.schema_version));
+        }
+        if wire.session_id.is_empty() {
+            return Err(ParseError::EmptySessionId);
+        }
+        Ok(Self {
+            session_id: wire.session_id,
+            profile: wire.profile,
+            started_at_unix_ms: wire.started_at_unix_ms,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -569,6 +616,44 @@ mod tests {
             PathBuf::new(),
             "must not graft stale OLD audio_path onto NEW session",
         );
+    }
+
+    #[test]
+    fn active_session_info_parses_valid_payload() {
+        let json = br#"{
+            "schema_version": 1,
+            "session_id": "sid-7",
+            "profile": "default",
+            "started_at_unix_ms": 1700000000000
+        }"#;
+        let parsed = ActiveSessionInfo::from_state_file_bytes(json).unwrap();
+        assert_eq!(parsed.session_id, "sid-7");
+        assert_eq!(parsed.profile, "default");
+        assert_eq!(parsed.started_at_unix_ms, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn active_session_info_rejects_unsupported_schema() {
+        let json = br#"{
+            "schema_version": 99,
+            "session_id": "sid",
+            "profile": "default",
+            "started_at_unix_ms": 0
+        }"#;
+        let err = ActiveSessionInfo::from_state_file_bytes(json).unwrap_err();
+        assert!(matches!(err, ParseError::UnsupportedSchemaVersion(99)));
+    }
+
+    #[test]
+    fn active_session_info_rejects_empty_session_id() {
+        let json = br#"{
+            "schema_version": 1,
+            "session_id": "",
+            "profile": "default",
+            "started_at_unix_ms": 0
+        }"#;
+        let err = ActiveSessionInfo::from_state_file_bytes(json).unwrap_err();
+        assert!(matches!(err, ParseError::EmptySessionId));
     }
 
     #[test]

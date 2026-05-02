@@ -205,6 +205,28 @@ impl RecorderInterface {
             }
         };
 
+        // Persist active-session.json BEFORE emitting "recording"
+        // so a tray that bootstraps inside the signal-delivery
+        // window can recover the active session_id (post-2026-05-02
+        // review fix). Same C2 ordering pattern as last-session.json.
+        // Failure is logged but never aborts the lifecycle — the
+        // signal still fires; the tray just loses the recover-after-
+        // reconnect path for this session.
+        let active_state = crate::active_session::ActiveSession::new(&session_id_str, profile_name);
+        match tokio::task::spawn_blocking(move || {
+            crate::active_session::write_atomic(&active_state)
+        })
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                warn!(error = %e, "could not persist active-session.json");
+            }
+            Err(je) => {
+                warn!(error = %je, "spawn_blocking panicked while writing active-session.json");
+            }
+        }
+
         // Emit StateChanged "recording" after the pipeline is up.
         if let Err(e) = Self::state_changed(&emitter, "recording", &session_id_str).await {
             warn!(error = %e, "failed to emit StateChanged recording");
