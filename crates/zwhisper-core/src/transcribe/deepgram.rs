@@ -137,10 +137,12 @@ impl DeepgramBatch {
 
         let url = self.build_url(opts)?;
         let headers = build_headers(&key)?;
-        let response = self
+        // `post_with_retry` reads the body inside its budget cap and
+        // returns the bytes directly; the response object never
+        // escapes that scope (user feedback #1, 2026-05-02).
+        let body_bytes = self
             .post_with_retry(&url, &headers, audio, audio_size)
             .await?;
-        let body_bytes = response_into_bytes(response).await?;
         let dg_response: DeepgramResponse =
             serde_json::from_slice(&body_bytes).map_err(|source| {
                 TranscribeError::BackendJsonShape {
@@ -152,6 +154,15 @@ impl DeepgramBatch {
         let speakers = group_speakers(&dg_response);
         let transcript_text = extract_transcript_text(&dg_response);
         let audio_duration = extract_audio_duration(&dg_response);
+        // `TranscriptArtifacts.language` is documented as the
+        // *resolved* language — what the backend actually used —
+        // not the request's input. When autodetect ran, prefer the
+        // detected_language echoed back by Deepgram; fall back to
+        // the request value when the field is absent or empty
+        // (e.g., diarize-only responses). User feedback #3,
+        // 2026-05-02.
+        let resolved_language = extract_detected_language(&dg_response)
+            .unwrap_or_else(|| opts.language.clone());
 
         let txt_target = append_extension(audio, ".txt");
         let json_target = append_extension(audio, ".json");
@@ -161,7 +172,7 @@ impl DeepgramBatch {
         let envelope = TranscriptJsonEnvelope {
             backend: BACKEND_ID,
             model: resolved_model,
-            language: &opts.language,
+            language: &resolved_language,
             audio_duration_s: audio_duration.as_secs_f64(),
             speakers: if speakers.is_empty() {
                 None
@@ -181,6 +192,7 @@ impl DeepgramBatch {
             audio_duration_ms = u64::try_from(audio_duration.as_millis()).unwrap_or(u64::MAX),
             wall_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
             speaker_segments = speakers.len(),
+            language = %resolved_language,
             "transcribe ok",
         );
 
@@ -189,7 +201,7 @@ impl DeepgramBatch {
             json_path: json_target,
             duration,
             audio_duration,
-            language: opts.language.clone(),
+            language: resolved_language,
             model: resolved_model.to_owned(),
             speakers: if speakers.is_empty() {
                 None
@@ -375,14 +387,32 @@ impl Transcriber for DeepgramBatch {
     }
 }
 
+/// One attempt's wire result, captured fully (status + headers we
+/// care about + body bytes) inside the per-attempt budget cap. Body
+/// is read inside the same `tokio::time::timeout(attempt_cap, …)`
+/// scope as the request itself so a slow body cannot extend wall-
+/// clock time past the budget (user feedback #1, 2026-05-02).
+struct AttemptOutcome {
+    status: StatusCode,
+    retry_after: Option<u64>,
+    body: Vec<u8>,
+}
+
 impl DeepgramBatch {
+    // Retry orchestration is intentionally inline rather than split
+    // into per-status helpers — every branch reads stack-local state
+    // (`attempt`, `started`, `budget`, `client`, `headers`) that
+    // would just become arguments. M5 user feedback #1 split off
+    // body-read into the timeout scope; the loop is the simplest
+    // single source of truth.
+    #[allow(clippy::too_many_lines)]
     async fn post_with_retry(
         &self,
         url: &str,
         headers: &HeaderMap,
         audio: &Path,
         audio_size: u64,
-    ) -> Result<reqwest::Response, TranscribeError> {
+    ) -> Result<Vec<u8>, TranscribeError> {
         let client = self.client()?;
         let budget = Duration::from_secs(self.settings.retry_total_budget_s);
         let started = Instant::now();
@@ -413,33 +443,45 @@ impl DeepgramBatch {
                     source: Box::new(source),
                 })?;
 
-            // Cap each attempt by the *remaining* wall-clock budget,
-            // not just `timeout_s`. Without this, a single stalled
-            // request (e.g., 600 s `timeout_s` but only 20 s budget
-            // left) would block past the budget — the bug Copilot
-            // review #2 (2026-05-02) flagged. After this guard, the
-            // outer budget check fires no later than `budget`
-            // wall-clock from `started`.
+            // Cap each attempt — including the body read — by the
+            // *remaining* wall-clock budget. The previous version
+            // bounded only `client.execute(req)` and let the body
+            // read run unbounded, so a slow body would silently
+            // overshoot the budget (user feedback #1, 2026-05-02).
             let attempt_cap = budget.saturating_sub(started.elapsed());
-            let Ok(send_result) =
-                tokio::time::timeout(attempt_cap, client.execute(req)).await
-            else {
+            let attempt_result =
+                tokio::time::timeout(attempt_cap, async {
+                    let resp = client.execute(req).await?;
+                    let status = resp.status();
+                    let retry_after = parse_retry_after(resp.headers());
+                    let bytes = resp.bytes().await?;
+                    Ok::<_, reqwest::Error>(AttemptOutcome {
+                        status,
+                        retry_after,
+                        body: bytes.to_vec(),
+                    })
+                })
+                .await;
+
+            let Ok(send_result) = attempt_result else {
                 return Err(TranscribeError::BackendTimeout {
                     backend: BACKEND_ID,
                     timeout_s: self.settings.retry_total_budget_s,
                 });
             };
             match send_result {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        return Ok(resp);
+                Ok(outcome) => {
+                    if outcome.status.is_success() {
+                        return Ok(outcome.body);
                     }
-                    if !status_is_retryable(status) || attempt >= max_attempts {
-                        return classify_http_error(status, resp).await;
+                    if !status_is_retryable(outcome.status) || attempt >= max_attempts {
+                        return Err(classify_http_error(
+                            outcome.status,
+                            &outcome.body,
+                            outcome.retry_after,
+                        ));
                     }
-                    let retry_after = parse_retry_after(resp.headers());
-                    let delay = backoff_delay(attempt, retry_after);
+                    let delay = backoff_delay(attempt, outcome.retry_after);
                     let remaining = budget.checked_sub(started.elapsed()).unwrap_or_default();
                     if delay >= remaining {
                         // Budget exhausted while we still hold the
@@ -448,14 +490,18 @@ impl DeepgramBatch {
                         // instead of falsely surfacing a local
                         // timeout. Honors the typed-error contract:
                         // a quota error is what the user sees.
-                        return classify_http_error(status, resp).await;
+                        return Err(classify_http_error(
+                            outcome.status,
+                            &outcome.body,
+                            outcome.retry_after,
+                        ));
                     }
                     warn!(
                         target: "zwhisper_core::transcribe::deepgram",
                         attempt,
                         max_attempts,
                         delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-                        status = status.as_u16(),
+                        status = outcome.status.as_u16(),
                         "retrying after transient HTTP failure",
                     );
                     tokio::time::sleep(delay).await;
@@ -550,16 +596,20 @@ fn jitter_ms(base_ms: u64) -> u64 {
     nanos % (base_ms / 4 + 1)
 }
 
-async fn classify_http_error(
+/// Classify a non-2xx response into a typed error. Pure-sync because
+/// the body has already been read inside the budget-bounded attempt
+/// scope (user feedback #1, 2026-05-02). Previously this awaited
+/// `resp.bytes()` outside the budget cap, which let a slow error
+/// body extend wall-clock time past `retry_total_budget_s`.
+fn classify_http_error(
     status: StatusCode,
-    resp: reqwest::Response,
-) -> Result<reqwest::Response, TranscribeError> {
-    let retry_after = parse_retry_after(resp.headers());
-    let bytes = resp.bytes().await.unwrap_or_default();
-    let body = String::from_utf8_lossy(&bytes).into_owned();
+    body_bytes: &[u8],
+    retry_after: Option<u64>,
+) -> TranscribeError {
+    let body = String::from_utf8_lossy(body_bytes).into_owned();
     let excerpt = truncate_body(&body);
 
-    Err(match status.as_u16() {
+    match status.as_u16() {
         401 | 403 => TranscribeError::BackendAuth {
             backend: BACKEND_ID,
             status: status.as_u16(),
@@ -575,7 +625,7 @@ async fn classify_http_error(
             status: status.as_u16(),
             body_excerpt: excerpt,
         },
-    })
+    }
 }
 
 fn truncate_body(body: &str) -> String {
@@ -587,17 +637,6 @@ fn truncate_body(body: &str) -> String {
         cut -= 1;
     }
     format!("{}…", &body[..cut])
-}
-
-async fn response_into_bytes(resp: reqwest::Response) -> Result<Vec<u8>, TranscribeError> {
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|source| TranscribeError::BackendNetwork {
-            backend: BACKEND_ID,
-            source: Box::new(source),
-        })?;
-    Ok(bytes.to_vec())
 }
 
 fn append_extension(path: &Path, suffix: &str) -> PathBuf {
@@ -666,6 +705,13 @@ struct DeepgramResults {
 struct DeepgramChannel {
     #[serde(default)]
     alternatives: Vec<DeepgramAlternative>,
+    /// Per-channel detected language (BCP-47-ish), present when the
+    /// request set `detect_language=true`. Used to fill in
+    /// `TranscriptArtifacts.language` after autodetect (user
+    /// feedback #3, 2026-05-02). Falls back to `metadata` or
+    /// `opts.language` when absent.
+    #[serde(default)]
+    detected_language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -751,6 +797,25 @@ fn group_speakers(resp: &DeepgramResponse) -> Vec<SpeakerSegment> {
         return Vec::new();
     }
     segments
+}
+
+/// Pull the resolved language code out of the Deepgram response.
+/// `Option` because not every request asks for autodetect, and the
+/// field is sometimes absent when diarization runs without
+/// `detect_language=true`. Empty strings are treated as absent so
+/// we don't overwrite `opts.language` with a useless empty value.
+fn extract_detected_language(resp: &DeepgramResponse) -> Option<String> {
+    let lang = resp
+        .results
+        .as_ref()?
+        .channels
+        .first()?
+        .detected_language
+        .as_ref()?;
+    if lang.is_empty() {
+        return None;
+    }
+    Some(lang.clone())
 }
 
 fn extract_transcript_text(resp: &DeepgramResponse) -> String {
@@ -1053,6 +1118,40 @@ mod tests {
         assert!((segs[0].end_s - 0.8_f64).abs() < 1e-9);
         assert_eq!(segs[1].speaker_id, 1);
         assert_eq!(segs[1].text, "are you");
+    }
+
+    #[test]
+    fn extract_detected_language_picks_up_first_channel() {
+        let resp: DeepgramResponse = serde_json::from_str(
+            r#"{
+              "results": {
+                "channels": [{
+                  "detected_language": "cs",
+                  "alternatives": []
+                }]
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(extract_detected_language(&resp).as_deref(), Some("cs"));
+    }
+
+    #[test]
+    fn extract_detected_language_treats_empty_as_absent() {
+        let resp: DeepgramResponse = serde_json::from_str(
+            r#"{"results":{"channels":[{"detected_language":"","alternatives":[]}]}}"#,
+        )
+        .unwrap();
+        assert!(extract_detected_language(&resp).is_none());
+    }
+
+    #[test]
+    fn extract_detected_language_returns_none_when_absent() {
+        let resp: DeepgramResponse = serde_json::from_str(
+            r#"{"results":{"channels":[{"alternatives":[]}]}}"#,
+        )
+        .unwrap();
+        assert!(extract_detected_language(&resp).is_none());
     }
 
     #[test]

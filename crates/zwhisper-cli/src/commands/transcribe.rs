@@ -42,9 +42,19 @@ async fn run_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
                 ));
             }
         };
+        // Pick the model from the most-specific block: when the
+        // profile carries a `[transcription.deepgram]` table, its
+        // `model` overrides the generic `[transcription].model`.
+        // Without this, the backend-specific knob would be silently
+        // ignored when both fields disagreed (user feedback #2,
+        // 2026-05-02).
+        let model = match (&profile.transcription.backend, &profile.transcription.deepgram) {
+            (Backend::Deepgram, Some(dg)) => dg.model.clone(),
+            _ => profile.transcription.model.clone(),
+        };
         TranscribeOpts {
             backend: profile.transcription.backend.as_str().to_owned(),
-            model: profile.transcription.model.clone(),
+            model,
             language: profile.transcription.language.clone(),
             backend_config,
         }

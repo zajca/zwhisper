@@ -113,6 +113,70 @@ async fn end_to_end_against_mock_server() {
     assert_eq!(parsed["model"], "nova-3");
 }
 
+/// User feedback #3 (2026-05-02): when the request asked for
+/// autodetect, the resulting `TranscriptArtifacts.language` and the
+/// JSON envelope MUST reflect the language Deepgram actually used,
+/// not the literal "auto" the caller sent in. The previous build
+/// echoed back `opts.language`, which is a documented contract
+/// violation (`TranscribeOpts.language` is "after autodetect").
+#[tokio::test]
+async fn detected_language_overwrites_opts_language_when_autodetect() {
+    let server = MockServer::start().await;
+    let body = r#"{
+      "metadata": {"duration": 1.5},
+      "results": {
+        "channels": [{
+          "detected_language": "cs",
+          "alternatives": [{
+            "transcript": "ahoj",
+            "words": [{"word":"ahoj","start":0.0,"end":1.0,"speaker":0}]
+          }]
+        }]
+      }
+    }"#;
+    Mock::given(method("POST"))
+        .and(path("/v1/listen"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+    let backend = DeepgramBatch::with_base_url(settings(), server.uri());
+    let (_dir, audio) = make_audio().await;
+    let artifacts = backend
+        .transcribe_file_with_key(
+            &audio,
+            &opts("auto"),
+            SecretString::new(FIXTURE_KEY.to_owned()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(artifacts.language, "cs");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&artifacts.json_path).unwrap()).unwrap();
+    assert_eq!(json["language"], "cs");
+}
+
+#[tokio::test]
+async fn opts_language_used_when_response_omits_detected_language() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/listen"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(diarized_response_body()))
+        .mount(&server)
+        .await;
+    let backend = DeepgramBatch::with_base_url(settings(), server.uri());
+    let (_dir, audio) = make_audio().await;
+    let artifacts = backend
+        .transcribe_file_with_key(
+            &audio,
+            &opts("en"),
+            SecretString::new(FIXTURE_KEY.to_owned()),
+        )
+        .await
+        .unwrap();
+    // Fixture has no `detected_language` → fall back to opts.language.
+    assert_eq!(artifacts.language, "en");
+}
+
 #[tokio::test]
 async fn auto_language_emits_detect_language_query_param() {
     let server = MockServer::start().await;
@@ -171,6 +235,51 @@ async fn auth_failure_maps_to_backend_auth() {
 /// error must classify by status (`BackendQuota` for 429, etc.) — NOT
 /// fall through to `BackendTimeout`. The previous build leaked rate
 /// limits as local timeouts.
+/// User feedback #1 (2026-05-02): the wall-clock retry budget MUST
+/// also bound the body read. Mock server delivers headers fast but
+/// stalls the body well beyond the configured budget — the call
+/// must fail with `BackendTimeout` within the budget window, not
+/// after `timeout_s` (which is 30 s in the fixture).
+#[tokio::test]
+async fn slow_body_does_not_overshoot_retry_budget() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/listen"))
+        // 10 s body delay vs. 2 s budget → must trip the budget.
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(10))
+                .set_body_string(diarized_response_body()),
+        )
+        .mount(&server)
+        .await;
+    let mut s = settings();
+    s.retry_total_budget_s = 2;
+    s.timeout_s = 60;
+    s.max_retries = 0;
+    let backend = DeepgramBatch::with_base_url(s, server.uri());
+    let (_dir, audio) = make_audio().await;
+
+    let started = std::time::Instant::now();
+    let err = backend
+        .transcribe_file_with_key(
+            &audio,
+            &opts("en"),
+            SecretString::new(FIXTURE_KEY.to_owned()),
+        )
+        .await
+        .unwrap_err();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "body read overshot budget; elapsed = {elapsed:?}"
+    );
+    assert!(
+        matches!(err, TranscribeError::BackendTimeout { .. }),
+        "expected BackendTimeout, got {err:?}"
+    );
+}
+
 #[tokio::test]
 async fn budget_exhausted_429_classifies_as_quota_not_timeout() {
     let server = MockServer::start().await;

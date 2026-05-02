@@ -251,6 +251,16 @@ impl RecorderInterface {
             }
             _ => zwhisper_core::transcribe::BackendConfig::WhisperCpp,
         };
+        // Backend-specific [transcription.<backend>].model wins over
+        // the generic [transcription].model — same precedence as
+        // CLI's profile path (user feedback #2, 2026-05-02).
+        let transcribe_model = match (
+            &profile.transcription.backend,
+            &profile.transcription.deepgram,
+        ) {
+            (zwhisper_core::profile::schema::Backend::Deepgram, Some(dg)) => dg.model.clone(),
+            _ => profile.transcription.model.clone(),
+        };
         let hooks = LifecycleHooks {
             iface_ref,
             sessions: Arc::clone(&self.sessions),
@@ -258,7 +268,7 @@ impl RecorderInterface {
             audio_path: output,
             transcribe_auto: profile.transcription.auto,
             transcribe_backend: profile.transcription.backend.as_str().to_owned(),
-            transcribe_model: profile.transcription.model.clone(),
+            transcribe_model,
             transcribe_language: profile.transcription.language.clone(),
             transcribe_backend_config: backend_config,
         };
