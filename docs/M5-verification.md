@@ -13,12 +13,15 @@ $ cargo test --workspace
   zwhisperd                  12 passed (incl. profiles_service.list_v2)
   zwhisper-tray              108 passed (incl. cloud-marker tests)
   zwhisper-cli               128 passed
-  zwhisper-core lib          168 passed (incl. 13 secrets, 22 deepgram)
-  zwhisper-core it_deepgram    7 passed (wiremock-backed)
+  zwhisper-core lib          177 passed (incl. 14 secrets, 28 deepgram)
+  zwhisper-core it_deepgram   11 passed (wiremock-backed)
   zwhisper-core it_*          (other M0–M4 integration suites unchanged)
   zwhisper-ipc                14 passed (incl. ProfileEntryV2 signature)
+  zwhisper-tray              110 passed (incl. is_unknown_method)
   workspace integration       (pre-existing, unchanged)
-TOTAL: 385 tests passing, 0 failed
+TOTAL: 400 tests passing, 0 failed (post-ship review fixes 30cea05 + d767760
+       added the budget-bounded body read, model precedence, detected_language
+       resolution, plus security/silent-failure follow-ups)
 ```
 
 ```
@@ -42,6 +45,25 @@ header `Content-Type: audio/flac`, query params `model=nova-3`,
 with the diarized JSON fixture, and verifies the resulting
 `<flac>.txt` and `<flac>.json` exist on disk and contain the
 expected transcript and `speakers` array.
+
+Two post-ship fixes (commit `d767760`) tightened DoD #1's contract:
+
+- **Model precedence** — `it_deepgram.rs::end_to_end_against_mock_server`
+  asserts `query_param("model", "nova-3")` reflects whichever
+  source carries the more specific declaration. CLI and daemon
+  both prefer `[transcription.deepgram].model` over the generic
+  `[transcription].model` when the profile's backend is `deepgram`
+  (see `zwhisper-cli/src/commands/transcribe.rs:50-58` and
+  `zwhisperd/src/recorder_service.rs:259-268`). Without the fix
+  the typed sub-table was silently ignored.
+- **Resolved language** — `it_deepgram.rs::detected_language_overwrites_opts_language_when_autodetect`
+  asserts the artifacts file and `TranscriptArtifacts.language`
+  reflect the language Deepgram actually used (from
+  `results.channels[0].detected_language`). The negative test
+  `opts_language_used_when_response_omits_detected_language`
+  covers the fall-back path. Aligns with the
+  `TranscribeOpts.language` doc-comment "Resolved language (after
+  autodetect, if any)".
 
 Live-run smoke test (manual, gated behind `ZWHISPER_DEEPGRAM_API_KEY`):
 
@@ -262,10 +284,25 @@ exercises the budget: with `max_retries = 2` and
 `retry_total_budget_s = 6`, repeated 429s return after the budget
 elapses or the attempt count is reached, whichever comes first.
 
-Implementation at `transcribe/deepgram.rs:316-405` checks
-`started.elapsed() >= budget` at every loop iteration AND before
-sleeping; an upcoming sleep that would push past the budget is
-short-circuited to `BackendTimeout`.
+`it_deepgram.rs::slow_body_does_not_overshoot_retry_budget`
+covers the **body-read** half of the budget contract added in
+post-ship review fix #1 (commit `d767760`): a mock server stalls
+the response body for 10 s while the budget is 2 s; the call
+returns `BackendTimeout` within ~5 s, proving that the body
+read is bounded by the budget — not by `timeout_s` (60 s in the
+fixture).
+
+`it_deepgram.rs::budget_exhausted_429_classifies_as_quota_not_timeout`
+asserts that when the budget runs out *while we still hold a
+server response*, the error classifies as `BackendQuota` (not
+the misleading `BackendTimeout` the previous build produced).
+
+Implementation in `transcribe/deepgram.rs::post_with_retry`
+(returns `Vec<u8>` after reading the body inside
+`tokio::time::timeout(attempt_cap, …)` so both the request and
+its body share the per-attempt cap). Each attempt's cap is the
+remaining budget. `classify_http_error` is now sync and takes
+pre-read bytes, so no body-read happens outside the cap.
 
 ### 16. reqwest client reused across calls (per-instance OnceLock)
 
@@ -306,9 +343,12 @@ docs/M5-verification.md
 **M5 closes — READY.**
 
 All 18 DoD items have evidence above. Workspace test count rose
-from 305 (M4 ship) to 385 (M5 ship): +80 tests covering the new
-secrets resolver, profile widening, Deepgram batch backend,
-tray cloud marker, and `Profiles1.list_v2`.
+from 305 (M4 ship) to 400 (M5 ship + post-ship review fixes):
++95 tests covering the new secrets resolver, profile widening,
+Deepgram batch backend, tray cloud marker, `Profiles1.list_v2`,
+plus the post-ship rounds that added budget-bounded body reads,
+model precedence, detected_language resolution, and the zbus
+`MethodError` fallback predicate.
 
 ## Out of scope, deferred to M6+
 

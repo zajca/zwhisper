@@ -39,6 +39,10 @@ dirs = { workspace = true }
 uuid = { workspace = true }
 zbus = { workspace = true }
 futures-util = { workspace = true }
+# M5: `zwhisper backend health` issues a direct HTTP probe to the
+# cloud backend's auth endpoint; no daemon round-trip. Same TLS
+# profile (rustls-only) as the recorder path in `zwhisper-core`.
+reqwest = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

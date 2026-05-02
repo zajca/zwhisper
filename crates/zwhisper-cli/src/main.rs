@@ -27,7 +27,7 @@ mod cli;
 mod commands;
 mod profile_commands;
 
-use crate::cli::{ProfileCmd, RecordArgs, TranscribeArgs};
+use crate::cli::{BackendCmd, ProfileCmd, RecordArgs, TranscribeArgs};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -57,6 +57,12 @@ enum Command {
     #[command(subcommand)]
     Profile(ProfileCmd),
 
+    /// Direct cloud-backend probes (M5+) — health check, etc.
+    /// Bypasses the daemon; reads the API key from the same
+    /// resolution chain as the recorder.
+    #[command(subcommand)]
+    Backend(BackendCmd),
+
     /// Print runtime status from the daemon.
     Status,
 }
@@ -71,6 +77,7 @@ fn main() -> color_eyre::Result<()> {
         Command::Record(args) => commands::record::run(args),
         Command::Transcribe(args) => commands::transcribe::run(args),
         Command::Profile(cmd) => commands::profile::run(cmd),
+        Command::Backend(cmd) => commands::backend::run(cmd),
         Command::Status => commands::status::run(),
     }
 }

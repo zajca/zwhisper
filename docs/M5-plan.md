@@ -1360,21 +1360,23 @@ should we be strictly `0o600` only?
 strictly more locked-down than `0o600`; rejecting it would surprise
 users who run their own hardening scripts.
 
-### 3. (M5+, severity medium) Daemon-wide single `DeepgramBatch` vs per-session
+### 3. (resolved 2026-05-02) Daemon-wide single `DeepgramBatch` vs per-session
 
-**Risk.** Per § C2 the daemon caches one `DeepgramBatch` instance
-across sessions. If the user rotates their API key (edits
-`secrets.toml` and restarts… but the daemon is still running),
-the stale key persists in memory until daemon restart.
+**Resolution.** The risk as written did not actually
+materialize: the implementation creates a fresh `DeepgramBatch`
+per `transcribe_file()` call (see
+`crates/zwhisper-core/src/transcribe/mod.rs:148`), and
+`resolve_api_key()` reads the env / `secrets.toml` on every call
+(`crates/zwhisper-core/src/transcribe/deepgram.rs:376`). There is
+no daemon-wide cache of the resolved key, so editing
+`secrets.toml` takes effect on the **next transcription** with
+no restart and no D-Bus dance.
 
-**Mitigation.** Documented in `docs/M5-verification.md`:
-"Rotating an API key requires `systemctl --user restart
-zwhisperd`." Adding hot-reload is M6+ work (would require a
-filesystem watcher on `secrets.toml` and a key-rotation
-signal — non-trivial; outside M5 scope).
-
-**Open question.** Is restart-to-reload acceptable, or is a
-filesystem-watch hot-reload an M5 requirement? Default: restart-only.
+The `Daemon1.ReloadSecrets` open-contract-ask is therefore
+deleted (see § "Open contract asks"). C2's per-instance reqwest
+client cache survives — that one is about avoiding repeated TLS
+handshakes within a single session, which is orthogonal to the
+key rotation question.
 
 ### 4. (M5+, severity low) Cost preview in tray menu
 
@@ -1514,9 +1516,12 @@ test covers serialisation.
    Stream<Item = TranscriptDelta>`. M5 ships the schema room for
    it (`Capabilities.streaming: bool`) but no impl.
 
-5. **API-key rotation signal** — `cz.zajca.Zwhisper1.Daemon1.ReloadSecrets()`
-   D-Bus method so editing `secrets.toml` does not require a
-   daemon restart. Per § Risks #3.
+5. ~~**API-key rotation signal**~~ — *deleted 2026-05-02.* The
+   daemon already resolves the key on every transcription call
+   (`mod.rs:148` builds a fresh `DeepgramBatch` per request), so
+   no D-Bus signal is needed. See § Risks #3 for the resolution
+   note. A future caching layer would need to re-introduce this
+   ask before shipping.
 
 6. **`secrets.toml` per-backend section validation** — currently
    the resolver looks up `[deepgram] api_key`. As more backends

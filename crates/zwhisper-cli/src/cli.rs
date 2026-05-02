@@ -119,6 +119,24 @@ pub(crate) struct TranscribeArgs {
     pub(crate) language: String,
 }
 
+/// `zwhisper backend` subcommands — direct calls into a backend's
+/// API surface, bypassing the daemon. M5 ships a single `health`
+/// action that probes Deepgram's `/v1/projects` endpoint with the
+/// resolved API key; useful for validating a freshly-rotated
+/// `secrets.toml` before kicking off an actual recording. See
+/// `IDEA.md` § 4 for the per-backend semantics.
+#[derive(Debug, Subcommand)]
+pub(crate) enum BackendCmd {
+    /// Probe the backend's auth + reachability without uploading
+    /// audio. Exit code 0 on OK, 2 on auth / quota / network failure.
+    Health {
+        /// Backend identifier — currently only `deepgram`. The list
+        /// widens as more cloud backends land.
+        #[arg(long, default_value = "deepgram")]
+        backend: String,
+    },
+}
+
 /// `zwhisper profile` subcommands — pure config-plane helpers; do not
 /// touch `GStreamer`.
 #[derive(Debug, Subcommand)]

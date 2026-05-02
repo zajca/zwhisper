@@ -25,6 +25,7 @@
 //! code; record/status/profile dispatchers consult it before bailing
 //! to keep the table single-sourced.
 
+pub(crate) mod backend;
 pub(crate) mod profile;
 pub(crate) mod record;
 pub(crate) mod status;
