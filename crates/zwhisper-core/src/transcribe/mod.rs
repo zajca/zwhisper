@@ -1,7 +1,7 @@
 //! Transcription backend abstractions and implementations (M1+).
 
 pub(crate) mod discovery;
-pub(crate) mod error;
+pub mod error;
 pub(crate) mod models;
 pub(crate) mod whisper_cpp;
 
@@ -13,14 +13,14 @@ use std::time::Duration;
 #[allow(unused_imports)]
 pub(crate) use discovery::locate_whisper_cli;
 #[allow(unused_imports)]
-pub(crate) use error::TranscribeError;
+pub use error::TranscribeError;
 
 /// Static description of what a backend can do. Drives M2 profile
 /// validation and M5 backend-selection logic; M1 only exposes a
 /// single backend so this is mostly metadata for now.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Phase 4 wires these into the CLI status/diagnostics surface.
-pub(crate) struct Capabilities {
+pub struct Capabilities {
     pub streaming: bool,
     pub true_diarization: bool,
     /// ISO 639-1 codes plus "auto"; empty Vec means "auto only".
@@ -32,7 +32,7 @@ pub(crate) struct Capabilities {
 /// changing this struct.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Phase 4 wires the constructor into run_transcribe.
-pub(crate) struct TranscribeOpts {
+pub struct TranscribeOpts {
     /// Backend identifier, e.g. `"whisper-cpp"`. M5 widens the set.
     pub backend: String,
     /// Model name (no path, no `ggml-` prefix), e.g. `"small"`.
@@ -47,7 +47,7 @@ pub(crate) struct TranscribeOpts {
 /// break.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Phase 4 reads these fields when printing the CLI summary.
-pub(crate) struct TranscriptArtifacts {
+pub struct TranscriptArtifacts {
     pub txt_path: PathBuf,
     pub json_path: PathBuf,
     /// Wall-clock duration of the [`transcribe_file`] call.
@@ -65,7 +65,7 @@ pub(crate) struct TranscriptArtifacts {
 /// ([`whisper_cpp::WhisperCppLocal`]); M5 adds cloud backends.
 #[async_trait::async_trait]
 #[allow(dead_code)] // Phase 4 calls this through the public façade.
-pub(crate) trait Transcriber: Send + Sync {
+pub trait Transcriber: Send + Sync {
     fn id(&self) -> &'static str;
     fn capabilities(&self) -> Capabilities;
     async fn transcribe_file(
@@ -79,7 +79,7 @@ pub(crate) trait Transcriber: Send + Sync {
 /// id and dispatches; unknown ids surface
 /// [`TranscribeError::BackendUnknown`] with the supported set.
 #[allow(dead_code)] // Phase 4 wires this into run_transcribe.
-pub(crate) async fn transcribe_file(
+pub async fn transcribe_file(
     audio: &Path,
     opts: &TranscribeOpts,
 ) -> Result<TranscriptArtifacts, TranscribeError> {

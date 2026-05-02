@@ -48,6 +48,12 @@ toml_edit = { version = "0.22", features = ["serde"] }
 include_dir = "0.7"
 shellexpand = "3"
 
+# IPC / D-Bus (M3)
+zbus = { version = "5.15", default-features = false, features = ["tokio"] }
+zvariant = "5.7"
+futures-util = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+
 # Testing helpers
 assert_cmd = "2"
 predicates = "3"

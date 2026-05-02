@@ -27,71 +27,48 @@ fn prints_version() {
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
+/// Phase 4 (M3) replaces the M2 placeholder string with a daemon
+/// RPC. When no daemon is on the bus, the CLI prints the actionable
+/// "daemon not running" hint to stderr and exits 2 (per `DoD` #12 the
+/// "user-facing protocol error" code).
 #[test]
-fn status_runs_without_daemon() {
-    bin()
-        .arg("status")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("M2 profile system"));
-}
-
-/// Detect whether a `PipeWire` daemon is reachable on the test
-/// host. We treat the presence of `$XDG_RUNTIME_DIR/pipewire-0`
-/// as the canonical signal — that is the unix socket every
-/// `pipewiresrc` element ultimately connects to. Headless CI
-/// runners (and the Arch sandbox jobs) do not have this socket,
-/// so the live recording test cleanly skips instead of pretending
-/// `PipeWire` is absent.
-fn pipewire_socket_present() -> bool {
-    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
-        return false;
-    };
-    std::path::PathBuf::from(runtime)
-        .join("pipewire-0")
-        .exists()
-}
-
-/// End-to-end audio capture against a live `PipeWire` daemon. The
-/// test is **always compiled** (so the live path keeps its callers
-/// honest) and runtime-skips when no `PipeWire` socket is reachable.
-/// CI without audio hardware sees a clear "[SKIP]" line instead of
-/// a silent gap; the maintainer's box always exercises the full
-/// encoder + filesink path. The `audio-it` feature is kept as a
-/// historical marker but no longer gates compilation.
-#[test]
-fn record_writes_valid_flac() {
-    use std::process::Command as StdCommand;
-
-    if !pipewire_socket_present() {
-        eprintln!(
-            "[SKIP] record_writes_valid_flac: no $XDG_RUNTIME_DIR/pipewire-0 socket on this host"
-        );
-        return;
-    }
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("zwhisper-it.flac");
-    bin()
-        .args([
-            "record",
-            "--output",
-            path.to_str().expect("utf8 path"),
-            "--duration",
-            "1",
-        ])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("recording complete"));
-
-    let flac_test = StdCommand::new("flac")
-        .args(["-t", path.to_str().expect("utf8")])
-        .output()
-        .expect("flac CLI must be installed for audio-it tests");
+fn status_when_daemon_down_prints_actionable_hint() {
+    let assert = bin().arg("status").assert().failure();
+    let code = assert.get_output().status.code().expect("exit code");
+    assert_eq!(code, 2, "expected exit 2 when daemon is down, got {code}");
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
     assert!(
-        flac_test.status.success(),
-        "flac -t rejected the output: {}",
-        String::from_utf8_lossy(&flac_test.stderr)
+        stderr.contains("daemon not running"),
+        "stderr missing 'daemon not running' hint:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("systemctl --user start zwhisperd")
+            || stderr.contains("cz.zajca.Zwhisper1.service"),
+        "stderr missing actionable systemctl/activation hint:\n{stderr}"
+    );
+}
+
+/// Phase 4 narrowed `record` to require `--profile`. The bare-flag
+/// invocation (`--output --duration ...`) still parses at the clap
+/// layer (so the regression-net tests stay green) but the runtime
+/// dispatcher returns exit 2 with a hint pointing at `--profile
+/// default`. The previous live-FLAC test moved into
+/// `tests/profile.rs::record_with_meeting_profile_runs_end_to_end`
+/// (which already skips cleanly when no daemon / `PipeWire`).
+#[test]
+fn record_without_profile_returns_exit_2() {
+    let assert = bin()
+        .args(["record", "--output", "/tmp/x.flac", "--duration", "1"])
+        .assert()
+        .failure();
+    let code = assert.get_output().status.code().expect("exit code");
+    assert_eq!(code, 2, "expected exit 2 for M3 narrow violation, got {code}");
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
+    assert!(
+        stderr.contains("--profile"),
+        "stderr missing --profile hint:\n{stderr}"
     );
 }
 

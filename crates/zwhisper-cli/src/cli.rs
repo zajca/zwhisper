@@ -1,12 +1,30 @@
+//! Clap argument types for `zwhisper`.
+//!
+//! The clap surface is the regression net for M3 — its shape is kept
+//! byte-identical with M2 so that existing parser tests in
+//! `tests/cli.rs` and the in-module `mod tests` block still pass.
+//! Runtime semantics narrowed in M3:
+//!
+//! - `record` requires `--profile` at runtime. The bare-flag form
+//!   (`--output --mic --monitor --transcribe --model --lang`) still
+//!   parses — we keep the clap surface intact — but the `commands::
+//!   record::run` dispatcher returns exit code 2 with a hint pointing
+//!   at `--profile default` for users who relied on the M0/M1
+//!   invocation shape.
+//! - `transcribe <file>` keeps both invocation forms (`--profile` or
+//!   the raw `--backend / --model / --language` triple). Its
+//!   implementation stays local — the daemon does not yet expose a
+//!   transcribe-only RPC.
+//!
+//! `resolve_duration` is no longer wired into the runtime path
+//! (the daemon owns `max_duration_minutes` enforcement now), but the
+//! function and its unit tests are kept here as a self-contained
+//! invariant for the safeguard formula until M4 either re-uses or
+//! retires it.
+
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use color_eyre::eyre::{bail, eyre};
-use tracing::{info, warn};
-
-use crate::audio::recorder::{RecordOptions, record_blocking};
-use crate::profile::{self, OutputDest, Profile, commands as profile_commands};
-use crate::transcribe::{self, TranscribeOpts};
 
 #[derive(Debug, Args)]
 #[command(group(
@@ -119,186 +137,16 @@ pub(crate) enum ProfileCmd {
     },
 }
 
-pub(crate) fn run_record(args: &RecordArgs) -> color_eyre::Result<()> {
-    if let Some(name) = &args.profile {
-        let profile = profile::load(name).map_err(|e| eyre!("{e}"))?;
-        run_record_with_profile(&profile)
-    } else {
-        run_record_with_flags(args)
-    }
-}
-
-fn run_record_with_profile(profile: &Profile) -> color_eyre::Result<()> {
-    info!(profile = %profile.name, "record requested via profile");
-
-    let output = profile.primary_output_path().ok_or_else(|| {
-        eyre!(
-            "profile {:?} has no `[[output]]` of type \"file\"; \
-             add one with a path like \"~/Recordings/zwhisper/{{profile}}/{{timestamp}}.flac\"",
-            profile.name
-        )
-    })?;
-
-    if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| eyre!("could not create {}: {e}", parent.display()))?;
-    }
-
-    for out in &profile.outputs {
-        match out {
-            OutputDest::File { .. } => {}
-            OutputDest::Clipboard => warn!(
-                profile = %profile.name,
-                "profile requests clipboard output; deferred to M4 tray"
-            ),
-            OutputDest::Notification => warn!(
-                profile = %profile.name,
-                "profile requests notification output; deferred to M4 tray"
-            ),
-        }
-    }
-
-    let cap_minutes = profile.recording.max_duration_minutes;
-    let effective_duration = resolve_duration(0, cap_minutes)?;
-
-    // Empty `system_output` is rejected by `Profile::validate`
-    // (M2 ships mic + sink monitor only; mic-only mode lands in M3
-    // alongside the rate parameterisation), so this is always a
-    // non-empty node name or `"default"` here.
-    let opts = RecordOptions {
-        mic: profile.sources.mic.clone(),
-        monitor: profile.sources.system_output.clone(),
-        output: output.clone(),
-    };
-
-    let report = record_blocking(opts, effective_duration)
-        .map_err(|e| eyre!("recording failed: {e}"))?;
-
-    info!(
-        session_id = %report.session_id,
-        duration_ms = u64::try_from(report.duration.as_millis()).unwrap_or(u64::MAX),
-        samples_written = report.samples_written,
-        underruns = report.underruns,
-        warnings = report.warnings.len(),
-        audio_path = %report.audio_path.display(),
-        profile = %profile.name,
-        "recording complete (profile)",
-    );
-
-    if profile.transcription.auto {
-        let opts = TranscribeOpts {
-            backend: profile.transcription.backend.as_str().to_owned(),
-            model: profile.transcription.model.clone(),
-            language: profile.transcription.language.clone(),
-        };
-        run_transcribe_blocking(&report.audio_path, &opts)?;
-    }
-
-    Ok(())
-}
-
-fn run_record_with_flags(args: &RecordArgs) -> color_eyre::Result<()> {
-    let output = args
-        .output
-        .clone()
-        .ok_or_else(|| eyre!("--output is required when --profile is not set"))?;
-    info!(
-        mic = %args.mic,
-        monitor = %args.monitor,
-        output = %output.display(),
-        duration_s = args.duration,
-        max_duration_minutes = args.max_duration_minutes,
-        "record requested",
-    );
-
-    let effective_duration = resolve_duration(args.duration, args.max_duration_minutes)?;
-    info!(
-        requested_duration_s = args.duration,
-        effective_duration_s = effective_duration,
-        "duration resolved against safety cap"
-    );
-
-    let opts = RecordOptions {
-        mic: args.mic.clone(),
-        // `--monitor ""` is rejected by `devices::resolve` with a
-        // typed `InvalidArgument` — M2 ships mic + sink monitor
-        // only.
-        monitor: args.monitor.clone(),
-        output: output.clone(),
-    };
-
-    let report = record_blocking(opts, effective_duration)
-        .map_err(|e| eyre!("recording failed: {e}"))?;
-
-    info!(
-        session_id = %report.session_id,
-        duration_ms = u64::try_from(report.duration.as_millis()).unwrap_or(u64::MAX),
-        samples_written = report.samples_written,
-        underruns = report.underruns,
-        warnings = report.warnings.len(),
-        audio_path = %report.audio_path.display(),
-        "recording complete",
-    );
-
-    if let Some(backend) = &args.transcribe {
-        let model = args
-            .model
-            .clone()
-            .ok_or_else(|| eyre!("--model is required when --transcribe is set"))?;
-        let language = args
-            .lang
-            .clone()
-            .ok_or_else(|| eyre!("--lang is required when --transcribe is set"))?;
-        let opts = TranscribeOpts {
-            backend: backend.clone(),
-            model,
-            language,
-        };
-        run_transcribe_blocking(&report.audio_path, &opts)?;
-    }
-
-    Ok(())
-}
-
-fn run_transcribe_blocking(audio: &std::path::Path, opts: &TranscribeOpts) -> color_eyre::Result<()> {
-    info!(
-        backend = %opts.backend,
-        model = %opts.model,
-        language = %opts.language,
-        audio = %audio.display(),
-        "post-record transcribe starting",
-    );
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| eyre!("failed to build tokio runtime: {e}"))?;
-
-    match rt.block_on(transcribe::transcribe_file(audio, opts)) {
-        Ok(art) => {
-            info!(
-                txt = %art.txt_path.display(),
-                json = %art.json_path.display(),
-                audio_duration_ms =
-                    u64::try_from(art.audio_duration.as_millis()).unwrap_or(u64::MAX),
-                transcribe_duration_ms =
-                    u64::try_from(art.duration.as_millis()).unwrap_or(u64::MAX),
-                language = %art.language,
-                model = %art.model,
-                "post-record transcribe complete",
-            );
-            Ok(())
-        }
-        Err(err) => Err(eyre!(
-            "recording succeeded ({}) but transcribe failed: {err}",
-            audio.display(),
-        )),
-    }
-}
-
 /// Apply the runaway-recording safeguard (`max_duration_minutes` from
 /// IDEA.md § 1) against the user-supplied `--duration` value.
-fn resolve_duration(duration_s: u64, max_minutes: u64) -> color_eyre::Result<u64> {
+///
+/// Phase 4 moved the runtime enforcement into `zwhisperd`; this
+/// function is retained so the formula stays unit-tested in one place
+/// until M4 either re-uses (mic-only mode) or retires it.
+#[allow(dead_code)]
+pub(crate) fn resolve_duration(duration_s: u64, max_minutes: u64) -> color_eyre::Result<u64> {
+    use color_eyre::eyre::bail;
+
     if max_minutes == 0 {
         return Ok(duration_s);
     }
@@ -313,66 +161,6 @@ fn resolve_duration(duration_s: u64, max_minutes: u64) -> color_eyre::Result<u64
         );
     }
     Ok(duration_s)
-}
-
-pub(crate) async fn run_transcribe_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
-    let opts = if let Some(name) = &args.profile {
-        let profile = profile::load(name).map_err(|e| eyre!("{e}"))?;
-        TranscribeOpts {
-            backend: profile.transcription.backend.as_str().to_owned(),
-            model: profile.transcription.model.clone(),
-            language: profile.transcription.language.clone(),
-        }
-    } else {
-        TranscribeOpts {
-            backend: args.backend.clone(),
-            model: args.model.clone(),
-            language: args.language.clone(),
-        }
-    };
-
-    info!(
-        input = %args.input.display(),
-        backend = %opts.backend,
-        model = %opts.model,
-        language = %opts.language,
-        "transcribe requested",
-    );
-
-    let art = transcribe::transcribe_file(&args.input, &opts)
-        .await
-        .map_err(|err| eyre!("{err}"))?;
-
-    info!(
-        txt = %art.txt_path.display(),
-        json = %art.json_path.display(),
-        audio_duration_ms =
-            u64::try_from(art.audio_duration.as_millis()).unwrap_or(u64::MAX),
-        transcribe_duration_ms =
-            u64::try_from(art.duration.as_millis()).unwrap_or(u64::MAX),
-        language = %art.language,
-        model = %art.model,
-        "transcribe complete",
-    );
-
-    Ok(())
-}
-
-pub(crate) fn run_transcribe(args: &TranscribeArgs) -> color_eyre::Result<()> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| eyre!("failed to build tokio runtime: {e}"))?;
-    rt.block_on(run_transcribe_async(args))
-}
-
-pub(crate) fn run_profile(cmd: &ProfileCmd) -> color_eyre::Result<()> {
-    match cmd {
-        ProfileCmd::List => profile_commands::list(),
-        ProfileCmd::Show { name } => profile_commands::show(name),
-        ProfileCmd::Clone { src, dst } => profile_commands::clone(src, dst),
-        ProfileCmd::Migrate { name } => profile_commands::migrate(name),
-    }
 }
 
 #[cfg(test)]

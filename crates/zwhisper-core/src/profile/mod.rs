@@ -1,19 +1,20 @@
 // Profile module — IDEA.md § 6 + § 11 (M2).
 //
 // Public surface: `Profile`, `ProfileError`, `CURRENT_SCHEMA_VERSION`,
-// and `load(name)`. Everything else stays `pub(crate)` until M3
-// daemon needs it for IPC.
+// `ProfileSource`, `resolve`, `load(name)`, and `listing::list_entries`.
+// CLI-facing pretty-printers live in `zwhisper-cli`'s own
+// `profile_commands` module.
 
-pub(crate) mod commands;
 pub(crate) mod embedded;
-pub(crate) mod error;
-pub(crate) mod loader;
+pub mod error;
+pub mod listing;
+pub mod loader;
 pub(crate) mod migrations;
 pub(crate) mod paths;
-pub(crate) mod schema;
+pub mod schema;
 
-pub(crate) use error::ProfileError;
-pub(crate) use schema::{OutputDest, Profile};
+pub use error::ProfileError;
+pub use schema::{OutputDest, Profile};
 
 use std::path::PathBuf;
 
@@ -21,7 +22,7 @@ use std::path::PathBuf;
 /// `profile show` to make the user-vs-shipped-vs-embedded distinction
 /// visible and disambiguates `migrate`'s allowed targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProfileSource {
+pub enum ProfileSource {
     /// `${XDG_CONFIG_HOME}/zwhisper/profiles/<name>.toml`.
     UserOverride(PathBuf),
     /// `${ZWHISPER_DATA_DIR:-/usr/share/zwhisper}/profiles/<name>.toml`.
@@ -31,7 +32,7 @@ pub(crate) enum ProfileSource {
 }
 
 impl ProfileSource {
-    pub(crate) fn label(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
             Self::UserOverride(_) => "user",
             Self::Shipped(_) => "shipped",
@@ -42,7 +43,7 @@ impl ProfileSource {
 
 /// Resolve a profile name to its source, honouring the
 /// user → shipped → embedded precedence from IDEA.md § 6.
-pub(crate) fn resolve(name: &str) -> Result<ProfileSource, ProfileError> {
+pub fn resolve(name: &str) -> Result<ProfileSource, ProfileError> {
     paths::validate_name(name)?;
 
     let user = paths::user_override_path(name)?;
@@ -70,7 +71,7 @@ pub(crate) fn resolve(name: &str) -> Result<ProfileSource, ProfileError> {
 }
 
 /// Public façade: resolve and load a profile by name.
-pub(crate) fn load(name: &str) -> Result<Profile, ProfileError> {
+pub fn load(name: &str) -> Result<Profile, ProfileError> {
     match resolve(name)? {
         ProfileSource::UserOverride(path) | ProfileSource::Shipped(path) => {
             loader::load_from_path(&path)

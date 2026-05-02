@@ -15,12 +15,12 @@ use super::schema::Profile;
 /// incompatible change lands in `Profile`. M3 daemon must agree at
 /// startup; mismatched versions are a typed startup failure, not a
 /// runtime warning.
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 /// Load a profile by absolute path. Disk path is the only failure
 /// surface that touches I/O — the in-memory `load_from_str` fork is
 /// reused for embedded templates.
-pub(crate) fn load_from_path(path: &Path) -> Result<Profile, ProfileError> {
+pub fn load_from_path(path: &Path) -> Result<Profile, ProfileError> {
     let body = fs::read_to_string(path).map_err(|source| ProfileError::Io {
         path: path.to_owned(),
         source,
@@ -60,7 +60,7 @@ pub(crate) fn load_from_path(path: &Path) -> Result<Profile, ProfileError> {
 /// templates). No backup, no rewrite — embedded bodies that miss the
 /// current schema version are a build-time bug surfaced as
 /// `MigrationFailed` because there is nothing the runtime can do.
-pub(crate) fn load_from_str(body: &str, identity: &str) -> Result<Profile, ProfileError> {
+pub fn load_from_str(body: &str, identity: &str) -> Result<Profile, ProfileError> {
     let synthetic_path = PathBuf::from(format!("<embedded:{identity}>"));
 
     let doc: DocumentMut = body

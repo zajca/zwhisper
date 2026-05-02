@@ -10,7 +10,7 @@ use super::error::{ProfileError, SUPPORTED_BACKENDS_M2};
 /// any `GStreamer` state change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Mode {
+pub enum Mode {
     MonoMix,
     StereoSplit,
 }
@@ -20,7 +20,7 @@ pub(crate) enum Mode {
 /// future codecs a single-variant patch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Codec {
+pub enum Codec {
     Flac,
 }
 
@@ -28,7 +28,7 @@ pub(crate) enum Codec {
 /// the hyphen in `whisper-cpp` is preserved by `serde(rename)` so the
 /// TOML stays human-readable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Backend {
+pub enum Backend {
     #[serde(rename = "whisper-cpp")]
     WhisperCpp,
     #[serde(rename = "deepgram")]
@@ -40,7 +40,7 @@ pub(crate) enum Backend {
 }
 
 impl Backend {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::WhisperCpp => "whisper-cpp",
             Self::Deepgram => "deepgram",
@@ -51,7 +51,7 @@ impl Backend {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Sources {
+pub struct Sources {
     /// Mic source node name, or `"default"` for the `PipeWire` default.
     pub mic: String,
     /// Sink monitor node name. Required and non-empty in M2 — empty
@@ -63,7 +63,7 @@ pub(crate) struct Sources {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Recording {
+pub struct Recording {
     pub codec: Codec,
     pub sample_rate: u32,
     /// Auto-stop guard from `IDEA.md` § 7. `0` disables (matches the
@@ -72,7 +72,7 @@ pub(crate) struct Recording {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Transcription {
+pub struct Transcription {
     pub backend: Backend,
     pub model: String,
     pub language: String,
@@ -85,7 +85,7 @@ pub(crate) struct Transcription {
 /// time (M4 / tray-bound).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum OutputDest {
+pub enum OutputDest {
     File {
         path: String,
     },
@@ -96,13 +96,13 @@ pub(crate) enum OutputDest {
 /// Hotkey block (M6 only). Round-trips through M2 unchanged so users
 /// who write hotkey config now do not lose it after a save.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Hotkey {
+pub struct Hotkey {
     #[serde(default)]
     pub toggle: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Profile {
+pub struct Profile {
     pub schema_version: u32,
     pub name: String,
     #[serde(default)]
@@ -124,7 +124,7 @@ pub(crate) struct Profile {
 impl Profile {
     /// Runtime invariants beyond what serde already enforces. Called
     /// after a successful deserialize / migration.
-    pub(crate) fn validate(&self) -> Result<(), ProfileError> {
+    pub fn validate(&self) -> Result<(), ProfileError> {
         // M2 ships the M0 mono 16 kHz pipeline only — accepting
         // 44.1/48 kHz at the schema level while the recorder
         // hardcodes 16 kHz would silently lie about what was
@@ -210,7 +210,7 @@ impl Profile {
     /// Expand the first `OutputDest::File` entry to a concrete
     /// `PathBuf`, substituting `{timestamp}` and `{profile}` and the
     /// leading `~`. Returns `None` if no file output is declared.
-    pub(crate) fn primary_output_path(&self) -> Option<PathBuf> {
+    pub fn primary_output_path(&self) -> Option<PathBuf> {
         let template = self.outputs.iter().find_map(|o| match o {
             OutputDest::File { path } => Some(path.as_str()),
             _ => None,

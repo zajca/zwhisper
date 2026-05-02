@@ -15,28 +15,30 @@ name = "zwhisper"
 path = "src/main.rs"
 
 [dependencies]
+# M3 narrows the CLI to a thin D-Bus client — `audio` is no longer
+# pulled (so `gstreamer` drops out of the dep graph entirely, closing
+# DoD #8). `transcribe` stays because `zwhisper transcribe <file>` is
+# kept local in M3 (no daemon RPC for transcribe-only yet); the
+# transcribe feature pulls `whisper-cli` discovery + tokio process,
+# not GStreamer — verified via `cargo tree -p zwhisper-cli`.
+zwhisper-core = { path = "../zwhisper-core", default-features = false, features = ["profile", "transcribe"] }
+zwhisper-ipc = { path = "../zwhisper-ipc" }
+
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 color-eyre = { workspace = true }
 thiserror = { workspace = true }
-gstreamer = { workspace = true }
 tokio = { workspace = true }
-uuid = { workspace = true }
-dirs = { workspace = true }
-async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-which = { workspace = true }
-chrono = { workspace = true }
 tempfile = { workspace = true }
 toml_edit = { workspace = true }
-include_dir = { workspace = true }
-shellexpand = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
+dirs = { workspace = true }
+uuid = { workspace = true }
+zbus = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
@@ -45,17 +47,6 @@ tempfile = { workspace = true }
 serde_json = { workspace = true }
 which = { workspace = true }
 dirs = { workspace = true }
-
-[features]
-default = ["audio-it"]
-# Integration tests that drive the live PipeWire/GStreamer path. On
-# by default so a plain `cargo test` on the maintainer's box catches
-# audio-capture regressions; `record_writes_valid_flac` falls back
-# to a clear runtime skip when no PipeWire socket is reachable, so
-# headless CI runners without audio hardware still produce a green
-# build instead of a false negative. Run `cargo test
-# --no-default-features` to compile out the live test entirely.
-audio-it = []
 
 [lints]
 workspace = true

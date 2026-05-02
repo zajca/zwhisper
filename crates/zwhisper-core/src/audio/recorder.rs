@@ -42,7 +42,7 @@ const MAX_WARNINGS: usize = 100;
 /// Plain-Rust input to the audio façade. No `gst::*` types here so
 /// callers in M3 can reuse this struct as the D-Bus input shape.
 #[derive(Debug, Clone)]
-pub(crate) struct RecordOptions {
+pub struct RecordOptions {
     pub mic: String,
     /// Sink monitor node, or `"default"` for the `PipeWire` default.
     /// Empty strings are rejected by `devices::resolve` with a
@@ -50,6 +50,27 @@ pub(crate) struct RecordOptions {
     /// mix only, mic-only mode lands in M3.
     pub monitor: String,
     pub output: PathBuf,
+    /// Whether [`record_blocking`] should install a `Ctrl+C` handler.
+    /// The CLI sets `true` (legacy walking-skeleton). The daemon sets
+    /// `false` and drives shutdown via [`Recorder::request_stop`] from
+    /// its own SIGINT/SIGTERM handler. POSIX allows only one handler
+    /// per signal per process, so two `tokio::signal::ctrl_c()` calls
+    /// in the same process race each other (M3 stress-test C2).
+    ///
+    /// Default is `false` — the safer behaviour. CLI sites that still
+    /// want the legacy Ctrl+C race must opt in explicitly.
+    pub install_ctrl_c: bool,
+}
+
+impl Default for RecordOptions {
+    fn default() -> Self {
+        Self {
+            mic: String::new(),
+            monitor: String::new(),
+            output: PathBuf::new(),
+            install_ctrl_c: false,
+        }
+    }
 }
 
 /// Result of a successful recording. Carries the output path because
@@ -57,7 +78,7 @@ pub(crate) struct RecordOptions {
 /// it; threading the path through the caller after the fact is
 /// painful.
 #[derive(Debug, Clone)]
-pub(crate) struct RecordingReport {
+pub struct RecordingReport {
     pub session_id: SessionId,
     pub duration: Duration,
     /// Number of audio samples encoded into the FLAC. Computed from
@@ -92,7 +113,7 @@ enum RaceOutcome {
 }
 
 #[derive(Debug)]
-pub(crate) struct Recorder {
+pub struct Recorder {
     pipeline: gst::Pipeline,
     #[allow(dead_code)] // kept for forensics/D-Bus probes once watch-channel becomes the canonical signal source.
     bus: gst::Bus,
@@ -126,7 +147,7 @@ impl Recorder {
     /// `precreate_output` returns `EEXIST` because the user already
     /// has a file there, the function bails out *before* the token
     /// is issued, so the user's file is never touched.
-    pub(crate) fn start(opts: RecordOptions) -> Result<Self, RecordingError> {
+    pub fn start(opts: RecordOptions) -> Result<Self, RecordingError> {
         let session_id = SessionId::new();
         info!(%session_id, mic = %opts.mic, monitor = %opts.monitor,
               output = %opts.output.display(), "starting recorder");
@@ -205,32 +226,62 @@ impl Recorder {
         })
     }
 
-    #[allow(dead_code)] // M3 surfaces this on D-Bus.
-    pub(crate) fn session_id(&self) -> SessionId {
+    pub fn session_id(&self) -> SessionId {
         self.session_id
     }
 
-    #[allow(dead_code)] // M3 surfaces this on D-Bus GetStatus.
-    pub(crate) fn state(&self) -> RecorderState {
+    pub fn state(&self) -> RecorderState {
         *self.state.lock().expect("poisoned recorder state")
     }
 
     /// Subscribe to stop-reason updates. Used by `record_blocking` to
-    /// race the bus watchdog against the duration timer and Ctrl+C.
-    pub(crate) fn stop_subscriber(&self) -> watch::Receiver<StopReason> {
+    /// race the bus watchdog against the duration timer and Ctrl+C,
+    /// and by the M3 daemon's lifecycle task to wait for an explicit
+    /// stop request before invoking [`Recorder::await_completion`]
+    /// (which always sends EOS as its first step).
+    pub fn stop_subscriber(&self) -> watch::Receiver<StopReason> {
         self.stop_rx_anchor.clone()
     }
 
     /// Convert a caller-side request into a `StopReason` and write it
-    /// to the watch channel.
-    pub(crate) fn request_stop(&self, request: StopRequest) {
+    /// to the watch channel. Used by the legacy CLI walking-skeleton
+    /// path (`record_blocking`); the daemon goes through
+    /// [`Recorder::request_stop`] directly.
+    pub(crate) fn request_stop_from_request(&self, request: StopRequest) {
         let reason = match request {
             StopRequest::UserRequested => StopReason::UserRequested,
             StopRequest::DurationElapsed => StopReason::DurationElapsed,
         };
+        self.request_stop(reason);
+    }
+
+    /// Non-blocking external cancellation. Idempotent. Sends `reason`
+    /// into the recorder's internal `watch::Sender<StopReason>`; the
+    /// recorder's blocking finalisation path observes it on the next
+    /// poll and runs the EOS drain.
+    ///
+    /// This is the daemon's hook for `Recorder1.StopRecording` and
+    /// for the daemon's SIGTERM handler. Do **not** install
+    /// `tokio::signal::ctrl_c` inside [`Recorder::start`]; the caller
+    /// (CLI or daemon) owns signal policy (M3 stress-test C2).
+    pub fn request_stop(&self, reason: StopReason) {
         // send_replace tolerates closed receivers; the only time the
-        // channel closes is when Recorder is dropped.
+        // channel closes is when Recorder is dropped. Idempotent —
+        // calling twice with the same or different reasons is fine,
+        // the most recent wins (the bus thread already arbitrates).
         let _ = self.stop_tx.send_replace(reason);
+    }
+
+    /// Detached stop handle that survives moving `self` into a
+    /// `tokio::task::spawn_blocking`. The daemon stores this on the
+    /// `SessionManager` so `Recorder1.StopRecording` and the
+    /// SIGTERM handler can drive shutdown after the recorder has
+    /// been moved into the blocking task that holds
+    /// [`Recorder::await_completion`].
+    pub fn stop_handle(&self) -> StopHandle {
+        StopHandle {
+            tx: self.stop_tx.clone(),
+        }
     }
 
     /// Run the canonical EOS finalisation sequence: send Eos, wait for
@@ -238,7 +289,11 @@ impl Recorder {
     /// Null, join the bus thread, build the report. This is the only
     /// place that calls `set_state(Null)` — keeping the fragile path
     /// singular is the whole point of the handle.
-    pub(crate) fn stop(mut self) -> Result<RecordingReport, RecordingError> {
+    ///
+    /// Blocks the calling thread; the daemon offloads this onto
+    /// `tokio::task::spawn_blocking` so the multi-hour wait does not
+    /// hold the runtime worker.
+    pub fn await_completion(mut self) -> Result<RecordingReport, RecordingError> {
         *self.state.lock().expect("poisoned recorder state") = RecorderState::Stopping;
         info!(session_id = %self.session_id, "draining pipeline (sending EOS)");
 
@@ -338,6 +393,27 @@ impl Recorder {
                 })
             }
         }
+    }
+}
+
+/// Detached stop handle. Cloneable; sending into the recorder's
+/// `watch` channel is idempotent. Used by `zwhisperd` to wire the
+/// `Recorder1.StopRecording` D-Bus call to a recorder owned by a
+/// `spawn_blocking` task — passing the recorder itself across that
+/// boundary would block the runtime worker on the multi-hour
+/// `await_completion` call.
+#[derive(Debug, Clone)]
+pub struct StopHandle {
+    tx: watch::Sender<StopReason>,
+}
+
+impl StopHandle {
+    /// Send `reason` into the recorder's stop channel. Errors are
+    /// swallowed because a closed channel means the recorder
+    /// already finalised — exactly the success path for an
+    /// idempotent cancel.
+    pub fn request_stop(&self, reason: StopReason) {
+        let _ = self.tx.send_replace(reason);
     }
 }
 
@@ -574,7 +650,7 @@ fn wait_for_stop_signal(stop_rx: &mut watch::Receiver<StopReason>) -> bool {
 /// Ctrl+C against `--duration`, then runs the EOS finalisation. M3
 /// will call `Recorder::start`/`stop` directly from the D-Bus handler
 /// instead of going through this function.
-pub(crate) fn record_blocking(
+pub fn record_blocking(
     opts: RecordOptions,
     duration_secs: u64,
 ) -> Result<RecordingReport, RecordingError> {
@@ -587,6 +663,7 @@ pub(crate) fn record_blocking(
             source: Box::new(e),
         })?;
 
+    let install_ctrl_c = opts.install_ctrl_c;
     let recorder = Recorder::start(opts)?;
     let mut stop_rx = recorder.stop_subscriber();
 
@@ -595,7 +672,7 @@ pub(crate) fn record_blocking(
     // executor. Once we know which signal fired we drop back to a
     // synchronous code path for the EOS finalisation, which is what
     // `wait_for_stop_signal` expects (no nested tokio block_on).
-    let race_result = runtime.block_on(race_stop(&mut stop_rx, duration_secs));
+    let race_result = runtime.block_on(race_stop(&mut stop_rx, duration_secs, install_ctrl_c));
     drop(runtime);
 
     let outcome = match race_result {
@@ -608,8 +685,8 @@ pub(crate) fn record_blocking(
             // pipeline, which truncates the FLAC header. Treat this
             // as a user-requested stop, drain cleanly, then surface
             // the original error.
-            recorder.request_stop(StopRequest::UserRequested);
-            let _ = recorder.stop();
+            recorder.request_stop_from_request(StopRequest::UserRequested);
+            let _ = recorder.await_completion();
             return Err(race_err);
         }
     };
@@ -621,15 +698,16 @@ pub(crate) fn record_blocking(
     // here would clobber that with UserRequested and turn a real
     // failure into a misleading success.
     if let RaceOutcome::Caller(request) = outcome {
-        recorder.request_stop(request);
+        recorder.request_stop_from_request(request);
     }
 
-    recorder.stop()
+    recorder.await_completion()
 }
 
 async fn race_stop(
     stop_rx: &mut watch::Receiver<StopReason>,
     duration_secs: u64,
+    install_ctrl_c: bool,
 ) -> Result<RaceOutcome, RecordingError> {
     let bus_stopped = async {
         loop {
@@ -649,15 +727,29 @@ async fn race_stop(
         }
     };
 
+    // `ctrl_c_arm` only resolves when `install_ctrl_c == true`; the
+    // `pending().await` branch never wakes when disabled, so the
+    // POSIX-singleton signal handler is never installed (M3 stress-
+    // test C2). Two `tokio::signal::ctrl_c()` calls in the same
+    // process race each other, which is exactly what the daemon must
+    // avoid when it owns the signal policy.
+    let ctrl_c_arm = async {
+        if install_ctrl_c {
+            tokio::signal::ctrl_c().await
+        } else {
+            std::future::pending::<std::io::Result<()>>().await
+        }
+    };
+
     let outcome = if duration_secs == 0 {
         tokio::select! {
-            res = tokio::signal::ctrl_c() => res.map(|()| RaceOutcome::Caller(StopRequest::UserRequested)),
+            res = ctrl_c_arm => res.map(|()| RaceOutcome::Caller(StopRequest::UserRequested)),
             () = bus_stopped => Ok(RaceOutcome::BusInitiated),
         }
     } else {
         let dur = Duration::from_secs(duration_secs);
         tokio::select! {
-            res = tokio::signal::ctrl_c() => res.map(|()| RaceOutcome::Caller(StopRequest::UserRequested)),
+            res = ctrl_c_arm => res.map(|()| RaceOutcome::Caller(StopRequest::UserRequested)),
             () = tokio::time::sleep(dur) => Ok(RaceOutcome::Caller(StopRequest::DurationElapsed)),
             () = bus_stopped => Ok(RaceOutcome::BusInitiated),
         }

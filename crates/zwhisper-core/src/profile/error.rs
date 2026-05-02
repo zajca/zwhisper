@@ -8,13 +8,13 @@ use super::schema::Mode;
 /// Identifiers `[transcription].backend` accepts in M2. The slice is
 /// re-exported by `BackendUnknown` so users see exactly which set is
 /// supported in this build.
-pub(crate) const SUPPORTED_BACKENDS_M2: &[&str] = &["whisper-cpp"];
+pub const SUPPORTED_BACKENDS_M2: &[&str] = &["whisper-cpp"];
 
 /// Errors surfaced by the profile module. Each variant maps to one
 /// failure class so the CLI / future daemon can dispatch on them
 /// without parsing display strings.
 #[derive(Debug, Error)]
-pub(crate) enum ProfileError {
+pub enum ProfileError {
     #[error("profile {name:?} not found (searched: {searched:?})")]
     NotFound {
         name: String,

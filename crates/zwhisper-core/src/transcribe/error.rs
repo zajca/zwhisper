@@ -10,7 +10,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 #[allow(dead_code)] // Variants land as the pipeline is wired up in M1 phase 3+.
-pub(crate) enum TranscribeError {
+pub enum TranscribeError {
     #[error(
         "no whisper.cpp binary found; checked {searched:?}. Install whisper.cpp \
          (e.g. AUR `whisper.cpp` on Arch) or set ZWHISPER_WHISPER_CLI to its path"

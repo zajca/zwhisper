@@ -1,0 +1,59 @@
+[package]
+name = "zwhisper-core"
+description = "zwhisper core library: audio capture, profile loading, transcription"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# audio (gstreamer feature)
+gstreamer = { workspace = true, optional = true }
+# logging + base
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+dirs = { workspace = true }
+# tokio used by transcribe + audio shutdown handling
+tokio = { workspace = true, optional = true }
+# transcription
+async-trait = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+which = { workspace = true, optional = true }
+# profiles
+toml_edit = { workspace = true }
+include_dir = { workspace = true }
+shellexpand = { workspace = true }
+# tempfile used by both profile migrations and transcribe whisper_cpp
+tempfile = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true, optional = true }
+
+[features]
+default = ["audio", "profile", "transcribe"]
+profile = []
+audio = ["dep:gstreamer", "dep:tokio", "dep:libc"]
+# `transcribe` pulls libc for the unix-only EXDEV cross-device probe
+# in `whisper_cpp::is_cross_device` — the daemon previously got it
+# transitively through `audio`, but Phase 4 split CLI (transcribe-only)
+# and daemon (audio + transcribe) so transcribe must declare it
+# directly. `libc` is target-gated to `cfg(unix)`; on Windows the dep
+# is a no-op.
+transcribe = ["dep:async-trait", "dep:tokio", "dep:serde_json", "dep:which", "dep:libc"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

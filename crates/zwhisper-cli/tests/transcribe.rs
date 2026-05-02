@@ -162,14 +162,22 @@ fn transcribe_writes_txt_and_json() {
     );
 }
 
-/// Combines the M0 live-capture path (`PipeWire` → FLAC) with the
-/// M1 transcribe path in a single CLI invocation, asserting all
-/// three artefacts (`.flac`, `.flac.txt`, `.flac.json`) end up next
-/// to each other. Triple-skipped when `PipeWire`, `whisper-cli`, or
-/// a model is missing — each branch prints a distinct `[SKIP]`
-/// line so the reason is visible with `cargo test -- --nocapture`.
+/// M3 (Phase 4) routes `record` through D-Bus, so an end-to-end
+/// record+transcribe test must drive the daemon. Phase 5 will add a
+/// managed-daemon harness; until then this test skips cleanly when
+/// `zwhisperd` is not on the session bus, when `PipeWire` is
+/// unavailable, when `whisper-cli` is missing, or when no
+/// `ggml-*.bin` model is installed. Each branch prints a distinct
+/// `[SKIP]` line so the reason is visible with `cargo test --
+/// --nocapture`.
 #[test]
 fn record_then_transcribe_end_to_end() {
+    if !daemon_alive() {
+        eprintln!(
+            "[SKIP] record_then_transcribe_end_to_end: zwhisperd is not on the session bus (Phase 5 will add a managed-daemon harness)"
+        );
+        return;
+    }
     if !pipewire_socket_present() {
         eprintln!(
             "[SKIP] record_then_transcribe_end_to_end: no $XDG_RUNTIME_DIR/pipewire-0 socket on this host"
@@ -184,56 +192,49 @@ fn record_then_transcribe_end_to_end() {
         return;
     }
 
-    let Some(model_name) = find_a_model() else {
+    let Some(_model_name) = find_a_model() else {
         eprintln!(
             "[SKIP] record_then_transcribe_end_to_end: no ggml-*.bin model in ~/.local/share/zwhisper/models/; download e.g. ggml-tiny.bin to run this test"
         );
         return;
     };
 
-    let work = tempfile::tempdir().expect("tempdir");
-    let audio = work.path().join("captured.flac");
-
+    // Drive via the embedded `default` profile — the M3 narrow
+    // requires --profile, and `default` ships transcription.auto =
+    // true so the CLI prints both audio and transcript paths.
     let output = Command::cargo_bin("zwhisper")
         .expect("binary should be built by cargo test")
-        .args([
-            "record",
-            "--output",
-            audio.to_str().expect("utf8"),
-            "--duration",
-            "3",
-            "--transcribe",
-            "whisper-cpp",
-            "--model",
-            &model_name,
-            "--lang",
-            "en",
-        ])
+        .args(["record", "--profile", "default"])
         .output()
-        .expect("zwhisper record+transcribe should run");
+        .expect("zwhisper record should run via D-Bus");
 
     assert!(
         output.status.success(),
-        "record+transcribe failed:\nstdout: {}\nstderr: {}",
+        "record failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("audio:"),
+        "expected an audio path in stdout; got:\n{stdout}"
+    );
+}
 
-    assert!(
-        audio.exists(),
-        "expected FLAC at {} to exist",
-        audio.display()
-    );
-    let txt = append_extension(&audio, ".txt");
-    let json = append_extension(&audio, ".json");
-    assert!(
-        txt.exists(),
-        "expected text artefact at {} to exist",
-        txt.display()
-    );
-    assert!(
-        json.exists(),
-        "expected JSON artefact at {} to exist",
-        json.display()
-    );
+/// Probe the session bus for `cz.zajca.Zwhisper1` via `busctl`. See
+/// `tests/profile.rs::daemon_alive` for the rationale.
+fn daemon_alive() -> bool {
+    let Ok(output) = Command::new("busctl")
+        .args(["--user", "list", "--no-pager", "--no-legend"])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .any(|line| line.starts_with("cz.zajca.Zwhisper1 "))
 }

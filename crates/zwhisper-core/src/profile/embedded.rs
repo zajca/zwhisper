@@ -38,7 +38,7 @@ pub(crate) fn names() -> Vec<&'static str> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::profile::loader::load_from_str;
+    use super::super::loader::load_from_str;
 
     #[test]
     fn names_contains_shipped_profiles() {

@@ -7,7 +7,7 @@ use thiserror::Error;
 /// M0 → M3 daemon split: M3 maps these to D-Bus error names verbatim.
 #[derive(Debug, Error)]
 #[allow(dead_code)] // Variants land as the pipeline is wired up in phase 3+.
-pub(crate) enum RecordingError {
+pub enum RecordingError {
     #[error("device discovery failed: {0}")]
     DeviceDiscovery(#[source] DeviceError),
 
@@ -47,7 +47,7 @@ pub(crate) enum RecordingError {
 /// them leaves the user chasing the wrong tool when something
 /// breaks (e.g. `pw-cli` missing surfacing as "wpctl failed").
 #[derive(Debug, Error)]
-pub(crate) enum DeviceError {
+pub enum DeviceError {
     #[error("`{tool}` invocation failed: {message}")]
     CommandFailed {
         tool: &'static str,
