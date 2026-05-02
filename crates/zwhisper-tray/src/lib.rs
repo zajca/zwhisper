@@ -6,6 +6,7 @@
 //! `docs/M4-plan.md` § "Crate dependency graph".
 
 pub mod cmd;
+pub mod config;
 pub mod dbus;
 pub mod icon;
 pub mod pump;

@@ -36,11 +36,11 @@ use tracing::warn;
 use crate::icon::{icon_for_state, state_label_for, tooltip_text};
 use crate::state::{IconState, PendingCmd, TrayState};
 
-/// Outbound command channel capacity. Menu activations use
-/// `try_send`, so this only buffers very brief bursts before the
-/// dispatcher (P4) drains them. Eight is generous for human-scale
-/// clicking.
-pub const COMMAND_CHANNEL_CAPACITY: usize = 8;
+// `COMMAND_CHANNEL_CAPACITY` lives in `crate::config` (per CLAUDE.md
+// "all configuration in a dedicated module"); a re-export keeps
+// existing import paths from main.rs intact while the canonical
+// definition is in one place.
+pub use crate::config::COMMAND_CHANNEL_CAPACITY;
 
 /// One row in the profile submenu, computed by [`menu_flags_for`].
 ///

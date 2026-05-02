@@ -267,17 +267,34 @@ pub fn apply_recording_complete(
 
 /// Reducer for `Recorder1.TranscriptComplete`. Replaces the
 /// `last_session` slot with a fully-populated mirror.
+///
+/// **`audio_path` resolution.** The signal payload itself does NOT
+/// carry the audio path — only the transcript path, the bytes, and
+/// the backend. The caller MUST supply the audio path via
+/// `audio_path_from_state_file`, which is the value the daemon
+/// wrote into `last-session.json` BEFORE emitting the signal (C2
+/// invariant). When the read fails or the file's `session_id`
+/// doesn't match, the caller passes `None` and we fall back to the
+/// in-memory cache **only if the cached `session_id` matches the
+/// signal's `session_id`** — otherwise the cache is stale and we
+/// surface an empty path so the menu can disable "Open last
+/// recording" rather than open a wrong file (the bug fix from the
+/// 2026-05-02 review).
 pub fn apply_transcript_complete(
     state: &mut TrayState,
     session_id: &str,
+    audio_path_from_state_file: Option<PathBuf>,
     transcript_path: &str,
     backend: &str,
     completed_at_unix_ms: u64,
 ) {
-    let audio_path = state
-        .last_session
-        .as_ref()
-        .map_or_else(PathBuf::new, |s| s.audio_path.clone());
+    let audio_path = audio_path_from_state_file.unwrap_or_else(|| {
+        state
+            .last_session
+            .as_ref()
+            .filter(|cached| cached.session_id == session_id)
+            .map_or_else(PathBuf::new, |cached| cached.audio_path.clone())
+    });
 
     state.last_session = Some(LastCompleted {
         session_id: session_id.to_owned(),
@@ -466,5 +483,112 @@ mod tests {
         }"#;
         let err = LastCompleted::from_state_file_bytes(json).unwrap_err();
         assert!(matches!(err, ParseError::EmptyAudioPath));
+    }
+
+    fn cached_session(session_id: &str, audio: &str) -> LastCompleted {
+        LastCompleted {
+            session_id: session_id.to_owned(),
+            audio_path: PathBuf::from(audio),
+            transcript_path: None,
+            backend: None,
+            completed_at_unix_ms: 0,
+        }
+    }
+
+    #[test]
+    fn apply_transcript_complete_uses_explicit_audio_path() {
+        // Happy path: caller read the daemon's state file and
+        // passed in the canonical audio path. Reducer trusts it
+        // unconditionally; the cache is irrelevant.
+        let mut state = TrayState {
+            last_session: Some(cached_session("OLD", "/tmp/STALE.flac")),
+            ..TrayState::default()
+        };
+        apply_transcript_complete(
+            &mut state,
+            "NEW",
+            Some(PathBuf::from("/tmp/correct.flac")),
+            "/tmp/correct.flac.txt",
+            "whisper-cli",
+            42,
+        );
+        let last = state.last_session.as_ref().unwrap();
+        assert_eq!(last.session_id, "NEW");
+        assert_eq!(last.audio_path, PathBuf::from("/tmp/correct.flac"));
+        assert_eq!(
+            last.transcript_path,
+            Some(PathBuf::from("/tmp/correct.flac.txt"))
+        );
+    }
+
+    #[test]
+    fn apply_transcript_complete_falls_back_to_cache_only_when_session_matches() {
+        // Reconnect-window safety: caller could not read the file
+        // (None) but the cache has a matching session_id. Falling
+        // back to the cache is fine because the cache was set by
+        // an earlier RecordingComplete for the SAME session.
+        let mut state = TrayState {
+            last_session: Some(cached_session("MATCH", "/tmp/match.flac")),
+            ..TrayState::default()
+        };
+        apply_transcript_complete(
+            &mut state,
+            "MATCH",
+            None,
+            "/tmp/match.flac.txt",
+            "whisper-cli",
+            42,
+        );
+        let last = state.last_session.as_ref().unwrap();
+        assert_eq!(last.audio_path, PathBuf::from("/tmp/match.flac"));
+    }
+
+    #[test]
+    fn apply_transcript_complete_empty_audio_when_cache_session_mismatches() {
+        // The bug fix from the 2026-05-02 review: with no explicit
+        // path AND a stale cache (different session_id), we MUST
+        // NOT silently graft the old audio_path onto the new
+        // session. Better to surface an empty path so the menu
+        // does not point at the wrong file.
+        let mut state = TrayState {
+            last_session: Some(cached_session("OLD", "/tmp/wrong.flac")),
+            ..TrayState::default()
+        };
+        apply_transcript_complete(
+            &mut state,
+            "NEW",
+            None,
+            "/tmp/new.flac.txt",
+            "whisper-cli",
+            42,
+        );
+        let last = state.last_session.as_ref().unwrap();
+        assert_eq!(last.session_id, "NEW");
+        assert_eq!(
+            last.audio_path,
+            PathBuf::new(),
+            "must not graft stale OLD audio_path onto NEW session",
+        );
+    }
+
+    #[test]
+    fn apply_transcript_complete_empty_audio_when_cache_absent() {
+        // No cache, no explicit path → empty (defensive). The
+        // dispatcher menu builder treats an empty path as "no
+        // audio file" and disables Open last recording.
+        let mut state = TrayState {
+            last_session: None,
+            ..TrayState::default()
+        };
+        apply_transcript_complete(
+            &mut state,
+            "NEW",
+            None,
+            "/tmp/new.flac.txt",
+            "whisper-cli",
+            42,
+        );
+        let last = state.last_session.as_ref().unwrap();
+        assert_eq!(last.audio_path, PathBuf::new());
     }
 }

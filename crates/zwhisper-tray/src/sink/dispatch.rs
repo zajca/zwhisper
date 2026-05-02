@@ -28,9 +28,10 @@ pub struct TranscriptJob {
     pub backend: String,
 }
 
-/// Default size threshold per M4-plan `DoD` #19 (512 KiB). Override at
-/// runtime through `ZWHISPER_TRAY_CLIPBOARD_MAX_BYTES`.
-pub const DEFAULT_CLIPBOARD_MAX_BYTES: u64 = 512 * 1024;
+// `DEFAULT_CLIPBOARD_MAX_BYTES` lives in `crate::config` (per CLAUDE.md
+// "all configuration in a dedicated module"). Re-exported here so
+// existing callers keep their import paths.
+pub use crate::config::DEFAULT_CLIPBOARD_MAX_BYTES;
 
 /// Decision tree applied to a single `TranscriptJob` once we know
 /// the file size and whether the file is readable.

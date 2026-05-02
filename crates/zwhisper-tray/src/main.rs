@@ -49,23 +49,17 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use zwhisper_tray::cmd::run_dispatcher;
+use zwhisper_tray::config::{COMMAND_CHANNEL_CAPACITY, Config, SINK_CHANNEL_CAPACITY};
 use zwhisper_tray::dbus::connect_session;
 use zwhisper_tray::pump::run_pump;
 use zwhisper_tray::session_env::{SessionProbe, probe as session_probe};
 use zwhisper_tray::single_instance;
 use zwhisper_tray::sink::clipboard::ClipboardSink;
-use zwhisper_tray::sink::dispatch::{
-    DEFAULT_CLIPBOARD_MAX_BYTES, TranscriptJob, run_dispatcher as run_sink_dispatcher,
-};
+use zwhisper_tray::sink::dispatch::{TranscriptJob, run_dispatcher as run_sink_dispatcher};
 use zwhisper_tray::sink::notification::NotificationSink;
 use zwhisper_tray::state::{PendingCmd, TrayState};
 use zwhisper_tray::supervisor::run_supervisor;
-use zwhisper_tray::tray::{COMMAND_CHANNEL_CAPACITY, ZwhisperTray};
-
-/// Capacity of the pump → sink-dispatcher mpsc. 8 is enough headroom
-/// for transcript bursts (`TranscriptComplete` only fires once per
-/// session) without growing memory unboundedly.
-const SINK_CHANNEL_CAPACITY: usize = 8;
+use zwhisper_tray::tray::ZwhisperTray;
 
 #[tokio::main(flavor = "current_thread")]
 #[allow(clippy::too_many_lines)]
@@ -114,20 +108,22 @@ async fn main() -> Result<()> {
 
     // Sink dispatcher (P5). Owns the clipboard handle for the
     // tray's lifetime (binding amendment C1) and runs the
-    // notification sink. Reads `ZWHISPER_TRAY_CLIPBOARD_MAX_BYTES`
-    // override (DoD #19); falls back to `DEFAULT_CLIPBOARD_MAX_BYTES`.
+    // notification sink. The clipboard size guard reads
+    // `ZWHISPER_TRAY_CLIPBOARD_MAX_BYTES` (per `Config::from_env`);
+    // invalid values fall back to the documented default with a warn.
+    let cfg = Config::from_env();
+    info!(
+        clipboard_max_bytes = cfg.clipboard_max_bytes,
+        "tray runtime config loaded"
+    );
     let clipboard_sink = ClipboardSink::new();
     let notification_sink = NotificationSink::new();
-    let max_bytes = std::env::var("ZWHISPER_TRAY_CLIPBOARD_MAX_BYTES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_CLIPBOARD_MAX_BYTES);
     let sink_join = tokio::spawn(async move {
         if let Err(e) = run_sink_dispatcher(
             sink_rx,
             clipboard_sink,
             notification_sink,
-            max_bytes,
+            cfg.clipboard_max_bytes,
             shutdown_rx_sinks,
         )
         .await

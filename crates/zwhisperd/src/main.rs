@@ -23,6 +23,7 @@ use tracing::{error, info, warn};
 use zwhisper_core::audio::state::StopReason;
 use zwhisper_ipc::{BUS_NAME, OBJECT_PATH};
 
+mod config;
 mod last_session;
 mod lifecycle;
 mod profiles_service;
@@ -30,22 +31,11 @@ mod recorder_service;
 mod session;
 mod tracing_init;
 
+use crate::config::{INFLIGHT_START_DRAIN_TIMEOUT, SHUTDOWN_DRAIN_TIMEOUT};
+
 use crate::profiles_service::ProfilesInterface;
 use crate::recorder_service::RecorderInterface;
 use crate::session::SessionManager;
-
-/// Maximum time the daemon waits for the in-flight session's
-/// lifecycle task to finish draining after SIGTERM/SIGINT before
-/// giving up and exiting anyway. Keeps shutdown responsive even
-/// when the recorder is wedged.
-const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Maximum time the daemon waits for in-flight `start_recording`
-/// calls to finish (so their lifecycle handles get registered)
-/// before draining lifecycle tasks. Short on purpose: the
-/// synchronous prelude inside `start_recording` only takes a few
-/// hundred milliseconds even on slow hardware.
-const INFLIGHT_START_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> color_eyre::Result<()> {

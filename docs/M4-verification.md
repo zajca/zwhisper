@@ -97,7 +97,9 @@ Tests (`sink::dispatch::tests`):
 - `body_for_run_both_mentions_clipboard_success`
 - `body_for_clipboard_failed_mentions_unavailable`
 
-The notification body always carries the transcript path so the user can copy it manually if the desktop's "Open in editor" action button does not invoke `xdg-open` (DoD #23 keeps notification show non-blocking; per-notification ActionInvoked listener deferred — flagged in M4-plan § "Out of scope").
+**Notification action button is wired** (post-2026-05-02 review fix). The notification carries an `Open in editor` action with key `open-in-editor` (`crates/zwhisper-tray/src/sink/notification.rs:43-44`). After `show_async().await`, the sink spawns `listen_for_action` (`notification.rs:115-130`) — a tokio task that awaits `wait_for_action_async`; on `ActionResponse::Custom("open-in-editor")` it spawns `xdg-open <transcript_path>` and logs success / non-zero exit / spawn failure separately. DoD #23 non-blocking property preserved: each notification owns ONE detached tokio task (cheap, ~few KB each), no `spawn_blocking` thread accumulation. Workspace dep is `notify-rust = { features = ["z-with-tokio"] }` so the underlying zbus connection lives on our tokio runtime.
+
+The body still carries the absolute transcript path as a secondary affordance for desktops that strip action buttons.
 
 **Manual verification step:** run a recording with `transcription.auto = true`, observe notification appears with title "Transcript ready" and body containing the file path. Switch to text editor, sleep 5 s, paste — content present (C1 invariant).
 
@@ -123,6 +125,15 @@ Tests (`zwhisper-tray::state::tests`):
 - `last_completed_rejects_unsupported_schema`
 
 **The C2 ordering test** (daemon writes file before signal): `crates/zwhisperd/tests/last_session.rs::last_session_file_persisted_before_recording_complete_signal` and `::last_session_file_persisted_before_transcript_complete_signal`. Both passing on this host (PipeWire present).
+
+**Stale-cache `audio_path` fix** (post-2026-05-02 review). Before the fix, `apply_transcript_complete` resolved `audio_path` from `state.last_session.as_ref().map_or_else(PathBuf::new, |s| s.audio_path.clone())` — i.e., it grafted the cached entry's audio path onto the new session even when the cached `session_id` belonged to a different recording (typical when the tray missed `RecordingComplete` due to a reconnect/resubscribe gap). After the fix, `pump.rs` re-reads `last-session.json` on every `TranscriptComplete` and passes the file's `audio_path` (filtered by matching `session_id`) into the reducer. The reducer now only falls back to the in-memory cache when the cached `session_id` matches; otherwise it stores `PathBuf::new()` so the menu disables "Open last recording" rather than open a wrong file.
+
+Tests:
+
+- `apply_transcript_complete_uses_explicit_audio_path` — file value wins over stale cache.
+- `apply_transcript_complete_falls_back_to_cache_only_when_session_matches` — cache used only when session_id matches (reconnect-window safety).
+- `apply_transcript_complete_empty_audio_when_cache_session_mismatches` — never grafts stale audio path onto a different session.
+- `apply_transcript_complete_empty_audio_when_cache_absent` — defensive empty path.
 
 The "no clipboard, no notify on late start" guarantee follows from architecture: the pump only fires `TranscriptComplete` sink jobs when its signal stream receives the live signal. A signal emitted before the tray subscribed never reaches the pump and therefore never reaches the dispatcher. The state file is read separately and its values are surfaced in the menu, NEVER in the sink dispatcher.
 
@@ -314,7 +325,7 @@ Tests (integration, gated on PipeWire):
 
 `crates/zwhisper-tray/src/sink/notification.rs::deliver` uses `notify_rust::Notification::show()` (non-blocking) inside a `tokio::task::spawn_blocking`. The `NotificationHandle` is dropped immediately; no `wait_for_action` or `wait_for_close` calls. No per-notification thread accumulation.
 
-The architecture's "global ActionInvoked listener for the per-notification 'Open in editor' action" is a flagged P5+ follow-up in `notification.rs` — for M4 the body always carries the transcript path so the user can copy it manually.
+The "Open in editor" action button is wired end-to-end (post-2026-05-02 review fix); see § 5. The body still carries the path as a secondary affordance for desktops that strip action buttons.
 
 ### 24. `docs/M4-verification.md` ticks all items with file:line evidence
 

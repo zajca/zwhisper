@@ -1,27 +1,49 @@
-//! Desktop notification sink — non-blocking show via `notify-rust`.
+//! Desktop notification sink — non-blocking show + async action listener.
 //!
-//! ## `DoD` #23 — non-blocking notifications
+//! ## `DoD` #5 + `DoD` #23
 //!
-//! We do NOT use `Notification::wait_for_action`: it spawns a
-//! blocking thread per notification that lives until the user clicks
-//! or the notification expires, which on a busy session leaks
-//! threads. Instead we call `show_async()` (or `show()` inside
-//! `spawn_blocking`) and drop the returned `NotificationHandle`
-//! immediately.
+//! `DoD` #5 mandates a clickable "Open in editor" action mapping to
+//! `xdg-open <transcript_path>`. `DoD` #23 mandates that this MUST
+//! NOT use `Notification::wait_for_action` (which spawns a blocking
+//! thread per notification and accumulates them on a busy session,
+//! quickly exhausting tokio's `spawn_blocking` pool).
 //!
-//! For M4 we deliberately do NOT register a per-notification
-//! `ActionInvoked` listener — the body always contains the absolute
-//! transcript path so the user can copy-paste it manually if their
-//! desktop's notification center stripped the action button. A
-//! global `ActionInvoked` listener that calls `xdg-open` is left for
-//! M5+ once we wire `OpenLastTranscript` through the menu (cf.
-//! `cmd::run_dispatcher`).
+//! The implementation that satisfies both invariants:
+//!
+//! 1. Build the notification with `.action("open-in-editor", "Open
+//!    in editor")` and `.show_async().await` against the zbus tokio
+//!    backend (workspace dep `notify-rust = { features =
+//!    ["z-with-tokio"] }`). `show_async` returns a
+//!    `NotificationHandle` whose `wait_for_action_async` is a
+//!    regular tokio future — no blocking thread.
+//! 2. Spawn one tokio task per notification that awaits
+//!    `wait_for_action_async`. The task captures the absolute
+//!    transcript path; on `Custom("open-in-editor")` it spawns
+//!    `xdg-open <path>` (detached). On `Closed(_)` (timeout / user
+//!    dismiss) the task ends and is dropped. Tokio tasks are cheap
+//!    (~few KB each) — no pool exhaustion even on a busy session.
+//!
+//! The body still carries the absolute transcript path so users on
+//! desktops that strip action buttons (older XFCE, some embedded
+//! shells) can copy-paste manually.
 
 use std::path::PathBuf;
+use std::process::Stdio;
 
 use async_trait::async_trait;
+use notify_rust::ActionResponse;
+use tokio::process::Command;
 
 use crate::sink::{Sink, SinkContext, SinkError};
+
+/// Action key sent over D-Bus when the user clicks the action button
+/// on a transcript notification. Stable so the listener task can
+/// match it by string equality without keeping a separate id map.
+const TRANSCRIPT_ACTION_KEY: &str = "open-in-editor";
+
+/// Action label rendered by the notification daemon next to the
+/// notification body.
+const TRANSCRIPT_ACTION_LABEL: &str = "Open in editor";
 
 /// Desktop notification sink. Stable across notifications so the
 /// notification daemon can group by `appname`.
@@ -53,33 +75,84 @@ impl Sink for NotificationSink {
     }
 
     async fn deliver(&self, ctx: &SinkContext<'_>) -> Result<(), SinkError> {
-        // Body composition: cover the four cases (clipboard ok,
-        // clipboard failed, clipboard too large, transcript missing).
         let body = build_body(ctx);
         let app = self.app_name.clone();
-        // `path` is captured for logging only; once we add the
-        // global ActionInvoked listener it becomes the
-        // open-target.
         let path: PathBuf = ctx.transcript_path.to_path_buf();
 
-        tokio::task::spawn_blocking(move || -> Result<(), notify_rust::error::Error> {
-            notify_rust::Notification::new()
-                .appname(&app)
-                .summary("Transcript ready")
-                .body(&body)
-                .icon("zwhisper-idle")
-                .timeout(notify_rust::Timeout::Default)
-                .show()?;
-            // Do NOT call wait_for_action / wait_for_close — `DoD` #23.
-            // The handle drops here; on KDE/GNOME this is fine.
-            let _ = path;
-            Ok(())
-        })
-        .await
-        .map_err(|e| SinkError::Notification(format!("blocking task panicked: {e}")))?
-        .map_err(|e| SinkError::Notification(e.to_string()))?;
+        let handle = notify_rust::Notification::new()
+            .appname(&app)
+            .summary("Transcript ready")
+            .body(&body)
+            .icon("zwhisper-idle")
+            .action(TRANSCRIPT_ACTION_KEY, TRANSCRIPT_ACTION_LABEL)
+            .timeout(notify_rust::Timeout::Default)
+            .show_async()
+            .await
+            .map_err(|e| SinkError::Notification(e.to_string()))?;
+
+        // Detached listener task — bounded by either user action or
+        // notification expiry. Tokio tasks are cheap, so accumulating
+        // a few while several notifications are open at once is
+        // fine; `wait_for_action_async` returns the moment the
+        // server emits `ActionInvoked` or `NotificationClosed`.
+        // We do NOT `await` this task — that would defeat the
+        // non-blocking property we are trying to preserve.
+        tokio::spawn(listen_for_action(handle, path));
         Ok(())
     }
+}
+
+async fn listen_for_action(handle: notify_rust::NotificationHandle, transcript_path: PathBuf) {
+    handle
+        .wait_for_action_async(|action| match action {
+            ActionResponse::Custom(key) if *key == TRANSCRIPT_ACTION_KEY => {
+                spawn_xdg_open(transcript_path.clone());
+            }
+            ActionResponse::Custom(other) => {
+                tracing::debug!(action = %other, "notification action ignored");
+            }
+            ActionResponse::Closed(_) => {
+                // Notification expired or user dismissed it. No
+                // action to take; just let the task drop.
+            }
+        })
+        .await;
+}
+
+fn spawn_xdg_open(path: PathBuf) {
+    tokio::spawn(async move {
+        let display_path = path.display().to_string();
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(&path).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(mut child) => match child.wait().await {
+                Ok(status) if status.success() => {
+                    tracing::info!(path = %display_path, "transcript opened via xdg-open");
+                }
+                Ok(status) => {
+                    tracing::warn!(
+                        path = %display_path,
+                        code = ?status.code(),
+                        "xdg-open exited non-zero",
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %display_path,
+                        error = %e,
+                        "could not await xdg-open child",
+                    );
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    path = %display_path,
+                    error = %e,
+                    "could not spawn xdg-open (is it installed?)",
+                );
+            }
+        }
+    });
 }
 
 /// Pure helper used by both the sink and the dispatcher's tests.

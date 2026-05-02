@@ -56,7 +56,10 @@ signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 
 # Tray (M4)
 ksni = "0.3"
-notify-rust = "4.11"
+# `z-with-tokio` swaps notify-rust's default async-io zbus backend for
+# tokio so the tray's `wait_for_action_async` lives on our runtime
+# rather than spawning a separate executor (M4-plan DoD #5 + #23).
+notify-rust = { version = "4.11", default-features = false, features = ["z-with-tokio"] }
 arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
 xdg = "2.5"
 async-channel = "2"

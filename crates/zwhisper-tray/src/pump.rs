@@ -40,19 +40,12 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 use zwhisper_ipc::{BUS_NAME, Profiles1Proxy, Recorder1Proxy};
 
+use crate::config::{BACKOFF_SCHEDULE_MS, PROFILE_REFRESH_PERIOD};
 use crate::dbus::{connect_session, read_last_session};
 use crate::sink::dispatch::TranscriptJob;
 use crate::state::{
     TrayState, apply_recording_complete, apply_state_changed, apply_transcript_complete,
 };
-
-/// Period for re-listing profiles when nothing else has changed. The
-/// daemon's `Profiles1` interface does not yet emit property change
-/// notifications (M3 scope), so we poll on a slow tick.
-const PROFILE_REFRESH_PERIOD: Duration = Duration::from_secs(60);
-
-/// Backoff sequence for reconnect attempts. Capped at 5 s.
-const BACKOFF_SCHEDULE_MS: &[u64] = &[250, 500, 1000, 2000, 5000];
 
 /// Run the signal pump until `shutdown` is signalled.
 ///
@@ -309,11 +302,30 @@ async fn run_inner(
                         // mpsc is bounded; on overflow we log and
                         // drop — the M4 sinks are best-effort, never
                         // a state-machine source-of-truth.
+                        let session_id_str = (*args.session_id()).to_owned();
+                        let transcript_path_str = (*args.transcript_path()).to_owned();
+                        let backend_str = (*args.backend()).to_owned();
+
+                        // Authoritative `audio_path` lookup: the C2
+                        // invariant guarantees the daemon wrote
+                        // `last-session.json` (with a matching
+                        // `session_id`) BEFORE this signal fired. We
+                        // re-read the file rather than trust the
+                        // in-memory cache because a missed
+                        // RecordingComplete (e.g. dropped during a
+                        // reconnect/resubscribe window) leaves the
+                        // cache stale or empty — the file is the
+                        // single source of truth (IDEA.md § 5).
+                        let audio_path_from_file = read_last_session()
+                            .await
+                            .filter(|s| s.session_id == session_id_str)
+                            .map(|s| s.audio_path);
+
                         let job = TranscriptJob {
-                            session_id: (*args.session_id()).to_owned(),
-                            transcript_path: PathBuf::from(*args.transcript_path()),
+                            session_id: session_id_str.clone(),
+                            transcript_path: PathBuf::from(transcript_path_str.as_str()),
                             bytes: *args.bytes(),
-                            backend: (*args.backend()).to_owned(),
+                            backend: backend_str.clone(),
                         };
                         if let Err(e) = sink_tx.try_send(job) {
                             warn!(
@@ -324,9 +336,10 @@ async fn run_inner(
                         state_tx.send_modify(|s| {
                             apply_transcript_complete(
                                 s,
-                                args.session_id(),
-                                args.transcript_path(),
-                                args.backend(),
+                                &session_id_str,
+                                audio_path_from_file,
+                                &transcript_path_str,
+                                &backend_str,
                                 now,
                             );
                         });
