@@ -66,7 +66,7 @@ pub(crate) struct LifecycleHooks {
 /// The function also installs the `Recorder::stop_handle` on the
 /// session manager so `Recorder1.StopRecording` and the daemon's
 /// SIGTERM handler can drive the drain.
-pub(crate) fn spawn_lifecycle(recorder: Recorder, hooks: LifecycleHooks) -> tokio::task::JoinHandle<()> {
+pub(crate) fn spawn_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
     // The stop handle is cloneable and writes into the recorder's
     // own watch channel — installing it before the recorder moves
     // into spawn_blocking is safe because the channel exists from
@@ -76,7 +76,15 @@ pub(crate) fn spawn_lifecycle(recorder: Recorder, hooks: LifecycleHooks) -> toki
         stop_handle.request_stop(reason);
     }));
 
-    tokio::spawn(run_lifecycle(recorder, hooks))
+    let sessions = Arc::clone(&hooks.sessions);
+    let handle = tokio::spawn(run_lifecycle(recorder, hooks));
+    // Register with the SessionManager so shutdown can await the
+    // post-release transcribe step. Without this the daemon's
+    // shutdown loop sees an empty session slot the moment
+    // `release()` runs (C5) and may drop the connection mid-
+    // transcribe, killing the lifecycle task before it emits the
+    // terminal `StateChanged "idle"`.
+    sessions.register_lifecycle(handle);
 }
 
 async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {

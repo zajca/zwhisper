@@ -23,6 +23,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use tokio::task::JoinHandle;
 use zwhisper_core::audio::state::{SessionId, StopReason};
 use zwhisper_ipc::RpcError;
 
@@ -62,9 +63,34 @@ impl std::fmt::Debug for ActiveSession {
 /// single `Option` swap. Holding a `tokio::sync::Mutex` across
 /// `await` points adds nothing here and would let the lock straddle
 /// signal-emission `await`s.
-#[derive(Debug, Default)]
+///
+/// `lifecycle_tasks` separately tracks the spawned lifecycle
+/// `JoinHandle`s so shutdown can wait for the post-release work
+/// (transcription, terminal `StateChanged` emission). The session
+/// slot is freed before transcription per C5, so a "slot empty"
+/// snapshot is *not* the same as "all background work finished" —
+/// the daemon must await the `JoinHandles` before dropping the
+/// connection or auto-transcribe gets killed mid-flight and the CLI
+/// hangs waiting for `StateChanged "idle"` that never arrives.
+#[derive(Default)]
 pub(crate) struct SessionManager {
     inner: Mutex<Option<ActiveSession>>,
+    lifecycle_tasks: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl std::fmt::Debug for SessionManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionManager")
+            .field("inner", &self.inner)
+            .field(
+                "lifecycle_tasks",
+                &format_args!(
+                    "<{} task(s)>",
+                    self.lifecycle_tasks.lock().map_or(0, |v| v.len())
+                ),
+            )
+            .finish()
+    }
 }
 
 impl SessionManager {
@@ -140,6 +166,39 @@ impl SessionManager {
         }
     }
 
+    /// Atomic `StopRecording` driver: under one lock, validate the
+    /// supplied session id, then either fire the installed stop
+    /// hook (returning [`StopAttempt::Stopped`]), report that the
+    /// session is reserved but its stop hook has not yet been
+    /// installed (returning [`StopAttempt::NotReady`] — race window
+    /// between `try_reserve` and `install_stop_hook` inside
+    /// `start_recording`), or report that no matching session is
+    /// active (returning [`StopAttempt::Unknown`]).
+    ///
+    /// Splitting `matches` and `request_stop_active` into two
+    /// separate calls let `stop_recording` race against itself and
+    /// silently turn a `NotReady` window into a fake `Ok` reply. This
+    /// helper rolls both checks under the same mutex.
+    pub(crate) fn try_stop(&self, id: &SessionId, reason: StopReason) -> StopAttempt {
+        let hook = {
+            let slot = self
+                .inner
+                .lock()
+                .expect("session manager mutex poisoned");
+            match slot.as_ref() {
+                Some(active) if active.session_id == *id => match active.stop_hook.clone() {
+                    Some(hook) => Some(hook),
+                    None => return StopAttempt::NotReady,
+                },
+                _ => return StopAttempt::Unknown,
+            }
+        };
+        if let Some(f) = hook {
+            f(reason);
+        }
+        StopAttempt::Stopped
+    }
+
     /// Release the session slot. Idempotent — releasing an empty
     /// slot is silently a no-op so the lifecycle task can call this
     /// from both the success and failure branches without
@@ -166,8 +225,35 @@ impl SessionManager {
         })
     }
 
+    /// Register a lifecycle task's `JoinHandle` so shutdown can
+    /// await it. Called by `spawn_lifecycle` immediately after
+    /// `tokio::spawn`. Drops handles whose tasks have already
+    /// finished so the vec does not grow unbounded across many
+    /// short recordings.
+    pub(crate) fn register_lifecycle(&self, handle: JoinHandle<()>) {
+        let mut tasks = self
+            .lifecycle_tasks
+            .lock()
+            .expect("lifecycle tasks mutex poisoned");
+        tasks.retain(|t| !t.is_finished());
+        tasks.push(handle);
+    }
+
+    /// Take the current set of lifecycle handles. Shutdown awaits
+    /// them (with a timeout) before dropping the bus connection so
+    /// the post-release transcribe step can finish and the terminal
+    /// `StateChanged "idle"` reaches the client.
+    pub(crate) fn take_lifecycle_tasks(&self) -> Vec<JoinHandle<()>> {
+        let mut tasks = self
+            .lifecycle_tasks
+            .lock()
+            .expect("lifecycle tasks mutex poisoned");
+        std::mem::take(&mut *tasks)
+    }
+
     /// Returns whether the supplied `id` matches the currently active
     /// session. Used by `StopRecording` to validate the caller.
+    #[allow(dead_code)] // `try_stop` superseded the two-call pattern; helper kept for tests.
     pub(crate) fn matches(&self, id: &SessionId) -> bool {
         let slot = self
             .inner
@@ -175,6 +261,22 @@ impl SessionManager {
             .expect("session manager mutex poisoned");
         slot.as_ref().is_some_and(|s| s.session_id == *id)
     }
+}
+
+/// Result of [`SessionManager::try_stop`]. Lets the caller
+/// distinguish "no such session" from "session reserved but not
+/// fully spun up" — the latter must surface as a transient error so
+/// callers retry instead of treating it as a successful stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopAttempt {
+    /// Session matched and the stop hook was fired.
+    Stopped,
+    /// No active session matches the supplied id.
+    Unknown,
+    /// The session slot is reserved but the lifecycle task has not
+    /// installed the stop hook yet — the recording is in the brief
+    /// window between `try_reserve` and `spawn_lifecycle`.
+    NotReady,
 }
 
 /// Lock-free copy of an [`ActiveSession`]'s fields. Returned by
@@ -254,5 +356,80 @@ mod tests {
         let mgr = SessionManager::new();
         let id = SessionId::new();
         assert!(!mgr.matches(&id));
+    }
+
+    #[test]
+    fn try_stop_returns_unknown_when_no_session() {
+        let mgr = SessionManager::new();
+        let id = SessionId::new();
+        assert_eq!(
+            mgr.try_stop(&id, StopReason::UserRequested),
+            StopAttempt::Unknown,
+        );
+    }
+
+    #[test]
+    fn try_stop_returns_unknown_for_mismatched_id() {
+        let mgr = SessionManager::new();
+        let active = SessionId::new();
+        mgr.try_reserve(active, "default").unwrap();
+        let other = SessionId::new();
+        assert_eq!(
+            mgr.try_stop(&other, StopReason::UserRequested),
+            StopAttempt::Unknown,
+        );
+    }
+
+    #[test]
+    fn try_stop_returns_not_ready_when_hook_not_installed() {
+        // The race window: try_reserve succeeded but the lifecycle
+        // task has not yet called install_stop_hook. Surfacing
+        // NotReady lets stop_recording return Transient instead of
+        // a fake Ok.
+        let mgr = SessionManager::new();
+        let id = SessionId::new();
+        mgr.try_reserve(id, "default").unwrap();
+        assert_eq!(
+            mgr.try_stop(&id, StopReason::UserRequested),
+            StopAttempt::NotReady,
+        );
+    }
+
+    #[test]
+    fn try_stop_fires_hook_and_returns_stopped() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mgr = SessionManager::new();
+        let id = SessionId::new();
+        mgr.try_reserve(id, "default").unwrap();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&counter);
+        mgr.install_stop_hook(Arc::new(move |_| {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(
+            mgr.try_stop(&id, StopReason::UserRequested),
+            StopAttempt::Stopped,
+        );
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn lifecycle_tracker_drains_finished_handles() {
+        // register_lifecycle prunes finished handles so the vec
+        // does not grow unbounded; take_lifecycle_tasks drains.
+        let mgr = SessionManager::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let h1 = runtime.spawn(async {});
+        let h2 = runtime.spawn(async {});
+        mgr.register_lifecycle(h1);
+        mgr.register_lifecycle(h2);
+        // Nudge the runtime so both tasks complete before we drain.
+        runtime.block_on(async { tokio::task::yield_now().await });
+        let drained = mgr.take_lifecycle_tasks();
+        assert_eq!(drained.len(), 2);
+        // Tracker should now be empty.
+        assert!(mgr.take_lifecycle_tasks().is_empty());
     }
 }

@@ -235,38 +235,45 @@ impl RecorderInterface {
 
     /// Stop the recording with the given `session_id`. Returns the
     /// same id on success.
+    ///
+    /// Validation and stop-hook firing happen under one mutex via
+    /// [`SessionManager::try_stop`] — the previous two-call pattern
+    /// (`matches` then `request_stop_active`) ignored the second
+    /// call's return value, so a request that landed in the brief
+    /// window between `try_reserve` and `install_stop_hook` would
+    /// reply `Ok` without actually stopping anything.
     #[allow(clippy::unused_async)] // zbus #[interface] requires `async fn`.
     async fn stop_recording(&self, session_id: &str) -> zbus::fdo::Result<String> {
         info!(%session_id, "Recorder1.StopRecording");
-        // Compare via the typed SessionId where possible so we
-        // benefit from the type's PartialEq instead of stringly-
-        // comparing UUIDs. An unparseable id is structurally
-        // SessionUnknown — a UUID round-trip is the only valid form.
-        let parsed: Option<SessionId> = session_id
+        let Some(parsed) = session_id
             .parse::<uuid::Uuid>()
             .ok()
-            .map(SessionId::from_uuid);
-        let known = match parsed {
-            Some(id) => self.sessions.matches(&id),
-            None => false,
-        };
-        if !known {
+            .map(SessionId::from_uuid)
+        else {
             return Err(RpcError::SessionUnknown {
                 id: session_id.to_owned(),
             }
             .into());
-        }
+        };
 
         // We do not own the `Recorder` here — the lifecycle task
         // does. The lifecycle task subscribes to the same
         // `tokio::sync::watch` channel we wrote into via
-        // `request_stop`, so writing the StopReason wakes the
-        // bus-thread loop and triggers EOS finalisation. Wire the
-        // stop request through the manager helper.
-        self.sessions
-            .request_stop_active(StopReason::UserRequested);
-
-        Ok(session_id.to_owned())
+        // `request_stop`, so writing the `StopReason` wakes the
+        // bus-thread loop and triggers EOS finalisation.
+        match self.sessions.try_stop(&parsed, StopReason::UserRequested) {
+            crate::session::StopAttempt::Stopped => Ok(session_id.to_owned()),
+            crate::session::StopAttempt::Unknown => Err(RpcError::SessionUnknown {
+                id: session_id.to_owned(),
+            }
+            .into()),
+            crate::session::StopAttempt::NotReady => Err(RpcError::Transient {
+                reason: format!(
+                    "session {session_id} is starting up; stop hook not yet installed — retry"
+                ),
+            }
+            .into()),
+        }
     }
 
     /// Snapshot of the daemon's current state.

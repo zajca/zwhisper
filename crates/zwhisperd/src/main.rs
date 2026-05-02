@@ -93,32 +93,49 @@ async fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
-/// Drive a clean shutdown: stop any in-flight recording, give it a
-/// bounded window to finalise, then drop the connection so the bus
-/// name is released.
+/// Drive a clean shutdown: stop any in-flight recording, await every
+/// lifecycle task (including its post-release transcribe step), then
+/// drop the connection so the bus name is released.
+///
+/// Awaiting `lifecycle_tasks` rather than just polling
+/// `sessions.snapshot()` is the fix for a regression spotted after
+/// initial M3 ship: per C5 the lifecycle task releases the session
+/// slot **before** running auto-transcribe, so a snapshot-only loop
+/// would treat the daemon as drained the moment recording stops and
+/// drop the connection while transcribe is still awaiting
+/// `whisper-cli`. The CLI would then never see `TranscriptComplete`
+/// or terminal `StateChanged "idle"` and would hang forever.
 async fn shutdown(connection: &zbus::Connection, sessions: &SessionManager) {
     if sessions.snapshot().is_some() {
         info!("active session detected on shutdown; requesting drain");
         if !sessions.request_stop_active(StopReason::UserRequested) {
             warn!("active session has no stop hook installed; cannot signal drain");
         }
-        // Poll the slot until it clears or we time out. The lifecycle
-        // task releases the slot post-RecordingComplete, so an empty
-        // slot means the drain finished (with or without transcribe).
-        let deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
-        loop {
-            if sessions.snapshot().is_none() {
-                info!("active session drained cleanly");
-                break;
+    }
+
+    let pending = sessions.take_lifecycle_tasks();
+    if !pending.is_empty() {
+        info!(
+            tasks = pending.len(),
+            "awaiting in-flight lifecycle tasks (recording finalisation + transcribe)"
+        );
+        let drain = async {
+            for handle in pending {
+                if let Err(e) = handle.await {
+                    warn!(error = %e, "lifecycle task join failed");
+                }
             }
-            if tokio::time::Instant::now() >= deadline {
-                error!(
-                    "active session did not drain within {:?}; exiting anyway",
-                    SHUTDOWN_DRAIN_TIMEOUT
-                );
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        if tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain)
+            .await
+            .is_ok()
+        {
+            info!("lifecycle tasks drained cleanly");
+        } else {
+            error!(
+                "lifecycle tasks did not drain within {:?}; exiting anyway",
+                SHUTDOWN_DRAIN_TIMEOUT
+            );
         }
     }
 
