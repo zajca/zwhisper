@@ -137,6 +137,23 @@ pub(crate) enum BackendCmd {
     },
 }
 
+/// `zwhisper hotkey …` subcommands — manage and diagnose the
+/// system-wide hotkey binding (xdg-desktop-portal `GlobalShortcuts`).
+/// Bypasses the tray; useful when running CLI-only or scripted from a
+/// keyboard mapper. See M6-plan § `DoD` #10–#13 for the per-subcommand
+/// truth table and exit codes.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum HotkeyCmd {
+    /// Show current binding state (`BOUND` / `NOT_BOUND` / `UNAVAILABLE`).
+    Status,
+    /// Open the portal `BindShortcuts` dialog so the user picks a chord.
+    Bind,
+    /// Remove the binding (idempotent — re-running prints `unbound`).
+    Unbind,
+    /// Diagnostic — report portal availability and version.
+    Probe,
+}
+
 /// `zwhisper profile` subcommands — pure config-plane helpers; do not
 /// touch `GStreamer`.
 #[derive(Debug, Subcommand)]
@@ -199,7 +216,7 @@ pub(crate) fn resolve_duration(duration_s: u64, max_minutes: u64) -> color_eyre:
 mod tests {
     use clap::Parser;
 
-    use super::{ProfileCmd, RecordArgs, TranscribeArgs, resolve_duration};
+    use super::{HotkeyCmd, ProfileCmd, RecordArgs, TranscribeArgs, resolve_duration};
 
     #[derive(Debug, Parser)]
     #[command(name = "zwhisper")]
@@ -214,6 +231,11 @@ mod tests {
         Transcribe(TranscribeArgs),
         #[command(subcommand)]
         Profile(ProfileCmd),
+        /// M6 — universal toggle, no flags.
+        Toggle,
+        /// M6 — hotkey binding management.
+        #[command(subcommand)]
+        Hotkey(HotkeyCmd),
     }
 
     #[test]
@@ -371,6 +393,60 @@ mod tests {
         ] {
             let argv: Vec<&str> = argv.iter().filter(|s| !s.is_empty()).copied().collect();
             TestCli::try_parse_from(argv).expect("parse should succeed");
+        }
+    }
+
+    // ============================================================
+    // M6 — `toggle` and `hotkey {…}` parser truth-table tests.
+    // The parser surface is the only thing tested here; the
+    // dispatchers live in `commands::toggle` / `commands::hotkey`
+    // and have their own unit tests against the exit-code mapping.
+    // ============================================================
+
+    #[test]
+    fn parses_toggle_no_args() {
+        let cli =
+            TestCli::try_parse_from(["zwhisper", "toggle"]).expect("parse should succeed");
+        assert!(matches!(cli.command, TestCommand::Toggle));
+    }
+
+    #[test]
+    fn parses_hotkey_status() {
+        let cli = TestCli::try_parse_from(["zwhisper", "hotkey", "status"])
+            .expect("parse should succeed");
+        match cli.command {
+            TestCommand::Hotkey(cmd) => assert_eq!(cmd, HotkeyCmd::Status),
+            other => panic!("expected Hotkey(Status), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_hotkey_bind() {
+        let cli = TestCli::try_parse_from(["zwhisper", "hotkey", "bind"])
+            .expect("parse should succeed");
+        match cli.command {
+            TestCommand::Hotkey(cmd) => assert_eq!(cmd, HotkeyCmd::Bind),
+            other => panic!("expected Hotkey(Bind), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_hotkey_unbind() {
+        let cli = TestCli::try_parse_from(["zwhisper", "hotkey", "unbind"])
+            .expect("parse should succeed");
+        match cli.command {
+            TestCommand::Hotkey(cmd) => assert_eq!(cmd, HotkeyCmd::Unbind),
+            other => panic!("expected Hotkey(Unbind), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_hotkey_probe() {
+        let cli = TestCli::try_parse_from(["zwhisper", "hotkey", "probe"])
+            .expect("parse should succeed");
+        match cli.command {
+            TestCommand::Hotkey(cmd) => assert_eq!(cmd, HotkeyCmd::Probe),
+            other => panic!("expected Hotkey(Probe), got {other:?}"),
         }
     }
 }

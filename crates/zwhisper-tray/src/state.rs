@@ -211,6 +211,31 @@ pub enum PendingCmd {
     OpenLastTranscript,
 }
 
+/// M6 — user-visible state of the global hotkey binding, surfaced
+/// on the tray menu via the "Hotkey: …" entry.
+///
+/// `Unknown` is the bootstrap state before the listener task has
+/// run its first probe. `Unavailable` carries a short reason
+/// string suitable for a tooltip (e.g. "no portal — bind via your
+/// WM"). `NotBound` and `Bound` are the two operational states
+/// the user clicks between.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum HotkeyMenuState {
+    /// Listener has not yet probed the portal.
+    #[default]
+    Unknown,
+    /// Portal is not usable on this desktop (e.g. i3/X11 with no
+    /// xdg-desktop-portal). Click is a no-op; the reason string
+    /// is shown as the tooltip.
+    Unavailable { reason: String },
+    /// Portal is available but no shortcut is currently bound.
+    NotBound,
+    /// A shortcut is bound; `display` is the human-readable
+    /// trigger description returned by the portal (e.g.
+    /// "Ctrl+Alt+R").
+    Bound { display: String },
+}
+
 /// Snapshot of everything the tray renderer needs to draw a frame.
 ///
 /// The signal pump owns one `Sender<TrayState>` and pushes a fresh
@@ -225,6 +250,10 @@ pub struct TrayState {
     pub last_session: Option<LastCompleted>,
     pub profiles: Vec<ProfileEntryV2>,
     pub pending_cmd: Option<PendingCmd>,
+    /// M6: hotkey-binding state surfaced on the tray menu. The
+    /// hotkey listener task ([`crate::hotkey::run_hotkey`]) is the
+    /// sole writer; the pump never touches this slot.
+    pub hotkey: HotkeyMenuState,
 }
 
 impl Default for TrayState {
@@ -237,6 +266,7 @@ impl Default for TrayState {
             last_session: None,
             profiles: Vec::new(),
             pending_cmd: None,
+            hotkey: HotkeyMenuState::default(),
         }
     }
 }

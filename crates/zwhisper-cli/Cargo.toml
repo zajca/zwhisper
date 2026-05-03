@@ -23,6 +23,10 @@ path = "src/main.rs"
 # not GStreamer — verified via `cargo tree -p zwhisper-cli`.
 zwhisper-core = { path = "../zwhisper-core", default-features = false, features = ["profile", "transcribe"] }
 zwhisper-ipc = { path = "../zwhisper-ipc" }
+# M6: shared toggle / portal / probe logic with the tray. Default
+# features include `portal` so `zwhisper hotkey {bind,unbind,probe}`
+# can drive xdg-desktop-portal's `GlobalShortcuts` interface.
+zwhisper-hotkey = { path = "../zwhisper-hotkey" }
 
 clap = { workspace = true }
 tracing = { workspace = true }
@@ -43,6 +47,10 @@ futures-util = { workspace = true }
 # cloud backend's auth endpoint; no daemon round-trip. Same TLS
 # profile (rustls-only) as the recorder path in `zwhisper-core`.
 reqwest = { workspace = true }
+# M6 DoD #14: `zwhisper toggle` falls back to a desktop notification
+# when the daemon is unreachable. Workspace dep already wires the
+# `z-with-tokio` zbus backend so this lives on our runtime.
+notify-rust = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

@@ -33,8 +33,9 @@ use ksni::{Category, MenuItem, Status, ToolTip, Tray};
 use tokio::sync::mpsc;
 use tracing::warn;
 
+use crate::hotkey::HotkeyControl;
 use crate::icon::{icon_for_state, state_label_for, tooltip_text};
-use crate::state::{IconState, PendingCmd, TrayState};
+use crate::state::{HotkeyMenuState, IconState, PendingCmd, TrayState};
 
 // `COMMAND_CHANNEL_CAPACITY` lives in `crate::config` (per CLAUDE.md
 // "all configuration in a dedicated module"); a re-export keeps
@@ -80,6 +81,31 @@ pub struct MenuFlags {
     /// `true` only when the daemon is fully idle and no command is
     /// in flight (`DoD` #20 + #21).
     pub profiles_submenu_enabled: bool,
+}
+
+/// Render the user-visible label for the "Hotkey: …" menu entry.
+/// Pure function so the truth table per `DoD` #17 can be unit
+/// tested without a ksni service.
+#[must_use]
+pub fn hotkey_menu_label(state: &HotkeyMenuState) -> String {
+    match state {
+        HotkeyMenuState::Unknown => "Hotkey: probing…".to_owned(),
+        HotkeyMenuState::Unavailable { .. } => "Hotkey: unavailable".to_owned(),
+        HotkeyMenuState::NotBound => "Hotkey: not bound — click to bind".to_owned(),
+        HotkeyMenuState::Bound { display } => format!("Hotkey: {display}"),
+    }
+}
+
+/// Whether the "Hotkey: …" entry is clickable. `Unavailable` and
+/// `Unknown` are no-ops (the listener is the writer of the
+/// state). `NotBound` and `Bound` both dispatch a `Bind` request
+/// so the user can bind / re-bind from the same row.
+#[must_use]
+pub fn hotkey_menu_clickable(state: &HotkeyMenuState) -> bool {
+    matches!(
+        state,
+        HotkeyMenuState::NotBound | HotkeyMenuState::Bound { .. }
+    )
 }
 
 /// Returns `true` for any backend identifier that is not the local
@@ -152,6 +178,13 @@ pub struct ZwhisperTray {
     state: TrayState,
     cmd_tx: mpsc::Sender<PendingCmd>,
     quit_tx: mpsc::Sender<()>,
+    /// M6: control surface for the hotkey listener task. When
+    /// the bus is unreachable at startup the tray runs in
+    /// degraded mode and this channel may have no consumer; the
+    /// menu callbacks `try_send` regardless and rely on the
+    /// bounded buffer + warn-log to keep the UX consistent
+    /// across modes.
+    hotkey_tx: mpsc::Sender<HotkeyControl>,
 }
 
 impl std::fmt::Debug for ZwhisperTray {
@@ -167,13 +200,19 @@ impl ZwhisperTray {
     ///
     /// `cmd_tx` carries `Start` / `Stop` / `SetActiveProfile` commands to
     /// the (P4) dispatcher; `quit_tx` carries the user's request to
-    /// exit cleanly.
+    /// exit cleanly; `hotkey_tx` (M6) carries Bind / Unbind / Probe
+    /// requests to the hotkey listener task.
     #[must_use]
-    pub fn new(cmd_tx: mpsc::Sender<PendingCmd>, quit_tx: mpsc::Sender<()>) -> Self {
+    pub fn new(
+        cmd_tx: mpsc::Sender<PendingCmd>,
+        quit_tx: mpsc::Sender<()>,
+        hotkey_tx: mpsc::Sender<HotkeyControl>,
+    ) -> Self {
         Self {
             state: TrayState::default(),
             cmd_tx,
             quit_tx,
+            hotkey_tx,
         }
     }
 
@@ -320,6 +359,32 @@ impl Tray for ZwhisperTray {
             }
             .into(),
             MenuItem::Separator,
+            // M6: hotkey row. Always visible; click dispatches
+            // `Bind` for `NotBound` / `Bound` and is a no-op for
+            // `Unknown` / `Unavailable`. The label and `enabled`
+            // flag are computed by pure helpers so the truth
+            // table can be unit-tested.
+            {
+                let hotkey_state = self.state.hotkey.clone();
+                let label = hotkey_menu_label(&hotkey_state);
+                let enabled = hotkey_menu_clickable(&hotkey_state);
+                let hotkey_tx = self.hotkey_tx.clone();
+                StandardItem {
+                    label,
+                    enabled,
+                    activate: Box::new(move |_this: &mut Self| {
+                        if let Err(err) = hotkey_tx.try_send(HotkeyControl::Bind) {
+                            warn!(
+                                error = %err,
+                                "menu Hotkey: ctl channel full or closed",
+                            );
+                        }
+                    }),
+                    ..Default::default()
+                }
+                .into()
+            },
+            MenuItem::Separator,
             StandardItem {
                 label: "Open last recording".to_owned(),
                 enabled: flags.open_last_recording_enabled,
@@ -368,8 +433,47 @@ impl Tray for ZwhisperTray {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::state::LastCompleted;
+    use crate::state::{HotkeyMenuState, LastCompleted};
     use std::path::PathBuf;
+
+    // M6 `DoD` #17 truth table for the four hotkey menu states.
+    #[test]
+    fn hotkey_menu_label_unknown_says_probing() {
+        assert_eq!(
+            hotkey_menu_label(&HotkeyMenuState::Unknown),
+            "Hotkey: probing…"
+        );
+        assert!(!hotkey_menu_clickable(&HotkeyMenuState::Unknown));
+    }
+
+    #[test]
+    fn hotkey_menu_label_unavailable_renders_short_label() {
+        let label = hotkey_menu_label(&HotkeyMenuState::Unavailable {
+            reason: "no portal".to_owned(),
+        });
+        assert_eq!(label, "Hotkey: unavailable");
+        assert!(!hotkey_menu_clickable(&HotkeyMenuState::Unavailable {
+            reason: "no portal".to_owned(),
+        }));
+    }
+
+    #[test]
+    fn hotkey_menu_label_not_bound_invites_click() {
+        assert_eq!(
+            hotkey_menu_label(&HotkeyMenuState::NotBound),
+            "Hotkey: not bound — click to bind"
+        );
+        assert!(hotkey_menu_clickable(&HotkeyMenuState::NotBound));
+    }
+
+    #[test]
+    fn hotkey_menu_label_bound_shows_chord() {
+        let bound = HotkeyMenuState::Bound {
+            display: "Ctrl+Alt+R".to_owned(),
+        };
+        assert_eq!(hotkey_menu_label(&bound), "Hotkey: Ctrl+Alt+R");
+        assert!(hotkey_menu_clickable(&bound));
+    }
 
     fn empty_state(icon: IconState) -> TrayState {
         TrayState {

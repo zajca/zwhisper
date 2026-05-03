@@ -42,15 +42,19 @@
 //! the bounded mpsc buffer never fills, and every command is logged
 //! and dropped.
 
+use std::path::PathBuf;
+
 use color_eyre::eyre::Result;
 use ksni::TrayMethods;
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+use zwhisper_hotkey::config::HotkeyConfig;
 
 use zwhisper_tray::cmd::run_dispatcher;
 use zwhisper_tray::config::{COMMAND_CHANNEL_CAPACITY, Config, SINK_CHANNEL_CAPACITY};
 use zwhisper_tray::dbus::connect_session;
+use zwhisper_tray::hotkey::{HotkeyControl, run_hotkey};
 use zwhisper_tray::pump::run_pump;
 use zwhisper_tray::session_env::{SessionProbe, probe as session_probe};
 use zwhisper_tray::single_instance;
@@ -105,6 +109,17 @@ async fn main() -> Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<PendingCmd>(COMMAND_CHANNEL_CAPACITY);
     let (sink_tx, sink_rx) = mpsc::channel::<TranscriptJob>(SINK_CHANNEL_CAPACITY);
     let (quit_tx, mut quit_rx) = mpsc::channel::<()>(1);
+    // M6: hotkey listener channels.
+    //
+    // - `hotkey_ctl_*` carries Bind / Unbind / Probe requests
+    //   from the menu callbacks to the listener task.
+    // - `daemon_ready_*` is the A4 mitigation gate: the listener
+    //   refuses to talk to the portal or the daemon until this
+    //   watch flips to `true`, which happens once we have a
+    //   working `zbus::Connection` to the session bus.
+    let (hotkey_ctl_tx, hotkey_ctl_rx) = mpsc::channel::<HotkeyControl>(8);
+    let (daemon_ready_tx, daemon_ready_rx) = watch::channel(false);
+    let shutdown_rx_hotkey = shutdown_rx_supervisor.clone();
 
     // Sink dispatcher (P5). Owns the clipboard handle for the
     // tray's lifetime (binding amendment C1) and runs the
@@ -138,7 +153,18 @@ async fn main() -> Result<()> {
     // calls never fill the bounded mpsc buffer.
     let dispatcher_state_tx = state_tx.clone();
     let dispatcher_state_rx = state_rx.clone();
-    let cmd_consumer = match connect_session().await {
+    // M6: the hotkey listener wants the connection too — clone
+    // it so both tasks can build their own proxies without
+    // contending on a shared one. zbus 5.15 connections are
+    // cheap reference-counted handles.
+    let mut hotkey_conn: Option<zbus::Connection> = None;
+    // We MUST spawn the hotkey listener BEFORE the dispatcher so
+    // its pre-ready Activated buffer is already running when the
+    // dispatcher's `GetStatus` probe flips `daemon_ready_tx`. The
+    // dispatcher connection is acquired here, but its task spawn
+    // is deferred until after `run_hotkey` is on the runtime
+    // (DoD #16, A4 mitigation).
+    let dispatcher_conn = match connect_session().await {
         Ok(conn) => {
             // P6 single-instance: claim cz.zajca.Zwhisper1.Tray on
             // the same connection that the dispatcher uses; the
@@ -167,24 +193,85 @@ async fn main() -> Result<()> {
                     warn!(error = %e, "could not claim single-instance bus name; continuing without it");
                 }
             }
-            tokio::spawn(async move {
-                if let Err(err) = run_dispatcher(
-                    conn,
-                    cmd_rx,
-                    dispatcher_state_tx,
-                    dispatcher_state_rx,
-                    shutdown_rx_dispatcher,
-                )
-                .await
-                {
-                    error!(error = %err, "dispatcher task ended with error");
-                }
-            })
+            // The connection is healthy enough to claim a name —
+            // hand a clone to the hotkey listener. The
+            // `daemon_ready_tx` gate stays `false` for now; the
+            // dispatcher flips it after its `GetStatus` probe
+            // succeeds (see `run_dispatcher`).
+            hotkey_conn = Some(conn.clone());
+            Some(conn)
         }
         Err(err) => {
             warn!(error = %err, "no session bus; menu commands disabled");
-            tokio::spawn(drain_commands_offline(cmd_rx))
+            None
         }
+    };
+
+    // M6 hotkey listener — owns its own pair of proxies on
+    // `hotkey_conn`. When the session bus was unreachable above,
+    // `hotkey_conn` is `None` and we skip the spawn entirely.
+    //
+    // Spawned BEFORE the dispatcher: the listener must be inside
+    // its pre-ready buffer loop before the dispatcher's probe
+    // flips `daemon_ready_tx`, otherwise the 1-slot Activated
+    // buffer can never fire (the gate would already be `true`
+    // when the listener finally observes it).
+    let hotkey_join = if let Some(conn) = hotkey_conn {
+        let hotkey_cfg_path = hotkey_config_path();
+        let hotkey_cfg = HotkeyConfig::from_path(&hotkey_cfg_path);
+        info!(
+            path = %hotkey_cfg_path.display(),
+            debounce_ms = hotkey_cfg.debounce_ms,
+            cooldown_ms = hotkey_cfg.cooldown_ms,
+            auto_bind_on_startup = hotkey_cfg.auto_bind_on_startup,
+            "hotkey config loaded"
+        );
+        let hotkey_state_tx = state_tx.clone();
+        let hotkey_state_rx = state_rx.clone();
+        Some(tokio::spawn(async move {
+            if let Err(err) = run_hotkey(
+                conn,
+                hotkey_cfg,
+                hotkey_ctl_rx,
+                hotkey_state_tx,
+                hotkey_state_rx,
+                daemon_ready_rx,
+                shutdown_rx_hotkey,
+            )
+            .await
+            {
+                error!(error = %err, "hotkey listener task ended with error");
+            }
+        }))
+    } else {
+        // No bus → no listener. Drain the control channel so menu
+        // try_send calls never wedge a bounded mpsc.
+        Some(tokio::spawn(drain_hotkey_offline(hotkey_ctl_rx)))
+    };
+
+    // Now that `run_hotkey` is on the runtime (and inside its
+    // pre-ready buffer loop), spawn the dispatcher. It will
+    // build its proxies, probe `GetStatus`, and only then flip
+    // `daemon_ready_tx` so the listener drains any buffered
+    // Activated press.
+    let cmd_consumer = if let Some(conn) = dispatcher_conn {
+        let dispatcher_daemon_ready_tx = daemon_ready_tx.clone();
+        tokio::spawn(async move {
+            if let Err(err) = run_dispatcher(
+                conn,
+                cmd_rx,
+                dispatcher_state_tx,
+                dispatcher_state_rx,
+                dispatcher_daemon_ready_tx,
+                shutdown_rx_dispatcher,
+            )
+            .await
+            {
+                error!(error = %err, "dispatcher task ended with error");
+            }
+        })
+    } else {
+        tokio::spawn(drain_commands_offline(cmd_rx))
     };
 
     // Build the tray and register it on the session bus. `spawn`
@@ -192,7 +279,7 @@ async fn main() -> Result<()> {
     // `StatusNotifierWatcher`; on systems without a watcher (e.g.
     // headless CI), it returns `Error::WontShow` and we fall back
     // to logging the failure instead of crashing.
-    let tray = ZwhisperTray::new(cmd_tx.clone(), quit_tx.clone());
+    let tray = ZwhisperTray::new(cmd_tx.clone(), quit_tx.clone(), hotkey_ctl_tx.clone());
     let handle = match tray.spawn().await {
         Ok(h) => {
             info!("ksni tray registered with StatusNotifierWatcher");
@@ -257,6 +344,10 @@ async fn main() -> Result<()> {
     let _ = quit_join.await;
     cmd_consumer.abort();
     let _ = cmd_consumer.await;
+    if let Some(h) = hotkey_join {
+        h.abort();
+        let _ = h.await;
+    }
     // Drop the producer side first so the sink dispatcher can
     // observe a clean channel close after draining in-flight jobs.
     drop(sink_tx);
@@ -277,4 +368,26 @@ async fn drain_commands_offline(mut rx: mpsc::Receiver<PendingCmd>) {
     while let Some(cmd) = rx.recv().await {
         warn!(?cmd, "dropping menu command (no D-Bus connection)");
     }
+}
+
+/// M6 — hotkey-control consumer for the offline path. The same
+/// rationale as `drain_commands_offline` applies: a bounded mpsc
+/// with no consumer would `try_send`-fail and spam the log; a
+/// dedicated drain task absorbs them silently.
+async fn drain_hotkey_offline(mut rx: mpsc::Receiver<HotkeyControl>) {
+    while let Some(ctl) = rx.recv().await {
+        warn!(?ctl, "dropping hotkey control (no D-Bus connection)");
+    }
+}
+
+/// Resolve `~/.config/zwhisper/hotkey.toml`. Falls back to the
+/// current directory when `dirs::config_dir()` returns `None`
+/// (sandboxed test runners) — the resulting path almost certainly
+/// won't exist, which is the documented "missing file is fine"
+/// path in [`HotkeyConfig::from_path`].
+fn hotkey_config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_default()
+        .join("zwhisper")
+        .join("hotkey.toml")
 }

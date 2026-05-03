@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=zwhisper
+Comment=Voice recording and transcription
+Exec=zwhisper-tray
+Icon=zwhisper
+Categories=AudioVideo;Audio;Recorder;
+Terminal=false
+StartupNotify=false
+StartupWMClass=zwhisper-tray
+NoDisplay=false
+X-GNOME-UsesNotifications=true

@@ -23,6 +23,9 @@ path = "src/main.rs"
 # IconState enum in src/state.rs. See M4-plan § "Crate dependency
 # graph".
 zwhisper-ipc = { path = "../zwhisper-ipc" }
+# M6 Group E: hotkey listener task + portal flow. Pulls the
+# `portal` feature (default) for `AshpdAdapter`.
+zwhisper-hotkey = { path = "../zwhisper-hotkey" }
 zbus = { workspace = true }
 zvariant = { workspace = true }
 tokio = { workspace = true }
@@ -43,6 +46,9 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# `test-fakes` exposes the `FakePortal` adapter used by the
+# hotkey listener integration tests.
+zwhisper-hotkey = { path = "../zwhisper-hotkey", features = ["test-fakes"] }
 
 [lints]
 workspace = true

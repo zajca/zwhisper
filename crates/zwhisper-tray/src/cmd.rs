@@ -42,15 +42,50 @@ use crate::state::{LastCompleted, PendingCmd, TrayState};
 /// dispatcher only writes the `pending_cmd` slot (and, on a
 /// successful `SetActiveProfile`, the `profiles` / `active_profile`
 /// slots). All other fields are reducer-driven from D-Bus signals.
+///
+/// `daemon_ready_tx` is the A4 mitigation gate (see
+/// `crate::hotkey::run_hotkey`). The dispatcher flips it from `false`
+/// to `true` only AFTER a successful `Recorder1Proxy::new` AND a
+/// successful round-trip `GetStatus` call — i.e., the daemon is
+/// proven responsive on the bus, not merely "the connection exists".
+/// Until that flip the hotkey listener buffers at most one Activated
+/// press in its pre-ready slot.
 pub async fn run_dispatcher(
     conn: zbus::Connection,
     mut cmd_rx: mpsc::Receiver<PendingCmd>,
     state_tx: watch::Sender<TrayState>,
     state_rx: watch::Receiver<TrayState>,
+    daemon_ready_tx: watch::Sender<bool>,
     mut shutdown_rx: watch::Receiver<()>,
 ) -> Result<()> {
     let recorder = Recorder1Proxy::new(&conn).await?;
     let profiles = Profiles1Proxy::new(&conn).await?;
+
+    // Daemon-readiness probe (A4). A successful `GetStatus`
+    // round-trip proves the daemon owns the well-known bus name
+    // AND is servicing RPCs — only THEN do we release the hotkey
+    // listener from its pre-ready buffer state. Failure is
+    // non-fatal: we keep the dispatcher running so a recovering
+    // daemon can be reached via menu commands, but we leave the
+    // gate `false` so the listener stays in its pre-ready loop
+    // (and tries again the next time the daemon comes back).
+    match recorder.get_status().await {
+        Ok(status) => {
+            debug!(?status, "dispatcher: GetStatus probe succeeded; flipping daemon-ready gate");
+            // `send` only fails when there are no receivers,
+            // which is acceptable — under headless test paths
+            // the receiver may have already been dropped.
+            if daemon_ready_tx.send(true).is_err() {
+                debug!("daemon-ready watch has no receivers; gate flip is a no-op");
+            }
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                "dispatcher: GetStatus probe failed; daemon-ready gate stays false (hotkey listener will keep buffering)",
+            );
+        }
+    }
 
     info!("dispatcher: ready, awaiting menu commands");
 

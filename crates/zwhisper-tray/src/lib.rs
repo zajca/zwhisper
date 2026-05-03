@@ -8,6 +8,7 @@
 pub mod cmd;
 pub mod config;
 pub mod dbus;
+pub mod hotkey;
 pub mod icon;
 pub mod pump;
 pub mod session_env;

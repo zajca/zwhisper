@@ -26,9 +26,11 @@
 //! to keep the table single-sourced.
 
 pub(crate) mod backend;
+pub(crate) mod hotkey;
 pub(crate) mod profile;
 pub(crate) mod record;
 pub(crate) mod status;
+pub(crate) mod toggle;
 pub(crate) mod transcribe;
 
 /// Exit code for a clean run.

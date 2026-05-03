@@ -110,6 +110,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ashpd"
+version = "0.13.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3118453e020b8e3e0da25ef9a1d0d51d668874358af11aded9d91a8b9c25f323"
+dependencies = [
+ "enumflags2",
+ "futures-util",
+ "getrandom 0.4.2",
+ "serde",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "assert-json-diff"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2318,7 +2332,7 @@ dependencies = [
  "cfg-expr",
  "heck",
  "pkg-config",
- "toml",
+ "toml 1.1.2+spec-1.1.0",
  "version-compare",
 ]
 
@@ -2513,6 +2527,18 @@ dependencies = [
  "futures-sink",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "toml"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
+dependencies = [
+ "serde",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]
@@ -3824,6 +3850,7 @@ dependencies = [
  "color-eyre",
  "dirs",
  "futures-util",
+ "notify-rust",
  "predicates",
  "reqwest",
  "serde",
@@ -3839,6 +3866,7 @@ dependencies = [
  "which",
  "zbus",
  "zwhisper-core",
+ "zwhisper-hotkey",
  "zwhisper-ipc",
 ]
 
@@ -3868,6 +3896,27 @@ dependencies = [
  "wiremock",
  "zeroize",
  "zwhisper-core",
+]
+
+[[package]]
+name = "zwhisper-hotkey"
+version = "0.0.0"
+dependencies = [
+ "ashpd",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-test",
+ "zbus",
+ "zwhisper-ipc",
 ]
 
 [[package]]
@@ -3903,6 +3952,7 @@ dependencies = [
  "xdg",
  "zbus",
  "zvariant",
+ "zwhisper-hotkey",
  "zwhisper-ipc",
 ]
 

@@ -65,6 +65,14 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # Tray (M4)
 ksni = "0.3"
+# Hotkey toggle (M6) — global hotkey via XDG GlobalShortcuts portal.
+# `default-features = true` keeps the tokio executor (matches
+# `zbus.features = ["tokio"]`); MSRV 1.92 is satisfied (workspace
+# `rust-version = "1.85"` is the minimum, toolchain is stable >=1.92).
+ashpd = { version = "0.13", default-features = true, features = ["global_shortcuts"] }
+# Pure deserializer for `hotkey.toml` (M6) — `toml_edit` is overkill
+# for read-only config and pulls extra surface area.
+toml = "0.8"
 # `z-with-tokio` swaps notify-rust's default async-io zbus backend for
 # tokio so the tray's `wait_for_action_async` lives on our runtime
 # rather than spawning a separate executor (M4-plan DoD #5 + #23).

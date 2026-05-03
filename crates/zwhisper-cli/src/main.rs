@@ -27,7 +27,7 @@ mod cli;
 mod commands;
 mod profile_commands;
 
-use crate::cli::{BackendCmd, ProfileCmd, RecordArgs, TranscribeArgs};
+use crate::cli::{BackendCmd, HotkeyCmd, ProfileCmd, RecordArgs, TranscribeArgs};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -65,6 +65,15 @@ enum Command {
 
     /// Print runtime status from the daemon.
     Status,
+
+    /// M6 — universal toggle (start if idle, stop if recording).
+    /// Bind in your WM (e.g. i3 `bindsym`) for a tray-less hotkey.
+    Toggle,
+
+    /// M6 — manage and probe the system-wide hotkey binding
+    /// (xdg-desktop-portal `GlobalShortcuts`). Bypasses the tray.
+    #[command(subcommand)]
+    Hotkey(HotkeyCmd),
 }
 
 fn main() -> color_eyre::Result<()> {
@@ -79,6 +88,8 @@ fn main() -> color_eyre::Result<()> {
         Command::Profile(cmd) => commands::profile::run(cmd),
         Command::Backend(cmd) => commands::backend::run(cmd),
         Command::Status => commands::status::run(),
+        Command::Toggle => commands::toggle::run(),
+        Command::Hotkey(cmd) => commands::hotkey::run(cmd),
     }
 }
 
