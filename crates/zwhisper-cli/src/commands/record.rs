@@ -112,6 +112,14 @@ async fn run_async(profile_name: &str) -> i32 {
         }
     };
 
+    // 2b. M8 pre-flight handshake. A version mismatch must abort
+    //     before we subscribe to signals, otherwise we would print a
+    //     "starting" event from a daemon we cannot trust.
+    match super::verify_protocol(&proxy).await {
+        super::HandshakeOutcome::Match | super::HandshakeOutcome::DaemonDown => {}
+        super::HandshakeOutcome::Mismatch(err) => return super::report_protocol_mismatch(&err),
+    }
+
     // 3. SUBSCRIBE FIRST (race-fix). The daemon emits
     //    `StateChanged "starting"` *inside* StartRecording; if we
     //    subscribed only after the call returned, we would miss it.

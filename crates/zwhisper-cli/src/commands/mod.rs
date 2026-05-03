@@ -44,6 +44,12 @@ pub(crate) const EXIT_PROTOCOL_ERROR: i32 = 2;
 /// Exit code for an IPC-level failure that is neither (1) nor (2):
 /// bus disconnect, unparseable reply, transport error.
 pub(crate) const EXIT_IPC_FAILURE: i32 = 3;
+/// M8 — the daemon's `Recorder1.ProtocolVersion` does not match this
+/// CLI's compile-time [`zwhisper_ipc::PROTOCOL_VERSION`]. Distinct
+/// from [`EXIT_PROTOCOL_ERROR`] (which means "the daemon talked back
+/// fine, but said no") so packagers and CI can detect partial
+/// upgrades without parsing stderr.
+pub(crate) const EXIT_VERSION_MISMATCH: i32 = 4;
 
 /// Well-known D-Bus error names for the daemon-not-running case. We
 /// hit `ServiceUnknown` when the bus has no activation entry, and
@@ -98,6 +104,81 @@ pub(crate) fn is_daemon_down(err: &zbus::Error) -> bool {
         return name_str == ERR_SERVICE_UNKNOWN || name_str == ERR_NAME_HAS_NO_OWNER;
     }
     false
+}
+
+/// Outcome of the M8 pre-flight handshake (DoD #12).
+///
+/// Three states matter to the caller:
+///
+/// - `Match` — daemon advertises the same `PROTOCOL_VERSION` as the
+///   client. The caller proceeds with its real RPC.
+/// - `Mismatch(...)` — daemon answered, but with a different version
+///   string OR the legacy "no such property" sentinel. The caller
+///   exits [`EXIT_VERSION_MISMATCH`] after rendering the canonical
+///   user-facing message.
+/// - `DaemonDown` — the property call failed with `ServiceUnknown` /
+///   `NameHasNoOwner`. The caller falls back to its existing
+///   daemon-down code path so the user sees [`DAEMON_DOWN_HINT`]
+///   instead of a confusing "version mismatch" message.
+#[derive(Debug)]
+pub(crate) enum HandshakeOutcome {
+    Match,
+    Mismatch(zwhisper_ipc::ProtocolMismatch),
+    DaemonDown,
+}
+
+/// M8 pre-flight handshake. Reads
+/// `Recorder1.ProtocolVersion` and classifies the result against the
+/// CLI's compile-time [`zwhisper_ipc::PROTOCOL_VERSION`].
+pub(crate) async fn verify_protocol(proxy: &zwhisper_ipc::Recorder1Proxy<'_>) -> HandshakeOutcome {
+    match proxy.protocol_version().await {
+        Ok(daemon_version) => {
+            if daemon_version == zwhisper_ipc::PROTOCOL_VERSION {
+                HandshakeOutcome::Match
+            } else {
+                HandshakeOutcome::Mismatch(zwhisper_ipc::ProtocolMismatch::new(daemon_version))
+            }
+        }
+        Err(err) if is_daemon_down(&err) => HandshakeOutcome::DaemonDown,
+        Err(zbus::Error::FDO(boxed)) => match *boxed {
+            // zbus 5.15 surfaces "no such property / method / interface"
+            // when the daemon is older than M8 and never grew the
+            // ProtocolVersion property. We treat each of these as
+            // the legacy-daemon case.
+            zbus::fdo::Error::UnknownMethod(_)
+            | zbus::fdo::Error::UnknownProperty(_)
+            | zbus::fdo::Error::UnknownInterface(_) => {
+                HandshakeOutcome::Mismatch(zwhisper_ipc::ProtocolMismatch::legacy_daemon())
+            }
+            other => HandshakeOutcome::Mismatch(zwhisper_ipc::ProtocolMismatch::new(format!(
+                "fdo error: {other}"
+            ))),
+        },
+        Err(other) => HandshakeOutcome::Mismatch(zwhisper_ipc::ProtocolMismatch::new(format!(
+            "unexpected protocol-version error: {other}"
+        ))),
+    }
+}
+
+/// Print the canonical user-facing message for a [`verify_protocol`]
+/// failure to stderr. Pulled out so every command surfaces the same
+/// wording (DoD #12 contract). Returns the exit code the caller
+/// should propagate.
+#[allow(clippy::print_stderr)]
+pub(crate) fn report_protocol_mismatch(err: &zwhisper_ipc::ProtocolMismatch) -> i32 {
+    if err.is_legacy_daemon() {
+        eprintln!(
+            "{err}\nThe running daemon predates the protocol-version handshake \
+             (added in 0.1.0). Reinstall zwhisperd to match this client."
+        );
+    } else {
+        eprintln!(
+            "{err}\nThe daemon and this client were built from different \
+             zwhisper releases. Reinstall the matching zwhisperd or zwhisper \
+             package."
+        );
+    }
+    EXIT_VERSION_MISMATCH
 }
 
 /// Build a current-thread tokio runtime for a one-shot CLI dispatch.

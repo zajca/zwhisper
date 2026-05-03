@@ -106,6 +106,17 @@ async fn run_async() -> (i32, String, String) {
         }
     };
 
+    // M8 pre-flight handshake. Version mismatch aborts the toggle
+    // before any state-mutating call so we never start a session
+    // that the daemon will fail to honour at signal time.
+    match super::verify_protocol(&recorder).await {
+        super::HandshakeOutcome::Match | super::HandshakeOutcome::DaemonDown => {}
+        super::HandshakeOutcome::Mismatch(err) => {
+            let code = super::report_protocol_mismatch(&err);
+            return (code, String::new(), String::new());
+        }
+    }
+
     let profiles = match Profiles1Proxy::new(&conn).await {
         Ok(p) => p,
         Err(err) => {
@@ -185,7 +196,10 @@ fn format_outcome(result: Result<ToggleOutcome, ToggleError>) -> (i32, String, S
             // concurrent-toggle race.
             (
                 EXIT_OK,
-                format!("toggle: NOOP (reason={})", noop_reason_label(NoOpReason::AlreadyActive)),
+                format!(
+                    "toggle: NOOP (reason={})",
+                    noop_reason_label(NoOpReason::AlreadyActive)
+                ),
                 String::new(),
             )
         }
@@ -267,10 +281,7 @@ mod tests {
             profile: "default".into(),
         }));
         assert_eq!(code, EXIT_OK);
-        assert_eq!(
-            stdout,
-            "toggle: STARTED (session=abc-123, profile=default)"
-        );
+        assert_eq!(stdout, "toggle: STARTED (session=abc-123, profile=default)");
         assert!(stderr.is_empty(), "no stderr on success: {stderr}");
     }
 
@@ -307,9 +318,8 @@ mod tests {
 
     #[test]
     fn mapping_cooling_down_returns_exit_0_with_stderr() {
-        let (code, stdout, stderr) = format_outcome(Err(ToggleError::CoolingDown {
-            cooldown_ms: 1500,
-        }));
+        let (code, stdout, stderr) =
+            format_outcome(Err(ToggleError::CoolingDown { cooldown_ms: 1500 }));
         assert_eq!(code, EXIT_OK);
         assert!(stdout.is_empty());
         assert_eq!(stderr, "toggle: NOOP (cooldown active)");
@@ -340,8 +350,7 @@ mod tests {
 
     #[test]
     fn mapping_rpc_returns_exit_3() {
-        let (code, stdout, stderr) =
-            format_outcome(Err(ToggleError::Rpc("session-in-use".into())));
+        let (code, stdout, stderr) = format_outcome(Err(ToggleError::Rpc("session-in-use".into())));
         assert_eq!(code, EXIT_IPC_FAILURE);
         assert!(stdout.is_empty());
         assert_eq!(stderr, "toggle: FAIL (rpc: session-in-use)");
@@ -349,8 +358,14 @@ mod tests {
 
     #[test]
     fn noop_reason_label_covers_all_variants() {
-        assert_eq!(noop_reason_label(NoOpReason::AlreadyDraining), "AlreadyDraining");
-        assert_eq!(noop_reason_label(NoOpReason::AlreadyActive), "AlreadyActive");
+        assert_eq!(
+            noop_reason_label(NoOpReason::AlreadyDraining),
+            "AlreadyDraining"
+        );
+        assert_eq!(
+            noop_reason_label(NoOpReason::AlreadyActive),
+            "AlreadyActive"
+        );
         assert_eq!(noop_reason_label(NoOpReason::Unknown), "Unknown");
     }
 
@@ -374,7 +389,10 @@ mod tests {
         // `toggle_once`, the CLI must keep the user-facing exit
         // code at 0.
         let (code, stdout, stderr) = format_outcome(Err(ToggleError::AlreadyActive));
-        assert_eq!(code, EXIT_OK, "AlreadyActive must never surface as a failure");
+        assert_eq!(
+            code, EXIT_OK,
+            "AlreadyActive must never surface as a failure"
+        );
         assert_eq!(stdout, "toggle: NOOP (reason=AlreadyActive)");
         assert!(stderr.is_empty());
     }

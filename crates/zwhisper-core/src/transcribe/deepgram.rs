@@ -28,7 +28,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Client, ClientBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use tokio::fs::File as TokioFile;
@@ -118,12 +118,13 @@ impl DeepgramBatch {
     ) -> Result<TranscriptArtifacts, TranscribeError> {
         let started_at = Instant::now();
 
-        let audio_meta = tokio::fs::metadata(audio).await.map_err(|source| {
-            TranscribeError::InputAudio {
-                path: audio.to_path_buf(),
-                source,
-            }
-        })?;
+        let audio_meta =
+            tokio::fs::metadata(audio)
+                .await
+                .map_err(|source| TranscribeError::InputAudio {
+                    path: audio.to_path_buf(),
+                    source,
+                })?;
         if !audio_meta.is_file() {
             return Err(TranscribeError::InputAudio {
                 path: audio.to_path_buf(),
@@ -161,8 +162,8 @@ impl DeepgramBatch {
         // the request value when the field is absent or empty
         // (e.g., diarize-only responses). User feedback #3,
         // 2026-05-02.
-        let resolved_language = extract_detected_language(&dg_response)
-            .unwrap_or_else(|| opts.language.clone());
+        let resolved_language =
+            extract_detected_language(&dg_response).unwrap_or_else(|| opts.language.clone());
 
         let txt_target = append_extension(audio, ".txt");
         let json_target = append_extension(audio, ".json");
@@ -340,8 +341,7 @@ fn is_loopback_http(url: &str, host: &str) -> bool {
 fn percent_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
-        let safe = byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        let safe = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
         if safe {
             out.push(byte as char);
         } else {
@@ -449,19 +449,18 @@ impl DeepgramBatch {
             // read run unbounded, so a slow body would silently
             // overshoot the budget (user feedback #1, 2026-05-02).
             let attempt_cap = budget.saturating_sub(started.elapsed());
-            let attempt_result =
-                tokio::time::timeout(attempt_cap, async {
-                    let resp = client.execute(req).await?;
-                    let status = resp.status();
-                    let retry_after = parse_retry_after(resp.headers());
-                    let bytes = resp.bytes().await?;
-                    Ok::<_, reqwest::Error>(AttemptOutcome {
-                        status,
-                        retry_after,
-                        body: bytes.to_vec(),
-                    })
+            let attempt_result = tokio::time::timeout(attempt_cap, async {
+                let resp = client.execute(req).await?;
+                let status = resp.status();
+                let retry_after = parse_retry_after(resp.headers());
+                let bytes = resp.bytes().await?;
+                Ok::<_, reqwest::Error>(AttemptOutcome {
+                    status,
+                    retry_after,
+                    body: bytes.to_vec(),
                 })
-                .await;
+            })
+            .await;
 
             let Ok(send_result) = attempt_result else {
                 return Err(TranscribeError::BackendTimeout {
@@ -546,10 +545,12 @@ impl DeepgramBatch {
 
 fn build_headers(key: &SecretString) -> Result<HeaderMap, TranscribeError> {
     let mut headers = HeaderMap::with_capacity(2);
-    let mut auth = HeaderValue::from_str(&format!("Token {}", key.expose_secret()))
-        .map_err(|_| TranscribeError::BackendConfig {
-            backend: BACKEND_ID,
-            message: "API key contains characters not valid in an HTTP header".to_owned(),
+    let mut auth =
+        HeaderValue::from_str(&format!("Token {}", key.expose_secret())).map_err(|_| {
+            TranscribeError::BackendConfig {
+                backend: BACKEND_ID,
+                message: "API key contains characters not valid in an HTTP header".to_owned(),
+            }
         })?;
     auth.set_sensitive(true);
     headers.insert(AUTHORIZATION, auth);
@@ -656,12 +657,11 @@ async fn write_text(path: &Path, text: &str) -> Result<(), TranscribeError> {
 }
 
 async fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), TranscribeError> {
-    let body = serde_json::to_vec_pretty(value).map_err(|source| {
-        TranscribeError::BackendJsonShape {
+    let body =
+        serde_json::to_vec_pretty(value).map_err(|source| TranscribeError::BackendJsonShape {
             backend: BACKEND_ID,
             source,
-        }
-    })?;
+        })?;
     tokio::fs::write(path, body)
         .await
         .map_err(|source| TranscribeError::ArtifactWrite {
@@ -790,10 +790,7 @@ fn group_speakers(resp: &DeepgramResponse) -> Vec<SpeakerSegment> {
     // false claim of "diarization ran". Drop the segment list so
     // the JSON envelope omits the `speakers` array and
     // `TranscriptArtifacts.speakers = None`.
-    if segments
-        .iter()
-        .all(|s| s.speaker_id == UNATTRIBUTED)
-    {
+    if segments.iter().all(|s| s.speaker_id == UNATTRIBUTED) {
         return Vec::new();
     }
     segments
@@ -911,7 +908,10 @@ mod tests {
         };
         let url = backend.build_url(&opts).unwrap();
         assert!(url.contains("model=nova-3-general"), "{url}");
-        assert!(!url.contains("model=nova-3&"), "settings.model leaked: {url}");
+        assert!(
+            !url.contains("model=nova-3&"),
+            "settings.model leaked: {url}"
+        );
     }
 
     #[test]
@@ -944,7 +944,10 @@ mod tests {
         };
         let url = backend.build_url(&opts).unwrap();
         assert!(url.contains("detect_language=true"), "{url}");
-        assert!(!url.contains("&language=en") && !url.contains("?language=en"), "{url}");
+        assert!(
+            !url.contains("&language=en") && !url.contains("?language=en"),
+            "{url}"
+        );
     }
 
     #[test]
@@ -959,7 +962,10 @@ mod tests {
         let url = backend.build_url(&opts).unwrap();
         assert!(url.contains("detect_language=true"), "{url}");
         // No `&language=…` or `?language=…` segment when auto-detect.
-        assert!(!url.contains("&language=") && !url.contains("?language="), "{url}");
+        assert!(
+            !url.contains("&language=") && !url.contains("?language="),
+            "{url}"
+        );
     }
 
     #[test]
@@ -1001,8 +1007,7 @@ mod tests {
             ..Default::default()
         };
         // Plaintext public host → reject (DoD #11).
-        let evil =
-            DeepgramBatch::with_base_url(settings(), "http://evil.example/".to_owned());
+        let evil = DeepgramBatch::with_base_url(settings(), "http://evil.example/".to_owned());
         let err = evil.build_url(&opts).unwrap_err();
         assert!(matches!(err, TranscribeError::BackendConfig { .. }));
         assert!(err.to_string().contains("non-https"));
@@ -1010,10 +1015,7 @@ mod tests {
         let ftp = DeepgramBatch::with_base_url(settings(), "ftp://evil.example/".to_owned());
         assert!(ftp.build_url(&opts).is_err());
         // Loopback → accept (test fixture).
-        let loop_ok = DeepgramBatch::with_base_url(
-            settings(),
-            "http://127.0.0.1:46791".to_owned(),
-        );
+        let loop_ok = DeepgramBatch::with_base_url(settings(), "http://127.0.0.1:46791".to_owned());
         assert!(loop_ok.build_url(&opts).is_ok());
     }
 
@@ -1147,17 +1149,15 @@ mod tests {
 
     #[test]
     fn extract_detected_language_returns_none_when_absent() {
-        let resp: DeepgramResponse = serde_json::from_str(
-            r#"{"results":{"channels":[{"alternatives":[]}]}}"#,
-        )
-        .unwrap();
+        let resp: DeepgramResponse =
+            serde_json::from_str(r#"{"results":{"channels":[{"alternatives":[]}]}}"#).unwrap();
         assert!(extract_detected_language(&resp).is_none());
     }
 
     #[test]
     fn extract_audio_duration_handles_missing_metadata() {
-        let resp: DeepgramResponse = serde_json::from_str(r#"{"results":{"channels":[]}}"#)
-            .unwrap();
+        let resp: DeepgramResponse =
+            serde_json::from_str(r#"{"results":{"channels":[]}}"#).unwrap();
         assert_eq!(extract_audio_duration(&resp), Duration::ZERO);
     }
 
@@ -1174,7 +1174,10 @@ mod tests {
             assert!(status_is_retryable(StatusCode::from_u16(s).unwrap()), "{s}");
         }
         for s in [400u16, 401, 402, 403, 404, 413] {
-            assert!(!status_is_retryable(StatusCode::from_u16(s).unwrap()), "{s}");
+            assert!(
+                !status_is_retryable(StatusCode::from_u16(s).unwrap()),
+                "{s}"
+            );
         }
     }
 
@@ -1191,7 +1194,10 @@ mod tests {
         let key = SecretString::new("sk-fixture-1234567890".to_owned());
         let h = build_headers(&key).unwrap();
         let auth = h.get(AUTHORIZATION).unwrap();
-        assert!(auth.is_sensitive(), "Authorization header must be sensitive");
+        assert!(
+            auth.is_sensitive(),
+            "Authorization header must be sensitive"
+        );
         // Header value can still be exposed via to_str — that is the
         // single legitimate consumer (reqwest serializing the wire).
         // The protection is `set_sensitive` keeping it out of

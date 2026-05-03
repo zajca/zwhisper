@@ -48,6 +48,80 @@ pub(crate) enum RecordingState {
     DaemonOff,
 }
 
+/// M8 — outcome of the pre-flight `ProtocolVersion` handshake. The
+/// settings GUI runs this once on app load via [`probe_protocol`];
+/// `Mismatch` switches the UI into a banner-only mode where every
+/// action button is disabled and only the version mismatch is
+/// shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProtocolStatus {
+    /// Daemon advertises the same `PROTOCOL_VERSION` as the
+    /// settings binary. Normal operation.
+    Match,
+    /// Daemon is not on the bus. Same UX as M7's `DaemonOff` —
+    /// the user sees a "Saved (daemon offline)" toast and the
+    /// settings remain editable.
+    DaemonOff,
+    /// Daemon advertises a different version (or does not
+    /// implement the property at all). UI must surface the banner
+    /// and refuse every action.
+    Mismatch {
+        expected: String,
+        got: String,
+        legacy: bool,
+    },
+}
+
+/// Probe the daemon's `Recorder1.ProtocolVersion` property and
+/// classify the result. Lives next to the other client facades so
+/// every D-Bus error mapping is in one place.
+pub(crate) async fn probe_protocol() -> Result<ProtocolStatus, SettingsError> {
+    let conn = zbus::Connection::session()
+        .await
+        .map_err(|e| SettingsError::Profile(format!("session bus: {e}")))?;
+    let proxy = match Recorder1Proxy::new(&conn).await {
+        Ok(p) => p,
+        Err(zbus::Error::FDO(boxed)) => {
+            if matches!(*boxed, zbus::fdo::Error::ServiceUnknown(_)) {
+                return Ok(ProtocolStatus::DaemonOff);
+            }
+            return Err(SettingsError::Profile(format!("recorder proxy: {boxed}")));
+        }
+        Err(other) => {
+            return Err(SettingsError::Profile(format!("recorder proxy: {other}")));
+        }
+    };
+    match proxy.protocol_version().await {
+        Ok(daemon_version) => {
+            if daemon_version == zwhisper_ipc::PROTOCOL_VERSION {
+                Ok(ProtocolStatus::Match)
+            } else {
+                Ok(ProtocolStatus::Mismatch {
+                    expected: zwhisper_ipc::PROTOCOL_VERSION.to_owned(),
+                    got: daemon_version,
+                    legacy: false,
+                })
+            }
+        }
+        Err(e) if is_service_unknown(&e) => Ok(ProtocolStatus::DaemonOff),
+        Err(zbus::Error::FDO(boxed)) => match *boxed {
+            zbus::fdo::Error::UnknownMethod(_)
+            | zbus::fdo::Error::UnknownProperty(_)
+            | zbus::fdo::Error::UnknownInterface(_) => Ok(ProtocolStatus::Mismatch {
+                expected: zwhisper_ipc::PROTOCOL_VERSION.to_owned(),
+                got: zwhisper_ipc::ProtocolMismatch::LEGACY_DAEMON_SENTINEL.to_owned(),
+                legacy: true,
+            }),
+            other => Err(SettingsError::Profile(format!(
+                "protocol_version probe: {other}"
+            ))),
+        },
+        Err(other) => Err(SettingsError::Profile(format!(
+            "protocol_version probe: {other}"
+        ))),
+    }
+}
+
 /// Async port for `Profiles1.reload`. Lives as a trait so the save
 /// logic in `tabs::profile` can be unit-tested with a fake that
 /// records call counts without touching a live bus.
@@ -88,9 +162,7 @@ impl ProfilesClient {
                     Err(SettingsError::Profile(format!("profiles proxy: {boxed}")))
                 }
             }
-            Err(other) => Err(SettingsError::Profile(format!(
-                "profiles proxy: {other}"
-            ))),
+            Err(other) => Err(SettingsError::Profile(format!("profiles proxy: {other}"))),
         }
     }
 }
@@ -154,9 +226,7 @@ impl RecorderClient {
                     Err(SettingsError::Profile(format!("recorder proxy: {boxed}")))
                 }
             }
-            Err(other) => Err(SettingsError::Profile(format!(
-                "recorder proxy: {other}"
-            ))),
+            Err(other) => Err(SettingsError::Profile(format!("recorder proxy: {other}"))),
         }
     }
 }
@@ -213,5 +283,55 @@ mod tests {
         let other = zbus::Error::Address("not a real address".into());
         let result = map_reload_error(&other);
         assert!(matches!(result, Err(SettingsError::Profile(_))));
+    }
+
+    // ----- M8 ProtocolStatus enumeration tests (DoD #13) -----
+    //
+    // These pin the variant shapes that `main.rs` matches on. We
+    // do not stand up a real D-Bus broker here — the variant
+    // construction is what `probe_protocol` produces and what the
+    // launch gate consumes, so a unit test is sufficient.
+
+    #[test]
+    fn protocol_status_match_is_distinct_from_daemon_off() {
+        // Match and DaemonOff both let the GUI launch, but they
+        // mean different things: Match → matched daemon online,
+        // DaemonOff → no daemon to match against. The launch
+        // path keys on this distinction for log output, so we
+        // pin equality semantics.
+        assert_ne!(ProtocolStatus::Match, ProtocolStatus::DaemonOff);
+    }
+
+    #[test]
+    fn protocol_status_mismatch_carries_legacy_flag() {
+        let real = ProtocolStatus::Mismatch {
+            expected: "0.1.0".to_owned(),
+            got: "0.0.99".to_owned(),
+            legacy: false,
+        };
+        let legacy = ProtocolStatus::Mismatch {
+            expected: "0.1.0".to_owned(),
+            got: "pre-0.1.0".to_owned(),
+            legacy: true,
+        };
+        assert_ne!(real, legacy);
+        if let ProtocolStatus::Mismatch { legacy, .. } = legacy {
+            assert!(legacy);
+        } else {
+            panic!("expected legacy mismatch variant");
+        }
+    }
+
+    #[test]
+    fn legacy_sentinel_value_lines_up_with_ipc_constant() {
+        // The settings probe sets `got` to
+        // `ProtocolMismatch::LEGACY_DAEMON_SENTINEL`. Pin the
+        // value so a future rename in `zwhisper-ipc` trips the
+        // test instead of producing a silent UI banner with the
+        // wrong text.
+        assert_eq!(
+            zwhisper_ipc::ProtocolMismatch::LEGACY_DAEMON_SENTINEL,
+            "pre-0.1.0"
+        );
     }
 }

@@ -85,6 +85,24 @@ pub async fn run_pump(
                     .saturating_add(1)
                     .min(BACKOFF_SCHEDULE_MS.len() - 1);
             }
+            ConnectionExit::ProtocolMismatch(err) => {
+                // M8 DoD #13. The tray cannot recover from a
+                // mismatched daemon by reconnecting — only a
+                // reinstall will fix it. We mark the icon offline,
+                // wait for the shutdown signal, and exit cleanly so
+                // the user sees the (already-emitted) notification
+                // and a permanently-offline indicator instead of an
+                // infinite reconnect loop.
+                warn!(
+                    error = %err,
+                    "tray pump halted — protocol mismatch detected",
+                );
+                state_tx.send_modify(|s| {
+                    s.icon = crate::state::IconState::DaemonOffline;
+                });
+                let _ = shutdown.changed().await;
+                return Ok(());
+            }
         }
     }
 }
@@ -102,6 +120,13 @@ enum ConnectionExit {
     /// Disconnected for some reason — outer loop should backoff and
     /// retry.
     Reconnect(String),
+    /// M8 — daemon advertises a different `PROTOCOL_VERSION` (or
+    /// does not implement the property at all). Reconnecting cannot
+    /// fix this; the outer loop must surface the error to the user
+    /// and stop the backoff loop. The single notification fires from
+    /// inside `run_inner` so it lands at most once per process
+    /// lifetime even in the face of OS retries.
+    ProtocolMismatch(zwhisper_ipc::ProtocolMismatch),
 }
 
 // One inner D-Bus session, top to bottom: connect, build proxies,
@@ -133,6 +158,19 @@ async fn run_inner(
         Ok(p) => p,
         Err(e) => return ConnectionExit::Reconnect(format!("Recorder1Proxy::new: {e}")),
     };
+
+    // M8 pre-flight handshake (DoD #13). Mismatched daemon — the
+    // pump emits a single user notification and exits sticky so the
+    // outer loop stops backing off. Reconnect attempts cannot fix a
+    // version skew; the user must reinstall the daemon.
+    match crate::version::verify_protocol(&recorder).await {
+        crate::version::HandshakeOutcome::Match | crate::version::HandshakeOutcome::DaemonDown => {}
+        crate::version::HandshakeOutcome::Mismatch(err) => {
+            crate::version::notify_mismatch_once(&err);
+            return ConnectionExit::ProtocolMismatch(err);
+        }
+    }
+
     let profiles_proxy = match Profiles1Proxy::new(&conn).await {
         Ok(p) => p,
         Err(e) => return ConnectionExit::Reconnect(format!("Profiles1Proxy::new: {e}")),
@@ -535,8 +573,7 @@ mod tests {
     #[test]
     fn is_unknown_method_rejects_unrelated_method_errors() {
         let err = zbus::Error::MethodError(
-            zbus::names::OwnedErrorName::try_from("cz.zajca.Zwhisper1.Error.SessionInUse")
-                .unwrap(),
+            zbus::names::OwnedErrorName::try_from("cz.zajca.Zwhisper1.Error.SessionInUse").unwrap(),
             None,
             placeholder_message(),
         );

@@ -277,7 +277,11 @@ impl<'a> LiveRecorderClient<'a> {
 #[async_trait]
 impl RecorderClient for LiveRecorderClient<'_> {
     async fn get_status(&self) -> Result<RecorderStatus, ToggleError> {
-        let status = self.recorder.get_status().await.map_err(|e| ToggleError::from_zbus(&e))?;
+        let status = self
+            .recorder
+            .get_status()
+            .await
+            .map_err(|e| ToggleError::from_zbus(&e))?;
         // `state` is one of the strings rendered by
         // `RecorderState::Display`. Anything other than
         // "recording" is treated as "not recording" for the
@@ -401,7 +405,9 @@ where
                 // Treat as a benign no-op so the user sees no
                 // exit-3 noise.
                 Err(ToggleError::AlreadyActive) => {
-                    debug!("toggle: NoOp because daemon answered SessionInUse (concurrent toggle race)");
+                    debug!(
+                        "toggle: NoOp because daemon answered SessionInUse (concurrent toggle race)"
+                    );
                     Ok(ToggleOutcome::NoOp {
                         reason: NoOpReason::AlreadyActive,
                     })
@@ -607,8 +613,7 @@ mod tests {
         let mut d = Debouncer::new(&cfg_default());
         let now = Instant::now();
         d.try_accept(now).unwrap();
-        let later =
-            now + Duration::from_millis(crate::config::DEFAULT_DEBOUNCE_MS + 1);
+        let later = now + Duration::from_millis(crate::config::DEFAULT_DEBOUNCE_MS + 1);
         assert!(d.try_accept(later).is_ok());
     }
 
@@ -631,8 +636,7 @@ mod tests {
         let mut d = Debouncer::new(&cfg_default());
         let t0 = Instant::now();
         d.note_stop(t0);
-        let later =
-            t0 + Duration::from_millis(crate::config::DEFAULT_COOLDOWN_MS + 1);
+        let later = t0 + Duration::from_millis(crate::config::DEFAULT_COOLDOWN_MS + 1);
         assert!(d.try_accept(later).is_ok());
     }
 
@@ -739,8 +743,7 @@ mod tests {
         let mut d = Debouncer::new(&cfg_default());
         let t0 = Instant::now();
         d.note_stop(t0);
-        let after_window =
-            t0 + Duration::from_millis(crate::config::DEFAULT_COOLDOWN_MS + 1);
+        let after_window = t0 + Duration::from_millis(crate::config::DEFAULT_COOLDOWN_MS + 1);
         assert!(d.try_accept(after_window).is_ok());
     }
 

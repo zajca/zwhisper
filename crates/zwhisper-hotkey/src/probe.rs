@@ -176,10 +176,7 @@ impl BusInspector for LiveBus {
         // First NUL terminates argv[0]. If no NUL is present, the
         // whole buffer IS argv[0] (kernel sometimes returns the
         // raw command without separators for short cmdlines).
-        let argv0_bytes = bytes
-            .split(|b| *b == 0)
-            .next()
-            .filter(|s| !s.is_empty())?;
+        let argv0_bytes = bytes.split(|b| *b == 0).next().filter(|s| !s.is_empty())?;
         let argv0 = std::str::from_utf8(argv0_bytes).ok()?;
         // Trim to basename — portal binaries are usually invoked
         // by absolute path (`/usr/lib/xdg-desktop-portal-kde`).
@@ -350,10 +347,7 @@ async fn probe_with(backend: BackendDetected, portal: &dyn PortalIntrospector) -
 
     match portal.global_shortcuts_version().await {
         Some(version) => {
-            let reason = format!(
-                "{} GlobalShortcuts v{version}",
-                backend_label(&backend)
-            );
+            let reason = format!("{} GlobalShortcuts v{version}", backend_label(&backend));
             ProbeReport {
                 backend,
                 global_shortcuts_available: true,
@@ -375,8 +369,7 @@ fn probe_unavailable_no_portal() -> ProbeReport {
         backend: BackendDetected::None,
         global_shortcuts_available: false,
         portal_version: None,
-        reason: "no GlobalShortcuts portal — i3/X11 detected; bind via your WM config"
-            .to_string(),
+        reason: "no GlobalShortcuts portal — i3/X11 detected; bind via your WM config".to_string(),
     }
 }
 
@@ -579,10 +572,7 @@ mod tests {
         assert_eq!(report.backend, BackendDetected::Kde);
         assert!(!report.global_shortcuts_available);
         assert_eq!(report.portal_version, None);
-        assert_eq!(
-            report.reason,
-            "backend has no GlobalShortcuts interface"
-        );
+        assert_eq!(report.reason, "backend has no GlobalShortcuts interface");
     }
 
     #[tokio::test]
@@ -653,9 +643,9 @@ mod tests {
         // classifier honestly reports it as `Other`.
         match classify_executable("xdg-desktop-por") {
             BackendDetected::Other(s) => assert_eq!(s, "xdg-desktop-por"),
-            other => panic!(
-                "truncated comm must not be classified as a known backend; got {other:?}"
-            ),
+            other => {
+                panic!("truncated comm must not be classified as a known backend; got {other:?}")
+            }
         }
     }
 }

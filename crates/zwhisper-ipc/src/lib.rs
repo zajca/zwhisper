@@ -59,6 +59,13 @@ pub use profiles::Profiles1Proxy;
 pub use recorder::Recorder1Proxy;
 pub use types::{ProfileEntry, ProfileEntryV2, Status};
 
+// `PROTOCOL_VERSION`, `PROTOCOL_VERSION_PROPERTY`, and
+// `ProtocolMismatch` are defined further down in this file (after the
+// other wire constants) so they live next to `BUS_NAME`, `OBJECT_PATH`,
+// `RECORDER_INTERFACE`, etc. — the canonical wire-surface block. They
+// are intentionally not re-exported here since they are top-level
+// items already.
+
 /// Well-known D-Bus name registered by `zwhisperd` on the session bus.
 pub const BUS_NAME: &str = "cz.zajca.Zwhisper1";
 
@@ -80,6 +87,86 @@ pub const RECORDER_INTERFACE: &str = "cz.zajca.Zwhisper1.Recorder1";
 /// D-Bus interface name for the `Profiles1` proxy. Phase 3 must use
 /// this exact string in its `#[zbus::interface(name = …)]` attribute.
 pub const PROFILES_INTERFACE: &str = "cz.zajca.Zwhisper1.Profiles1";
+
+/// Workspace-wide protocol version, exposed over D-Bus as the
+/// read-only `cz.zajca.Zwhisper1.Recorder1.ProtocolVersion` property
+/// (M8 DoD #9, #11).
+///
+/// This is the wire-level contract between the daemon and every
+/// client (`zwhisper-cli`, `zwhisper-tray`, `zwhisper-settings`).
+/// Bumped in lockstep with `Cargo.toml` `workspace.package.version`
+/// so a partial upgrade — e.g. a new daemon shipped without a
+/// matching tray — is detected at the first RPC instead of producing
+/// confusing wire-format errors deeper in the call stack.
+///
+/// `env!("CARGO_PKG_VERSION")` reads the value at compile time from
+/// the same `Cargo.toml` field that drives every other crate's
+/// version, so cross-crate drift is impossible by construction.
+pub const PROTOCOL_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// D-Bus property name on the `Recorder1` interface that returns
+/// [`PROTOCOL_VERSION`]. Hardcoded on the daemon side (in the
+/// `#[zbus(property)]` attribute) and on the client side (every
+/// pre-flight handshake reads this exact name). Recorded here so
+/// the typo-budget is one place, not three.
+pub const PROTOCOL_VERSION_PROPERTY: &str = "ProtocolVersion";
+
+/// Typed error reported when a client's compile-time
+/// [`PROTOCOL_VERSION`] does not match the value the daemon advertises
+/// at run time. Distinct from [`RpcError`] because a mismatch is a
+/// pre-flight refusal — no server-side state was touched.
+///
+/// The `got` field carries the literal daemon string, including the
+/// sentinel value `"pre-0.1.0"` that clients substitute when the
+/// daemon is so old it does not implement the property at all
+/// (zbus surfaces the call as `MethodCallNotImplemented` /
+/// `UnknownProperty`).
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("daemon protocol mismatch: expected {expected}, got {got}")]
+pub struct ProtocolMismatch {
+    /// Compile-time [`PROTOCOL_VERSION`] of the running client.
+    pub expected: String,
+    /// Run-time `ProtocolVersion` reported by the daemon, or the
+    /// sentinel `"pre-0.1.0"` for daemons that lack the property.
+    pub got: String,
+}
+
+impl ProtocolMismatch {
+    /// Sentinel value substituted for `got` when the daemon does not
+    /// implement [`PROTOCOL_VERSION_PROPERTY`] at all (legacy
+    /// pre-0.1.0 daemon). Distinct from a real version string so the
+    /// CLI can render a tailored "reinstall the daemon" hint.
+    pub const LEGACY_DAEMON_SENTINEL: &'static str = "pre-0.1.0";
+
+    /// Build a mismatch error for a daemon that returned a concrete
+    /// (but wrong) version string.
+    #[must_use]
+    pub fn new(got: impl Into<String>) -> Self {
+        Self {
+            expected: PROTOCOL_VERSION.to_owned(),
+            got: got.into(),
+        }
+    }
+
+    /// Build a mismatch error for a legacy daemon that did not
+    /// implement the property.
+    #[must_use]
+    pub fn legacy_daemon() -> Self {
+        Self {
+            expected: PROTOCOL_VERSION.to_owned(),
+            got: Self::LEGACY_DAEMON_SENTINEL.to_owned(),
+        }
+    }
+
+    /// `true` when the daemon is older than the protocol-version
+    /// rollout — i.e. did not implement the property. Lets clients
+    /// render a tailored "reinstall the daemon" hint instead of the
+    /// generic mismatch message.
+    #[must_use]
+    pub fn is_legacy_daemon(&self) -> bool {
+        self.got == Self::LEGACY_DAEMON_SENTINEL
+    }
+}
 
 #[cfg(test)]
 mod tests {

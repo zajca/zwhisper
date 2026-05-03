@@ -5,8 +5,33 @@ tray control, profiles, and a transcription pipeline backed by local
 [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) (and optionally
 cloud backends).
 
-> **Status: pre-M0, scaffolding only.** See [`IDEA.md`](./IDEA.md) for the
-> full architecture spec, scope, and roadmap.
+> **Status: 0.1.0 (M8) — first packageable release.** Arch PKGBUILD
+> ships with the workspace; M0–M8 are complete. See
+> [`CHANGELOG.md`](./CHANGELOG.md) and [`IDEA.md`](./IDEA.md) for
+> the full architecture and roadmap.
+
+## Install
+
+### Arch Linux
+
+```sh
+git clone https://github.com/zajca/zwhisper
+cd zwhisper/packaging/arch
+makepkg -si
+systemctl --user enable --now zwhisperd
+systemctl --user enable --now zwhisper-tray
+```
+
+The `makedepends` array pulls the `fltk-bundled` chain (cmake,
+gcc, X11/Wayland headers, fontconfig). See
+[`packaging/README.md`](./packaging/README.md) for namcap, dry-run,
+and post-install steps.
+
+### Other distributions
+
+Not yet packaged. See [`docs/M8-plan.md`](./docs/M8-plan.md)
+§ "Out of scope" for the deferred surface (Flatpak, .deb, RPM,
+NixOS module).
 
 ## Targets
 

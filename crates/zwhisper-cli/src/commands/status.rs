@@ -11,7 +11,8 @@ use tracing::debug;
 use zwhisper_ipc::Recorder1Proxy;
 
 use super::{
-    DAEMON_DOWN_HINT, EXIT_IPC_FAILURE, EXIT_OK, EXIT_PROTOCOL_ERROR, build_runtime, is_daemon_down,
+    DAEMON_DOWN_HINT, EXIT_IPC_FAILURE, EXIT_OK, EXIT_PROTOCOL_ERROR, build_runtime,
+    is_daemon_down, report_protocol_mismatch, verify_protocol,
 };
 
 /// Synchronous entry point. Wraps the async dispatcher in a one-shot
@@ -46,6 +47,14 @@ async fn run_async() -> i32 {
             return EXIT_IPC_FAILURE;
         }
     };
+
+    // M8 pre-flight handshake. The daemon-down case falls through
+    // to GetStatus below so the existing actionable hint surfaces
+    // unchanged.
+    match verify_protocol(&proxy).await {
+        super::HandshakeOutcome::Match | super::HandshakeOutcome::DaemonDown => {}
+        super::HandshakeOutcome::Mismatch(err) => return report_protocol_mismatch(&err),
+    }
 
     let status = match proxy.get_status().await {
         Ok(s) => s,

@@ -97,4 +97,18 @@ pub trait Recorder1 {
         bytes: u64,
         backend: &str,
     ) -> zbus::Result<()>;
+
+    /// Read-only property: workspace-wide protocol version
+    /// (M8 DoD #11). Wire signature `s`. Equal to
+    /// [`crate::PROTOCOL_VERSION`] on a daemon built from the same
+    /// workspace as the client. Mismatched values trip the M8
+    /// pre-flight handshake and the client refuses to make further
+    /// RPCs.
+    ///
+    /// Pre-0.1.0 daemons do not implement this property; zbus
+    /// surfaces the call as `MethodCallNotImplemented` /
+    /// `UnknownProperty`, which the client maps to
+    /// [`crate::ProtocolMismatch::legacy_daemon`].
+    #[zbus(property)]
+    fn protocol_version(&self) -> zbus::Result<String>;
 }

@@ -27,13 +27,9 @@ async fn run_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
     let opts = if let Some(name) = &args.profile {
         let profile = profile::load(name).map_err(|e| eyre!("{e}"))?;
         let backend_config = match profile.transcription.backend {
-            Backend::Deepgram => BackendConfig::Deepgram(
-                profile
-                    .transcription
-                    .deepgram
-                    .clone()
-                    .unwrap_or_default(),
-            ),
+            Backend::Deepgram => {
+                BackendConfig::Deepgram(profile.transcription.deepgram.clone().unwrap_or_default())
+            }
             Backend::WhisperCpp => BackendConfig::WhisperCpp,
             other => {
                 return Err(eyre!(
@@ -48,7 +44,10 @@ async fn run_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
         // Without this, the backend-specific knob would be silently
         // ignored when both fields disagreed (user feedback #2,
         // 2026-05-02).
-        let model = match (&profile.transcription.backend, &profile.transcription.deepgram) {
+        let model = match (
+            &profile.transcription.backend,
+            &profile.transcription.deepgram,
+        ) {
             (Backend::Deepgram, Some(dg)) => dg.model.clone(),
             _ => profile.transcription.model.clone(),
         };

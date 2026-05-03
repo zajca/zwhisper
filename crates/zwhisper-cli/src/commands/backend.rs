@@ -108,11 +108,23 @@ async fn health(backend: &str) -> color_eyre::Result<()> {
 
 #[derive(Debug)]
 enum HealthOutcome {
-    Ok { detail: String },
-    AuthFailed { status: u16 },
-    Quota { status: u16, retry_after_s: Option<u64> },
-    BadResponse { status: u16, excerpt: String },
-    Network { reason: String },
+    Ok {
+        detail: String,
+    },
+    AuthFailed {
+        status: u16,
+    },
+    Quota {
+        status: u16,
+        retry_after_s: Option<u64>,
+    },
+    BadResponse {
+        status: u16,
+        excerpt: String,
+    },
+    Network {
+        reason: String,
+    },
 }
 
 async fn probe_deepgram(key: &SecretString) -> HealthOutcome {
@@ -123,7 +135,11 @@ async fn probe_deepgram(key: &SecretString) -> HealthOutcome {
         .build()
     {
         Ok(c) => c,
-        Err(e) => return HealthOutcome::Network { reason: e.to_string() },
+        Err(e) => {
+            return HealthOutcome::Network {
+                reason: e.to_string(),
+            };
+        }
     };
 
     let Ok(mut auth) = HeaderValue::from_str(&format!("Token {}", key.expose_secret())) else {
@@ -146,7 +162,9 @@ async fn probe_deepgram(key: &SecretString) -> HealthOutcome {
             };
         }
         Err(err) => {
-            return HealthOutcome::Network { reason: err.to_string() };
+            return HealthOutcome::Network {
+                reason: err.to_string(),
+            };
         }
     };
 

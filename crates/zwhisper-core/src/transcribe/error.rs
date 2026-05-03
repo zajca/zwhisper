@@ -99,7 +99,6 @@ pub enum TranscribeError {
     },
 
     // ----- M5 cloud-backend variants (non-exhaustive growth area) -----
-
     /// Cloud backend resolution failed because no API key was found.
     /// Distinct from [`Self::BackendAuth`] (key found but rejected).
     #[error("backend `{backend}` is missing API key: {source}")]

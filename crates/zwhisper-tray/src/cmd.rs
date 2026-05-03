@@ -71,7 +71,10 @@ pub async fn run_dispatcher(
     // (and tries again the next time the daemon comes back).
     match recorder.get_status().await {
         Ok(status) => {
-            debug!(?status, "dispatcher: GetStatus probe succeeded; flipping daemon-ready gate");
+            debug!(
+                ?status,
+                "dispatcher: GetStatus probe succeeded; flipping daemon-ready gate"
+            );
             // `send` only fails when there are no receivers,
             // which is acceptable — under headless test paths
             // the receiver may have already been dropped.

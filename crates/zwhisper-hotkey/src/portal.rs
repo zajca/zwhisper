@@ -205,7 +205,10 @@ struct AshpdInner {
     /// Stored on the inner so the value survives in the Debug
     /// printout / for future probes; the actual filtering uses
     /// a clone passed into the spawned listener task.
-    #[allow(dead_code, reason = "kept on the inner for diagnostics; listener uses a clone")]
+    #[allow(
+        dead_code,
+        reason = "kept on the inner for diagnostics; listener uses a clone"
+    )]
     expected_session_handle: Option<String>,
     /// Broadcast channel that the spawned listener task pushes
     /// `HotkeyEvent`s into. `events()` returns a fresh subscriber. We
@@ -556,8 +559,8 @@ pub use fake::FakePortal;
 #[cfg(any(test, feature = "test-fakes"))]
 mod fake {
     use super::{
-        BindRequest, BoundShortcut, BoxStream, HotkeyEvent, PortalAdapter, PortalError,
-        SessionId, StreamExt, async_trait, broadcast, stream,
+        BindRequest, BoundShortcut, BoxStream, HotkeyEvent, PortalAdapter, PortalError, SessionId,
+        StreamExt, async_trait, broadcast, stream,
     };
     use tokio::sync::Mutex;
 
@@ -636,11 +639,7 @@ mod fake {
         /// `expected_session_handle`, the event is dropped —
         /// modelling the production listener's
         /// `ev.session_handle() != expected` check.
-        pub async fn emit_activated_from_session(
-            &self,
-            session_handle: &str,
-            shortcut_id: &str,
-        ) {
+        pub async fn emit_activated_from_session(&self, session_handle: &str, shortcut_id: &str) {
             let state = self.state.lock().await;
             if state.session_filter_active && session_handle != state.expected_session_handle {
                 tracing::debug!(
@@ -1043,9 +1042,7 @@ mod tests {
 
         // Inject a session-lost on the next `bind` so we can confirm
         // recreate restores a working session afterwards.
-        portal
-            .fail_next_call_with(PortalError::SessionLost)
-            .await;
+        portal.fail_next_call_with(PortalError::SessionLost).await;
         let err = session.bind(&req()).await.unwrap_err();
         assert!(matches!(err, PortalError::SessionLost));
 
@@ -1071,8 +1068,7 @@ mod tests {
             .await;
 
         // No event should be delivered.
-        let result =
-            tokio::time::timeout(Duration::from_millis(50), session.next_event()).await;
+        let result = tokio::time::timeout(Duration::from_millis(50), session.next_event()).await;
         assert!(
             result.is_err(),
             "expected timeout (no event delivered) but got {result:?}"
@@ -1115,8 +1111,7 @@ mod tests {
                 SHORTCUT_ID,
             )
             .await;
-        let result =
-            tokio::time::timeout(Duration::from_millis(50), session.next_event()).await;
+        let result = tokio::time::timeout(Duration::from_millis(50), session.next_event()).await;
         assert!(
             result.is_err(),
             "expected timeout (foreign session event dropped) but got {result:?}"
@@ -1143,9 +1138,7 @@ mod tests {
     async fn bind_cancelled_returns_bind_cancelled_variant() {
         let portal = Arc::new(FakePortal::new());
         let session = HotkeySession::create(portal.clone(), APP_ID).await.unwrap();
-        portal
-            .fail_next_call_with(PortalError::BindCancelled)
-            .await;
+        portal.fail_next_call_with(PortalError::BindCancelled).await;
         let err = session.bind(&req()).await.unwrap_err();
         assert!(matches!(err, PortalError::BindCancelled));
     }

@@ -405,8 +405,7 @@ mod tests {
 
     #[test]
     fn parses_toggle_no_args() {
-        let cli =
-            TestCli::try_parse_from(["zwhisper", "toggle"]).expect("parse should succeed");
+        let cli = TestCli::try_parse_from(["zwhisper", "toggle"]).expect("parse should succeed");
         assert!(matches!(cli.command, TestCommand::Toggle));
     }
 
@@ -422,8 +421,8 @@ mod tests {
 
     #[test]
     fn parses_hotkey_bind() {
-        let cli = TestCli::try_parse_from(["zwhisper", "hotkey", "bind"])
-            .expect("parse should succeed");
+        let cli =
+            TestCli::try_parse_from(["zwhisper", "hotkey", "bind"]).expect("parse should succeed");
         match cli.command {
             TestCommand::Hotkey(cmd) => assert_eq!(cmd, HotkeyCmd::Bind),
             other => panic!("expected Hotkey(Bind), got {other:?}"),
@@ -442,8 +441,8 @@ mod tests {
 
     #[test]
     fn parses_hotkey_probe() {
-        let cli = TestCli::try_parse_from(["zwhisper", "hotkey", "probe"])
-            .expect("parse should succeed");
+        let cli =
+            TestCli::try_parse_from(["zwhisper", "hotkey", "probe"]).expect("parse should succeed");
         match cli.command {
             TestCommand::Hotkey(cmd) => assert_eq!(cmd, HotkeyCmd::Probe),
             other => panic!("expected Hotkey(Probe), got {other:?}"),

@@ -49,6 +49,10 @@ tempfile = { workspace = true }
 # `test-fakes` exposes the `FakePortal` adapter used by the
 # hotkey listener integration tests.
 zwhisper-hotkey = { path = "../zwhisper-hotkey", features = ["test-fakes"] }
+# M8 — `m8_icon_asset.rs` invokes `xmllint` via `Command` and
+# probes for it via `which::which` before running so the test
+# skips on hosts without libxml2 instead of hard-failing.
+which = { workspace = true }
 
 [lints]
 workspace = true

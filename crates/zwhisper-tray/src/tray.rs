@@ -711,7 +711,10 @@ mod tests {
         assert_eq!(flags.profiles.len(), 2);
         let meeting = &flags.profiles[0];
         let cloud = &flags.profiles[1];
-        assert!(!meeting.cloud, "whisper-cpp profile must not be marked cloud");
+        assert!(
+            !meeting.cloud,
+            "whisper-cpp profile must not be marked cloud"
+        );
         assert!(cloud.cloud, "deepgram profile must be marked cloud");
     }
 

@@ -90,6 +90,53 @@ fn main() -> color_eyre::Result<()> {
         }
     };
 
+    // M8 pre-flight handshake (DoD #13). Block the GUI from
+    // launching when the daemon advertises an incompatible
+    // ProtocolVersion. We surface the error through both an FLTK
+    // alert (for desktop-launcher invocations) and stderr (for
+    // terminal launches), then exit with code 4 — matching the
+    // CLI's `EXIT_VERSION_MISMATCH` code so packagers can detect
+    // the partial-upgrade case identically across binaries.
+    match runtime.block_on(client::probe_protocol()) {
+        Ok(client::ProtocolStatus::Match) | Ok(client::ProtocolStatus::DaemonOff) => {}
+        Ok(client::ProtocolStatus::Mismatch {
+            expected,
+            got,
+            legacy,
+        }) => {
+            let body = if legacy {
+                format!(
+                    "daemon protocol mismatch: expected {expected}, got {got}\n\
+                     The running daemon predates the protocol-version handshake \
+                     (added in 0.1.0). Reinstall zwhisperd to match the settings \
+                     binary."
+                )
+            } else {
+                format!(
+                    "daemon protocol mismatch: expected {expected}, got {got}\n\
+                     The daemon and settings were built from different zwhisper \
+                     releases. Reinstall the matching package."
+                )
+            };
+            error!(message = %body, "refusing to launch settings GUI");
+            eprintln!("{body}");
+            // Best-effort modal so desktop-launcher invocations
+            // (no terminal) still surface the failure visually.
+            // `alert_default` is non-blocking when FLTK is not
+            // initialised; we initialise it here just for the
+            // alert.
+            let _ = fltk::app::App::default();
+            fltk::dialog::alert_default(&body);
+            cancel_token.cancel();
+            runtime.shutdown_timeout(SHUTDOWN_GRACE);
+            drop(bus_conn);
+            std::process::exit(4);
+        }
+        Err(e) => {
+            warn!(error = %e, "ProtocolVersion probe failed; continuing in best-effort mode");
+        }
+    }
+
     let app_result = (|| -> color_eyre::Result<()> {
         let app = App::new(bridge.clone()).wrap_err("failed to build settings app")?;
         app.run(rx)

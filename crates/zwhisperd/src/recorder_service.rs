@@ -242,11 +242,7 @@ impl RecorderInterface {
         let backend_config = match profile.transcription.backend {
             zwhisper_core::profile::schema::Backend::Deepgram => {
                 zwhisper_core::transcribe::BackendConfig::Deepgram(
-                    profile
-                        .transcription
-                        .deepgram
-                        .clone()
-                        .unwrap_or_default(),
+                    profile.transcription.deepgram.clone().unwrap_or_default(),
                 )
             }
             _ => zwhisper_core::transcribe::BackendConfig::WhisperCpp,
@@ -320,6 +316,17 @@ impl RecorderInterface {
             }
             .into()),
         }
+    }
+
+    /// Read-only property: the daemon's compile-time protocol
+    /// version (M8 DoD #11). Clients read this before any other RPC;
+    /// on mismatch they refuse to talk to us, surface a typed
+    /// `ProtocolMismatch` error, and prompt the user to reinstall.
+    /// Returning a `&'static str` keeps zbus from allocating per
+    /// call and avoids any state-bearing locks on the property path.
+    #[zbus(property)]
+    fn protocol_version(&self) -> &'static str {
+        zwhisper_ipc::PROTOCOL_VERSION
     }
 
     /// Snapshot of the daemon's current state.

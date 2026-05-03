@@ -180,12 +180,8 @@ pub async fn run_hotkey(
     // back-to-back rebinds is fine; the recreate path is
     // idempotent and a single recreate covers both presses.
     let (rebind_signal_tx, mut rebind_signal_rx) = mpsc::channel::<()>(REBIND_SIGNAL_CAPACITY);
-    let _rebind_subscriber = spawn_settings_rebind_subscriber(
-        conn.clone(),
-        rebind_signal_tx,
-        shutdown_rx.clone(),
-    )
-    .await;
+    let _rebind_subscriber =
+        spawn_settings_rebind_subscriber(conn.clone(), rebind_signal_tx, shutdown_rx.clone()).await;
 
     // Initial probe. The probe result drives the menu label
     // even before any bind attempt happens.
@@ -606,9 +602,7 @@ async fn handle_control(
                 Ok(Err(err)) => {
                     warn!(error = %err, "hotkey: bind RPC failed");
                     let reason = match err {
-                        PortalError::BindCancelled => {
-                            "bind cancelled by user".to_owned()
-                        }
+                        PortalError::BindCancelled => "bind cancelled by user".to_owned(),
                         other => format!("bind failed: {other}"),
                     };
                     set_hotkey(state_tx, HotkeyMenuState::Unavailable { reason });
@@ -621,10 +615,7 @@ async fn handle_control(
                     set_hotkey(
                         state_tx,
                         HotkeyMenuState::Unavailable {
-                            reason: format!(
-                                "bind timed out after {}s",
-                                cfg.bind_timeout_secs,
-                            ),
+                            reason: format!("bind timed out after {}s", cfg.bind_timeout_secs,),
                         },
                     );
                 }
@@ -886,11 +877,8 @@ async fn on_activated(
         }
         Err(ToggleError::NoActiveProfile) => {
             warn!("hotkey: toggle aborted — no active profile");
-            fire_simple_notification(
-                "zwhisper",
-                "Set an active profile via the tray menu first.",
-            )
-            .await;
+            fire_simple_notification("zwhisper", "Set an active profile via the tray menu first.")
+                .await;
         }
         Err(ToggleError::AlreadyActive) => {
             // Defensive: `toggle_once` should fold this into
@@ -1227,8 +1215,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel::<()>(REBIND_SIGNAL_CAPACITY);
         let (shutdown_tx, shutdown_rx) = watch::channel(());
-        let _join =
-            spawn_settings_rebind_subscriber(subscriber_conn, tx, shutdown_rx).await;
+        let _join = spawn_settings_rebind_subscriber(subscriber_conn, tx, shutdown_rx).await;
 
         // Give the subscriber a brief window to install the
         // match rule before we emit. The `add_match` round-trip

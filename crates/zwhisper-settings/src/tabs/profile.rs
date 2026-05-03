@@ -24,7 +24,7 @@ use zwhisper_core::profile::{
     self as core_profile, ProfileSource, shipped_path, user_override_path, validate_name,
 };
 
-use crate::client::{GetRecording, ReloadCall, ReloadOutcome, RecordingState};
+use crate::client::{GetRecording, RecordingState, ReloadCall, ReloadOutcome};
 use crate::error::SettingsError;
 use crate::runtime::UiBridge;
 
@@ -35,9 +35,18 @@ use crate::runtime::UiBridge;
 pub(crate) enum ProfileMsg {
     ListLoaded(Vec<ProfileEntry>),
     ListLoadFailed(String),
-    SaveSucceeded { name: String, daemon_off: bool, deferred_reload: bool },
-    SaveFailed { name: String, error: String },
-    ValidationFailed { error: String },
+    SaveSucceeded {
+        name: String,
+        daemon_off: bool,
+        deferred_reload: bool,
+    },
+    SaveFailed {
+        name: String,
+        error: String,
+    },
+    ValidationFailed {
+        error: String,
+    },
 }
 
 /// FLTK widget handles owned by the tab.
@@ -76,8 +85,7 @@ pub(crate) fn build(parent: &mut Tabs, bridge: UiBridge) -> ProfileTab {
     let (x, y, w, h) = parent.client_area();
     let group = Group::new(x, y, w, h, "Profiles");
     let pane_split = (w * 35) / 100;
-    let mut browser =
-        fltk::browser::HoldBrowser::new(x + 4, y + 4, pane_split - 8, h - 8, "");
+    let mut browser = fltk::browser::HoldBrowser::new(x + 4, y + 4, pane_split - 8, h - 8, "");
     populate_browser(&mut browser);
 
     let form_x = x + pane_split;
@@ -220,7 +228,9 @@ pub(crate) fn build(parent: &mut Tabs, bridge: UiBridge) -> ProfileTab {
                 Ok((user, shipped)) => {
                     let body = diff_lines(&shipped, &user);
                     if body.trim().is_empty() {
-                        fltk::dialog::message_default("No differences against shipped/embedded template.");
+                        fltk::dialog::message_default(
+                            "No differences against shipped/embedded template.",
+                        );
                     } else {
                         fltk::dialog::message_default(&format!("Diff for {name}:\n\n{body}"));
                     }
@@ -241,9 +251,7 @@ pub(crate) fn build(parent: &mut Tabs, bridge: UiBridge) -> ProfileTab {
                 set_inline_error(&mut cb_inline, "no source profile selected");
                 return;
             };
-            let Some(dst_name) =
-                fltk::dialog::input_default("Name for cloned profile:", "")
-            else {
+            let Some(dst_name) = fltk::dialog::input_default("Name for cloned profile:", "") else {
                 return; // user cancelled
             };
             match perform_clone(&src_name, &dst_name) {
@@ -384,8 +392,7 @@ fn form_to_profile(widgets: &FormWidgets) -> Result<Profile, String> {
     // Re-load the prior profile to preserve fields we do not edit
     // (outputs, hotkey, deepgram block). Settings is an editor
     // overlay, not a writer-from-scratch.
-    let prior = core_profile::load(&name)
-        .map_err(|e| format!("preserve unknown fields: {e}"))?;
+    let prior = core_profile::load(&name).map_err(|e| format!("preserve unknown fields: {e}"))?;
 
     Ok(Profile {
         schema_version: prior.schema_version,
@@ -422,7 +429,10 @@ fn populate_form(widgets: &FormWidgets, profile: &Profile) {
         .system_output
         .clone()
         .set_value(&profile.sources.system_output);
-    widgets.mode.clone().set_value(mode_str(profile.sources.mode));
+    widgets
+        .mode
+        .clone()
+        .set_value(mode_str(profile.sources.mode));
     widgets
         .codec
         .clone()
@@ -463,11 +473,7 @@ const SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Run `perform_save` on the runtime, blocking the FLTK callback
 /// thread for the round-trip. Bounded by `SAVE_TIMEOUT` so a stalled
 /// daemon does not freeze the UI.
-fn run_save_blocking(
-    bridge: &UiBridge,
-    profile: &Profile,
-    inline: &mut Frame,
-) {
+fn run_save_blocking(bridge: &UiBridge, profile: &Profile, inline: &mut Frame) {
     let outcome = bridge.rt_handle.block_on(async {
         tokio::time::timeout(SAVE_TIMEOUT, async {
             let profiles = crate::client::ProfilesClient::connect().await?;
@@ -486,13 +492,16 @@ fn run_save_blocking(
             perform_save(profile, &profiles, &recorder, user_confirmed_defer, None).await
         })
         .await
-        .map_err(|_| SettingsError::Profile(
-            "save timed out (daemon unresponsive after 5s)".into(),
-        ))?
+        .map_err(|_| {
+            SettingsError::Profile("save timed out (daemon unresponsive after 5s)".into())
+        })?
     });
 
     match outcome {
-        Ok(SaveOutcome { daemon_off, deferred_reload }) => {
+        Ok(SaveOutcome {
+            daemon_off,
+            deferred_reload,
+        }) => {
             let mut msg = format!("saved {}", profile.name);
             if deferred_reload {
                 msg.push_str(" (will apply on next recording)");
@@ -689,7 +698,10 @@ where
     let daemon_off = if deferred_reload {
         // Recording in progress: skip reload regardless of bus
         // state (D6). Re-probe is purely for toast wording.
-        matches!(recorder.is_recording().await, Ok(RecordingState::DaemonOff) | Err(_))
+        matches!(
+            recorder.is_recording().await,
+            Ok(RecordingState::DaemonOff) | Err(_)
+        )
     } else {
         match profiles.reload().await? {
             ReloadOutcome::Reloaded => false,
@@ -712,12 +724,17 @@ where
 
 /// Atomic write: tempfile co-located with destination dir
 /// (`persist` uses `rename(2)` — must not cross filesystems).
-fn write_atomic(target: &std::path::Path, dir: &std::path::Path, body: &[u8]) -> Result<(), SettingsError> {
+fn write_atomic(
+    target: &std::path::Path,
+    dir: &std::path::Path,
+    body: &[u8],
+) -> Result<(), SettingsError> {
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(body)?;
     tmp.as_file().sync_all()?;
-    tmp.persist(target)
-        .map_err(|e| SettingsError::Profile(format!("persist {}: {}", target.display(), e.error)))?;
+    tmp.persist(target).map_err(|e| {
+        SettingsError::Profile(format!("persist {}: {}", target.display(), e.error))
+    })?;
     Ok(())
 }
 
@@ -783,8 +800,8 @@ pub(crate) fn diff_lines(left: &str, right: &str) -> String {
 /// a user override. `shipped_body` is empty when no shipped or
 /// embedded profile of that name exists.
 pub(crate) fn diff_bodies(name: &str) -> Result<(String, String), SettingsError> {
-    let user_path = user_override_path(name)
-        .map_err(|e| SettingsError::Profile(format!("user path: {e}")))?;
+    let user_path =
+        user_override_path(name).map_err(|e| SettingsError::Profile(format!("user path: {e}")))?;
     let user_body = fs::read_to_string(&user_path)
         .map_err(|e| SettingsError::Profile(format!("read {}: {e}", user_path.display())))?;
 
@@ -857,10 +874,16 @@ mod tests {
     }
     impl FakeProfilesClient {
         fn ok() -> Self {
-            Self { call_count: AtomicUsize::new(0), outcome: ReloadOutcome::Reloaded }
+            Self {
+                call_count: AtomicUsize::new(0),
+                outcome: ReloadOutcome::Reloaded,
+            }
         }
         fn daemon_off() -> Self {
-            Self { call_count: AtomicUsize::new(0), outcome: ReloadOutcome::DaemonOff }
+            Self {
+                call_count: AtomicUsize::new(0),
+                outcome: ReloadOutcome::DaemonOff,
+            }
         }
     }
     #[async_trait::async_trait]
@@ -874,7 +897,9 @@ mod tests {
     struct FakeRecorderClient(RecordingState);
     #[async_trait::async_trait]
     impl GetRecording for FakeRecorderClient {
-        async fn is_recording(&self) -> Result<RecordingState, SettingsError> { Ok(self.0) }
+        async fn is_recording(&self) -> Result<RecordingState, SettingsError> {
+            Ok(self.0)
+        }
     }
 
     fn make_valid_profile(name: &str) -> Profile {
@@ -968,8 +993,11 @@ mod tests {
             .await
             .expect("save during recording when confirmed");
         assert!(outcome.deferred_reload);
-        assert_eq!(profiles.call_count.load(Ordering::SeqCst), 0,
-            "reload must NOT be called while recording (D6)");
+        assert_eq!(
+            profiles.call_count.load(Ordering::SeqCst),
+            0,
+            "reload must NOT be called while recording (D6)"
+        );
         assert!(tmp.path().join("recsave.toml").is_file());
         // not confirmed → save refused.
         let refused = perform_save(&profile, &profiles, &recorder, false, Some(tmp.path())).await;
@@ -986,7 +1014,10 @@ mod tests {
             ),
             other => panic!("expected Profile error, got {other:?}"),
         }
-        assert!(matches!(perform_clone("default", ""), Err(SettingsError::Profile(_))));
+        assert!(matches!(
+            perform_clone("default", ""),
+            Err(SettingsError::Profile(_))
+        ));
     }
 
     /// `DoD` #5: diff marks added/removed lines.

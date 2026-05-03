@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, RANGE};
+use reqwest::header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderValue, RANGE};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -322,14 +322,9 @@ impl ModelDownloader {
 
         // Phase 3 — open .part for append, send GET with Range.
         let total = self.entry.size_bytes;
-        send_state(
-            &tx,
-            DownloadState::Fetching { bytes_done, total },
-        );
+        send_state(&tx, DownloadState::Fetching { bytes_done, total });
 
-        let outcome = self
-            .stream_body(&mut hasher, &mut bytes_done, &tx)
-            .await;
+        let outcome = self.stream_body(&mut hasher, &mut bytes_done, &tx).await;
 
         match outcome {
             Ok(StreamOutcome::Completed) => {}
@@ -549,8 +544,7 @@ impl ModelDownloader {
                 }
                 break;
             };
-            let bytes = chunk
-                .map_err(|e| FailReason::Network(format!("chunk: {e}")))?;
+            let bytes = chunk.map_err(|e| FailReason::Network(format!("chunk: {e}")))?;
             if bytes.is_empty() {
                 continue;
             }
@@ -560,8 +554,7 @@ impl ModelDownloader {
                 .map_err(|e| FailReason::Io(format!("write .part: {e}")))?;
             hasher.update(&bytes);
             *bytes_done = bytes_done.saturating_add(bytes.len() as u64);
-            bytes_since_flush =
-                bytes_since_flush.saturating_add(bytes.len() as u64);
+            bytes_since_flush = bytes_since_flush.saturating_add(bytes.len() as u64);
 
             if bytes_since_flush >= FLUSH_CHUNK_BYTES {
                 // Flush the BufWriter (buffer → file) but skip
@@ -665,7 +658,12 @@ fn validate_content_type(headers: &HeaderMap) -> Result<(), FailReason> {
         .unwrap_or("");
     // Servers may add a charset or other parameters; match on the
     // bare media type prefix.
-    let bare = raw.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let bare = raw
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     if ALLOWED_CONTENT_TYPES.iter().any(|allowed| bare == *allowed) {
         Ok(())
     } else {
@@ -709,9 +707,7 @@ fn substitute_model_token(base_url: &str, model_name: &str) -> Result<String, Se
         ));
     }
     if !base_url.starts_with("https://") {
-        return Err(SettingsError::Download(
-            "base URL must use https://".into(),
-        ));
+        return Err(SettingsError::Download("base URL must use https://".into()));
     }
     Ok(base_url.replace("{model}", model_name))
 }
@@ -832,10 +828,7 @@ mod tests {
             downloader.part_path.parent().unwrap(),
             dir.path().join(".partial"),
         );
-        assert_eq!(
-            downloader.final_path.parent().unwrap(),
-            dir.path(),
-        );
+        assert_eq!(downloader.final_path.parent().unwrap(), dir.path(),);
     }
 
     #[tokio::test]
@@ -941,10 +934,8 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_model_refuses_with_friendly_error() {
-        let manifest = ChecksumManifest::parse(
-            "[tiny]\nsha256 = \"00\"\nsize_bytes = 1\n",
-        )
-        .unwrap();
+        let manifest =
+            ChecksumManifest::parse("[tiny]\nsha256 = \"00\"\nsize_bytes = 1\n").unwrap();
         let dir = TempDir::new().unwrap();
         let err = ModelDownloader::new_for_test(
             "ghost-model".into(),
@@ -972,9 +963,7 @@ mod tests {
         let url_path = "/ggml-tiny.bin";
         Mock::given(method("HEAD"))
             .and(path(url_path))
-            .respond_with(
-                ResponseTemplate::new(429).insert_header("Retry-After", "42"),
-            )
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "42"))
             .mount(&server)
             .await;
 
@@ -993,7 +982,9 @@ mod tests {
         assert_eq!(
             final_state,
             DownloadState::Failed {
-                reason: FailReason::RateLimited { retry_after_secs: 42 },
+                reason: FailReason::RateLimited {
+                    retry_after_secs: 42
+                },
             }
         );
     }

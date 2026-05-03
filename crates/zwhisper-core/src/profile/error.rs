@@ -11,7 +11,6 @@ use super::schema::Mode;
 /// adds the `deepgram` cloud backend per IDEA.md § 4.
 pub const SUPPORTED_BACKENDS_M5: &[&str] = &["whisper-cpp", "deepgram"];
 
-
 /// Errors surfaced by the profile module. Each variant maps to one
 /// failure class so the CLI / future daemon can dispatch on them
 /// without parsing display strings.

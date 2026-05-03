@@ -210,6 +210,15 @@ async fn pin_recorder1_transcript_complete_signal(p: &Recorder1Proxy<'_>) {
     let _ = p.receive_transcript_complete().await;
 }
 
+/// M8 DoD #11 — `Recorder1.ProtocolVersion` property pin. Additive
+/// to the M3 freeze: any future re-privatisation, signature change,
+/// or rename trips this compile-time check before zbus ever reaches
+/// the wire.
+#[allow(dead_code)]
+async fn pin_recorder1_protocol_version_property(p: &Recorder1Proxy<'_>) -> zbus::Result<String> {
+    p.protocol_version().await
+}
+
 #[allow(dead_code)]
 async fn pin_profiles1_list(p: &Profiles1Proxy<'_>) -> zbus::Result<Vec<ProfileEntry>> {
     p.list().await

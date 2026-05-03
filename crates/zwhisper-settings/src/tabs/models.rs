@@ -126,15 +126,12 @@ pub(crate) fn build(parent: &mut Tabs, bridge: UiBridge) -> ModelsTab {
         Ok(cfg) => format!("Source: {}", cfg.base_url),
         Err(e) => format!("Source: <error: {e}>"),
     };
-    let mut base_url_label =
-        Frame::new(gx + PADDING, y, inner_w, HEADER_HEIGHT, "");
+    let mut base_url_label = Frame::new(gx + PADDING, y, inner_w, HEADER_HEIGHT, "");
     base_url_label.set_label(&base_url_text);
     base_url_label.set_label_font(Font::Helvetica);
     base_url_label.set_label_size(11);
     base_url_label.set_frame(FrameType::FlatBox);
-    base_url_label.set_align(
-        fltk::enums::Align::Left | fltk::enums::Align::Inside,
-    );
+    base_url_label.set_align(fltk::enums::Align::Left | fltk::enums::Align::Inside);
     y += HEADER_HEIGHT + PADDING;
 
     // Scrollable list area for model rows. Five known models so
@@ -161,9 +158,7 @@ pub(crate) fn build(parent: &mut Tabs, bridge: UiBridge) -> ModelsTab {
         Ok(dir) => Some(dir.clone()),
         Err(e) => {
             error!(error = %e, "models tab: cannot resolve models_dir; rows disabled");
-            base_url_label.set_label(&format!(
-                "ERROR: cannot resolve models directory: {e}"
-            ));
+            base_url_label.set_label(&format!("ERROR: cannot resolve models directory: {e}"));
             base_url_label.set_label_color(Color::Red);
             None
         }
@@ -245,9 +240,7 @@ fn build_row(
     status_label.set_label_font(Font::Helvetica);
     status_label.set_label_size(11);
     status_label.set_frame(FrameType::FlatBox);
-    status_label.set_align(
-        fltk::enums::Align::Left | fltk::enums::Align::Inside,
-    );
+    status_label.set_align(fltk::enums::Align::Left | fltk::enums::Align::Inside);
 
     // Action button (right). Default: Download (or "Installed" if
     // present on disk — disabled in that case).
@@ -256,8 +249,7 @@ fn build_row(
     } else {
         "Download"
     };
-    let mut action_button =
-        Button::new(0, 0, BUTTON_WIDTH, ROW_HEIGHT, initial_button_label);
+    let mut action_button = Button::new(0, 0, BUTTON_WIDTH, ROW_HEIGHT, initial_button_label);
     if final_path.exists() {
         action_button.deactivate();
     }
@@ -384,8 +376,7 @@ fn spawn_download_task(
         let bridge_tx_drain = bridge_tx.clone();
         let model_name_drain = model_name.clone();
         let drain = tokio::spawn(async move {
-            let mut last_progress_emit =
-                Instant::now() - PROGRESS_UI_THROTTLE;
+            let mut last_progress_emit = Instant::now() - PROGRESS_UI_THROTTLE;
             let mut last_progress_state: Option<DownloadState> = None;
             while let Some(state) = state_rx.recv().await {
                 if let DownloadState::Fetching { .. } = &state {
@@ -479,11 +470,7 @@ fn forward_state(
     }
 }
 
-fn send_failed(
-    tx: &tokio::sync::mpsc::UnboundedSender<UiMessage>,
-    model: &str,
-    reason: String,
-) {
+fn send_failed(tx: &tokio::sync::mpsc::UnboundedSender<UiMessage>, model: &str, reason: String) {
     let _ = tx.send(UiMessage::Models(ModelsMsg::Failed {
         model: model.to_owned(),
         reason,
@@ -510,10 +497,7 @@ fn format_fail_reason(reason: &FailReason) -> String {
 
 /// Update one row's widgets based on a dispatched `ModelsMsg`.
 /// Called on the FLTK main thread by `app::App::run`.
-pub(crate) fn apply_msg(
-    rows: &Arc<Mutex<HashMap<String, ModelRow>>>,
-    msg: &ModelsMsg,
-) {
+pub(crate) fn apply_msg(rows: &Arc<Mutex<HashMap<String, ModelRow>>>, msg: &ModelsMsg) {
     let Ok(map) = rows.lock() else {
         warn!("models tab: rows mutex poisoned");
         return;
@@ -529,7 +513,11 @@ pub(crate) fn apply_msg(
                 row.progress.redraw();
             }
         }
-        ModelsMsg::Progress { model, bytes_done, total } => {
+        ModelsMsg::Progress {
+            model,
+            bytes_done,
+            total,
+        } => {
             if let Some(row) = map.get(model) {
                 let mut row = row.clone();
                 if *total > 0 {

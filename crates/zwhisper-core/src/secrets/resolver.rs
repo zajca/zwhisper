@@ -414,7 +414,9 @@ fn read_secrets_toml(path: &Path) -> Result<SecretsToml, SecretsError> {
     let doc: SecretsToml =
         toml_edit::de::from_str(&buf.0).map_err(|source| SecretsError::Parse {
             path: path.to_path_buf(),
-            location: source.span().map(|range| location_for_offset(&buf.0, range.start)),
+            location: source
+                .span()
+                .map(|range| location_for_offset(&buf.0, range.start)),
         })?;
 
     Ok(doc)
@@ -612,11 +614,7 @@ mod tests {
     fn empty_env_var_falls_through_to_file() {
         let dir = TempDir::new().unwrap();
         lock_parent(dir.path());
-        let path = write_secrets_file(
-            dir.path(),
-            "[deepgram]\napi_key = \"from-file\"\n",
-            0o600,
-        );
+        let path = write_secrets_file(dir.path(), "[deepgram]\napi_key = \"from-file\"\n", 0o600);
         let cfg = ResolverConfig {
             secrets_path: Some(path.clone()),
             env: EnvLookup::Fake(vec![(
@@ -652,11 +650,7 @@ mod tests {
     fn rejects_world_readable_toml() {
         let dir = TempDir::new().unwrap();
         lock_parent(dir.path());
-        let path = write_secrets_file(
-            dir.path(),
-            "[deepgram]\napi_key = \"abc\"\n",
-            0o644,
-        );
+        let path = write_secrets_file(dir.path(), "[deepgram]\napi_key = \"abc\"\n", 0o644);
         let cfg = ResolverConfig {
             secrets_path: Some(path),
             env: EnvLookup::Fake(vec![]),
@@ -672,11 +666,7 @@ mod tests {
     fn accepts_mode_0o400() {
         let dir = TempDir::new().unwrap();
         lock_parent(dir.path());
-        let path = write_secrets_file(
-            dir.path(),
-            "[deepgram]\napi_key = \"abc\"\n",
-            0o400,
-        );
+        let path = write_secrets_file(dir.path(), "[deepgram]\napi_key = \"abc\"\n", 0o400);
         let cfg = ResolverConfig {
             secrets_path: Some(path),
             env: EnvLookup::Fake(vec![]),
@@ -690,11 +680,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         // Permissive parent dir (group + other writable).
         std::fs::set_permissions(dir.path(), Permissions::from_mode(0o777)).unwrap();
-        let path = write_secrets_file(
-            dir.path(),
-            "[deepgram]\napi_key = \"abc\"\n",
-            0o600,
-        );
+        let path = write_secrets_file(dir.path(), "[deepgram]\napi_key = \"abc\"\n", 0o600);
         let cfg = ResolverConfig {
             secrets_path: Some(path),
             env: EnvLookup::Fake(vec![]),
@@ -712,11 +698,7 @@ mod tests {
     fn missing_backend_section_is_typed_error() {
         let dir = TempDir::new().unwrap();
         lock_parent(dir.path());
-        let path = write_secrets_file(
-            dir.path(),
-            "[openai]\napi_key = \"abc\"\n",
-            0o600,
-        );
+        let path = write_secrets_file(dir.path(), "[openai]\napi_key = \"abc\"\n", 0o600);
         let cfg = ResolverConfig {
             secrets_path: Some(path),
             env: EnvLookup::Fake(vec![]),
@@ -732,11 +714,7 @@ mod tests {
     fn empty_api_key_in_toml_is_typed_as_empty() {
         let dir = TempDir::new().unwrap();
         lock_parent(dir.path());
-        let path = write_secrets_file(
-            dir.path(),
-            "[deepgram]\napi_key = \"\"\n",
-            0o600,
-        );
+        let path = write_secrets_file(dir.path(), "[deepgram]\napi_key = \"\"\n", 0o600);
         let cfg = ResolverConfig {
             secrets_path: Some(path),
             env: EnvLookup::Fake(vec![]),

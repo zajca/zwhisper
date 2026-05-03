@@ -51,7 +51,9 @@ async fn make_audio() -> (TempDir, PathBuf) {
     // Body content does not matter — wiremock matchers don't check it
     // beyond accepting any body. We send a recognisable byte pattern
     // so a serialization regression would surface.
-    let bytes: Vec<u8> = (0u32..2048).map(|i| u8::try_from(i % 251).unwrap_or(0)).collect();
+    let bytes: Vec<u8> = (0u32..2048)
+        .map(|i| u8::try_from(i % 251).unwrap_or(0))
+        .collect();
     tokio::fs::write(&path, &bytes).await.unwrap();
     (dir, path)
 }
@@ -65,7 +67,10 @@ async fn end_to_end_against_mock_server() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/listen"))
-        .and(header("authorization", format!("Token {FIXTURE_KEY}").as_str()))
+        .and(header(
+            "authorization",
+            format!("Token {FIXTURE_KEY}").as_str(),
+        ))
         .and(header("content-type", "audio/flac"))
         .and(query_param("model", "nova-3"))
         .and(query_param("diarize", "true"))
@@ -102,13 +107,19 @@ async fn end_to_end_against_mock_server() {
 
     // M5 DoD #6 — speakers populated, JSON envelope contains them.
     let speakers = artifacts.speakers.as_ref().expect("speakers Some");
-    assert!(speakers.len() >= 2, "expected ≥2 speaker segments: {speakers:?}");
+    assert!(
+        speakers.len() >= 2,
+        "expected ≥2 speaker segments: {speakers:?}"
+    );
     assert_eq!(speakers[0].speaker_id, 0);
     assert_eq!(speakers[1].speaker_id, 1);
 
     let json_body = std::fs::read_to_string(&artifacts.json_path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json_body).unwrap();
-    assert!(parsed.get("speakers").is_some(), "envelope missing speakers");
+    assert!(
+        parsed.get("speakers").is_some(),
+        "envelope missing speakers"
+    );
     assert_eq!(parsed["backend"], "deepgram");
     assert_eq!(parsed["model"], "nova-3");
 }
@@ -204,9 +215,7 @@ async fn auth_failure_maps_to_backend_auth() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/listen"))
-        .respond_with(
-            ResponseTemplate::new(401).set_body_string(r#"{"err_code":"INVALID_AUTH"}"#),
-        )
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"err_code":"INVALID_AUTH"}"#))
         .mount(&server)
         .await;
 
@@ -309,7 +318,9 @@ async fn budget_exhausted_429_classifies_as_quota_not_timeout() {
         .await
         .unwrap_err();
     match err {
-        TranscribeError::BackendQuota { backend, status, .. } => {
+        TranscribeError::BackendQuota {
+            backend, status, ..
+        } => {
             assert_eq!(backend, "deepgram");
             assert_eq!(status, 429);
         }
@@ -412,7 +423,11 @@ async fn bad_request_400_is_not_retried() {
         .await
         .unwrap_err();
     match err {
-        TranscribeError::BackendBadResponse { status, body_excerpt, .. } => {
+        TranscribeError::BackendBadResponse {
+            status,
+            body_excerpt,
+            ..
+        } => {
             assert_eq!(status, 400);
             assert!(body_excerpt.contains("bad params"));
         }

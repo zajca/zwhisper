@@ -278,10 +278,9 @@ async fn run_probe() -> (i32, String, String) {
 fn format_probe_report(report: &ProbeReport) -> (i32, String, String) {
     let backend = backend_label(&report.backend);
     let available = report.global_shortcuts_available;
-    let version = report.portal_version.map_or_else(
-        || "none".to_owned(),
-        |v| v.to_string(),
-    );
+    let version = report
+        .portal_version
+        .map_or_else(|| "none".to_owned(), |v| v.to_string());
     let stdout = format!(
         "hotkey: portal={backend} GlobalShortcuts={available} version={version} reason={}",
         report.reason,
@@ -443,10 +442,7 @@ mod tests {
         let (code, stdout, _) = format_probe_report(&report);
         assert_eq!(code, EXIT_OK);
         assert!(stdout.contains("portal=kde"), "got: {stdout}");
-        assert!(
-            stdout.contains("GlobalShortcuts=true"),
-            "got: {stdout}",
-        );
+        assert!(stdout.contains("GlobalShortcuts=true"), "got: {stdout}",);
         assert!(stdout.contains("version=2"), "got: {stdout}");
     }
 
@@ -456,10 +452,7 @@ mod tests {
         let (code, stdout, _) = format_probe_report(&report);
         assert_eq!(code, EXIT_PROTOCOL_ERROR);
         assert!(stdout.contains("portal=none"), "got: {stdout}");
-        assert!(
-            stdout.contains("GlobalShortcuts=false"),
-            "got: {stdout}",
-        );
+        assert!(stdout.contains("GlobalShortcuts=false"), "got: {stdout}",);
         assert!(stdout.contains("version=none"), "got: {stdout}");
         assert!(stdout.contains("i3/X11"), "got: {stdout}");
     }
@@ -485,10 +478,7 @@ mod tests {
         assert_eq!(backend_label(&BackendDetected::Kde), "kde");
         assert_eq!(backend_label(&BackendDetected::Gnome), "gnome");
         assert_eq!(backend_label(&BackendDetected::Wlr), "wlr");
-        assert_eq!(
-            backend_label(&BackendDetected::Other("foo".into())),
-            "foo",
-        );
+        assert_eq!(backend_label(&BackendDetected::Other("foo".into())), "foo",);
         assert_eq!(backend_label(&BackendDetected::None), "none");
     }
 }

@@ -107,9 +107,7 @@ impl HotkeyReboundEmitter {
             }
             Err(e) => {
                 warn!(error = %e, "hotkey-rebound signal emit failed");
-                Err(SettingsError::Hotkey(format!(
-                    "hotkey-rebound emit: {e}"
-                )))
+                Err(SettingsError::Hotkey(format!("hotkey-rebound emit: {e}")))
             }
         }
     }
@@ -143,14 +141,8 @@ mod tests {
         // cannot self-subscribe inside this process without setting
         // up a separate connection, but the round-trip success
         // result already proves the wire-level send.
-        emitter
-            .emit("Ctrl+Alt+R")
-            .await
-            .expect("first emit");
-        emitter
-            .emit("")
-            .await
-            .expect("empty payload accepted");
+        emitter.emit("Ctrl+Alt+R").await.expect("first emit");
+        emitter.emit("").await.expect("empty payload accepted");
     }
 
     #[test]

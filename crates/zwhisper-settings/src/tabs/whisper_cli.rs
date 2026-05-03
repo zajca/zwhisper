@@ -135,7 +135,8 @@ pub(crate) fn build(parent: &mut Tabs, bridge: UiBridge) -> WhisperCliTab {
     let mut hint_frame = Frame::new(gx + PADDING, y, inner_w, HINT_HEIGHT, "");
     hint_frame.set_frame(FrameType::FlatBox);
     hint_frame.set_label_font(Font::Courier);
-    hint_frame.set_align(fltk::enums::Align::Left | fltk::enums::Align::Inside | fltk::enums::Align::Top);
+    hint_frame
+        .set_align(fltk::enums::Align::Left | fltk::enums::Align::Inside | fltk::enums::Align::Top);
     hint_frame.hide();
     y += HINT_HEIGHT + ROW_GAP;
 
@@ -183,12 +184,9 @@ where
         let mapped = match outcome {
             Ok(Ok(path)) => Ok(path),
             Ok(Err(msg)) => Err(msg),
-            Err(join_err) => Err(format!(
-                "whisper-cli detection task panicked: {join_err}"
-            )),
+            Err(join_err) => Err(format!("whisper-cli detection task panicked: {join_err}")),
         };
-        if let Err(send_err) = tx.send(UiMessage::WhisperCli(WhisperCliMsg::Detected(mapped)))
-        {
+        if let Err(send_err) = tx.send(UiMessage::WhisperCli(WhisperCliMsg::Detected(mapped))) {
             debug!(error = %send_err, "whisper-cli: receiver gone, dropping result");
         }
         // Nudge FLTK so the main loop drains the channel on next
@@ -287,9 +285,7 @@ mod tests {
 
     /// Pull the next `WhisperCliMsg` off the rx, panicking on
     /// timeout. Wraps the raw `UiMessage::WhisperCli` envelope.
-    async fn expect_whisper_msg(
-        rx: &mut mpsc::UnboundedReceiver<UiMessage>,
-    ) -> WhisperCliMsg {
+    async fn expect_whisper_msg(rx: &mut mpsc::UnboundedReceiver<UiMessage>) -> WhisperCliMsg {
         let envelope = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("whisper-cli msg timed out")
@@ -304,7 +300,10 @@ mod tests {
     fn render_state_found_uses_green_and_empty_hint() {
         let path = PathBuf::from("/usr/bin/whisper-cli");
         let (label, colour, hint) = render_state(&Ok(path));
-        assert!(label.contains("Detected at /usr/bin/whisper-cli"), "{label}");
+        assert!(
+            label.contains("Detected at /usr/bin/whisper-cli"),
+            "{label}"
+        );
         assert_eq!(colour, Color::DarkGreen);
         assert!(hint.is_empty());
     }

@@ -234,7 +234,6 @@ impl App {
         drop(rx);
         Ok(())
     }
-
 }
 
 /// Free function dispatcher. Routes each `UiMessage` variant to
@@ -247,7 +246,9 @@ fn dispatch_to_tabs(
     profile_browser: &mut fltk::browser::HoldBrowser,
     hotkey_tab: &mut crate::tabs::hotkey::HotkeyTab,
     whisper_cli_tab: &mut crate::tabs::whisper_cli::WhisperCliTab,
-    models_rows: &Arc<std::sync::Mutex<std::collections::HashMap<String, crate::tabs::models::ModelRow>>>,
+    models_rows: &Arc<
+        std::sync::Mutex<std::collections::HashMap<String, crate::tabs::models::ModelRow>>,
+    >,
 ) {
     debug!(?msg, "settings: dispatching UiMessage");
     match msg {

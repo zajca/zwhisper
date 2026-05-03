@@ -40,8 +40,8 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 use zwhisper_hotkey::config::{DEFAULT_BIND_TIMEOUT_SECS, HotkeyConfig};
 use zwhisper_hotkey::portal::{
-    AshpdAdapter, BindRequest, HotkeySession, PortalAdapter, PortalError,
-    SHORTCUT_DESCRIPTION, SHORTCUT_ID,
+    AshpdAdapter, BindRequest, HotkeySession, PortalAdapter, PortalError, SHORTCUT_DESCRIPTION,
+    SHORTCUT_ID,
 };
 
 use crate::app::UiMessage;
@@ -118,7 +118,9 @@ pub(crate) struct HotkeyTab {
 /// [`HotkeyMsg`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RebindOutcome {
-    Completed { description: String },
+    Completed {
+        description: String,
+    },
     Cancelled,
     TimedOut,
     Unavailable,
@@ -232,10 +234,10 @@ where
         .list_shortcuts()
         .await
         .map_err(|e| format!("list_shortcuts: {e}"))?;
-    let description = shortcuts
-        .iter()
-        .find(|s| s.id == SHORTCUT_ID)
-        .map_or_else(|| "(not bound)".to_owned(), |s| s.trigger_description.clone());
+    let description = shortcuts.iter().find(|s| s.id == SHORTCUT_ID).map_or_else(
+        || "(not bound)".to_owned(),
+        |s| s.trigger_description.clone(),
+    );
     // Best-effort close — if it fails the OS will clean up on
     // process exit. Logged at warn so a regression is observable.
     if let Err(e) = session.close().await {
@@ -313,13 +315,10 @@ where
 
     let outcome = match timeout(bind_timeout, session.bind(&req)).await {
         Ok(Ok(shortcuts)) => {
-            let description = shortcuts
-                .iter()
-                .find(|s| s.id == SHORTCUT_ID)
-                .map_or_else(
-                    || "(unknown trigger)".to_owned(),
-                    |s| s.trigger_description.clone(),
-                );
+            let description = shortcuts.iter().find(|s| s.id == SHORTCUT_ID).map_or_else(
+                || "(unknown trigger)".to_owned(),
+                |s| s.trigger_description.clone(),
+            );
             info!(description, "hotkey tab: rebind succeeded");
             RebindOutcome::Completed { description }
         }
@@ -375,7 +374,8 @@ pub(crate) fn apply_msg(tab: &mut HotkeyTab, msg: &HotkeyMsg) {
         HotkeyMsg::InitialBindFailed { error } => {
             tab.binding_label.set_label("Current binding: unknown");
             tab.binding_label.set_label_color(Color::DarkYellow);
-            tab.status_label.set_label(&format!("Probe failed: {error}"));
+            tab.status_label
+                .set_label(&format!("Probe failed: {error}"));
             tab.status_label.set_label_color(Color::DarkRed);
         }
         HotkeyMsg::RebindStarted => {
@@ -411,7 +411,8 @@ pub(crate) fn apply_msg(tab: &mut HotkeyTab, msg: &HotkeyMsg) {
             // Keep the prior binding label intact — the previous
             // chord is typically still valid; only the status line
             // is updated.
-            tab.status_label.set_label(&format!("Rebind failed: {error}"));
+            tab.status_label
+                .set_label(&format!("Rebind failed: {error}"));
             tab.status_label.set_label_color(Color::DarkRed);
         }
     }
@@ -461,10 +462,7 @@ mod tests {
     }
 
     impl ScenarioPortal {
-        fn new(
-            create: Result<SessionId, PortalError>,
-            bind: Option<BindFakeOutcome>,
-        ) -> Arc<Self> {
+        fn new(create: Result<SessionId, PortalError>, bind: Option<BindFakeOutcome>) -> Arc<Self> {
             Arc::new(Self {
                 create_session_outcome: Mutex::new(Some(create)),
                 bind_outcome: Mutex::new(bind),
@@ -573,8 +571,7 @@ mod tests {
             HotkeyMsg::from(RebindOutcome::Unavailable),
             HotkeyMsg::PortalUnavailable
         ));
-        let msg: HotkeyMsg =
-            RebindOutcome::Failed("session create: unavailable".to_owned()).into();
+        let msg: HotkeyMsg = RebindOutcome::Failed("session create: unavailable".to_owned()).into();
         match msg {
             HotkeyMsg::RebindFailed { error } => {
                 assert!(error.contains("session create"), "{error}");

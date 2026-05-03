@@ -95,19 +95,11 @@ impl ModelsConfig {
             return Ok(Self::default());
         }
 
-        let body = std::fs::read_to_string(&resolved).map_err(|e| {
-            SettingsError::Config(format!(
-                "reading {}: {e}",
-                resolved.display()
-            ))
-        })?;
+        let body = std::fs::read_to_string(&resolved)
+            .map_err(|e| SettingsError::Config(format!("reading {}: {e}", resolved.display())))?;
 
-        let parsed: Self = toml::from_str(&body).map_err(|e| {
-            SettingsError::Config(format!(
-                "parsing {}: {e}",
-                resolved.display()
-            ))
-        })?;
+        let parsed: Self = toml::from_str(&body)
+            .map_err(|e| SettingsError::Config(format!("parsing {}: {e}", resolved.display())))?;
 
         // Validate at parse time so a malformed URL surfaces before
         // any download attempt.
@@ -121,9 +113,7 @@ impl ModelsConfig {
     /// double-check at the URL boundary).
     pub(crate) fn resolve_url(&self, model_name: &str) -> Result<String, SettingsError> {
         if model_name.is_empty() {
-            return Err(SettingsError::Config(
-                "model name must not be empty".into(),
-            ));
+            return Err(SettingsError::Config("model name must not be empty".into()));
         }
         self.validate_base_url()?;
         Ok(self.base_url.replace(MODEL_PLACEHOLDER, model_name))
@@ -288,10 +278,7 @@ mod tests {
         // A file present but with an http:// URL should fail at
         // load time, not be deferred to the first resolve_url call.
         let tmp = TempDir::new().unwrap();
-        let path = write_config(
-            &tmp,
-            r#"base_url = "http://example.com/ggml-{model}.bin""#,
-        );
+        let path = write_config(&tmp, r#"base_url = "http://example.com/ggml-{model}.bin""#);
         let err = ModelsConfig::load_or_default(Some(&path)).unwrap_err();
         assert!(matches!(err, SettingsError::Config(_)));
     }
