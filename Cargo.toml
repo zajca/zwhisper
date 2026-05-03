@@ -78,6 +78,19 @@ toml = "0.8"
 # rather than spawning a separate executor (M4-plan DoD #5 + #23).
 notify-rust = { version = "4.11", default-features = false, features = ["z-with-tokio"] }
 arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
+
+# Settings GUI (M7) — `fltk-bundled` builds FLTK as a static lib at
+# compile time, so consumers do not need a system FLTK install. Build
+# requires cmake >= 3.11, gcc >= 11, curl, and tar (documented in
+# `crates/zwhisper-settings/README.md`). The `use-wayland` feature
+# selects the Wayland backend when `WAYLAND_DISPLAY` is set, falling
+# back to X11 otherwise.
+fltk = { version = "1.5", features = ["fltk-bundled", "use-wayland"] }
+# SHA-256 streaming hashes (M7 model downloader integrity check —
+# verifies ggml weights against the compile-time embedded
+# `crates/zwhisper-settings/checksums.toml` manifest).
+sha2 = "0.10"
+
 xdg = "2.5"
 async-channel = "2"
 

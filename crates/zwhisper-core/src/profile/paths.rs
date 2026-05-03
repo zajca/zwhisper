@@ -7,7 +7,10 @@ const SHIPPED_FALLBACK: &str = "/usr/share/zwhisper/profiles";
 /// `[A-Za-z0-9._-]+` — matches IDEA.md § 6 spec and rejects path
 /// traversal (`/`, `..` would either contain `/` or be dot-only),
 /// shell metacharacters, and whitespace before any I/O.
-pub(crate) fn validate_name(name: &str) -> Result<(), ProfileError> {
+///
+/// M7 (DoD #18): exposed `pub` so `zwhisper-settings` can validate
+/// profile names in the editor before any I/O happens.
+pub fn validate_name(name: &str) -> Result<(), ProfileError> {
     if name.is_empty() {
         return Err(ProfileError::InvalidName { name: name.into() });
     }
@@ -22,7 +25,10 @@ pub(crate) fn validate_name(name: &str) -> Result<(), ProfileError> {
 }
 
 /// `${XDG_CONFIG_HOME:-~/.config}/zwhisper/profiles/<name>.toml`.
-pub(crate) fn user_override_path(name: &str) -> Result<PathBuf, ProfileError> {
+///
+/// M7 (DoD #18): exposed `pub` so `zwhisper-settings` writes user
+/// overrides to the same XDG path the daemon reads from.
+pub fn user_override_path(name: &str) -> Result<PathBuf, ProfileError> {
     validate_name(name)?;
     let base = dirs::config_dir().ok_or_else(|| ProfileError::Validation {
         profile: name.into(),
@@ -38,7 +44,10 @@ pub(crate) fn user_override_path(name: &str) -> Result<PathBuf, ProfileError> {
 /// rebuilding. The compile-time `option_env!` flavour was the M2
 /// review's Low finding: it made the integration tests
 /// host-dependent.
-pub(crate) fn shipped_path(name: &str) -> Result<PathBuf, ProfileError> {
+///
+/// M7 (DoD #18): exposed `pub` so `zwhisper-settings` can display the
+/// shipped fallback location in its profile editor diagnostics.
+pub fn shipped_path(name: &str) -> Result<PathBuf, ProfileError> {
     validate_name(name)?;
     let root = std::env::var_os("ZWHISPER_DATA_DIR")
         .map_or_else(|| PathBuf::from(SHIPPED_FALLBACK), PathBuf::from);
@@ -46,7 +55,10 @@ pub(crate) fn shipped_path(name: &str) -> Result<PathBuf, ProfileError> {
 }
 
 /// Directory that hosts user-override profiles (without the filename).
-pub(crate) fn user_profiles_dir() -> Result<PathBuf, ProfileError> {
+///
+/// M7 (DoD #18): exposed `pub` so `zwhisper-settings` can ensure the
+/// directory exists before writing edited profiles.
+pub fn user_profiles_dir() -> Result<PathBuf, ProfileError> {
     let base = dirs::config_dir().ok_or_else(|| ProfileError::Validation {
         profile: String::new(),
         message: "no XDG config dir resolvable for the current user".into(),

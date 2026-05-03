@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=zwhisper Settings
+Comment=Configure profiles, models, and hotkey for zwhisper
+Exec=zwhisper-settings
+Icon=audio-input-microphone
+Categories=Settings;AudioVideo;Audio;
+StartupNotify=false
+NoDisplay=false
+X-GNOME-UsesNotifications=false

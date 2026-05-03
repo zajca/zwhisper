@@ -149,6 +149,14 @@ pub(crate) fn locate_whisper_cli() -> Result<PathBuf, TranscribeError> {
     locate_with(&RealLocator)
 }
 
+/// M7 (DoD #18): public thin wrapper around the crate-private
+/// `locate_whisper_cli`. The [`Locator`] trait stays internal so
+/// `zwhisper-settings` reuses the daemon's exact 5-step lookup without
+/// taking on the test-injection surface as a public contract.
+pub fn detect_whisper_cli() -> Result<PathBuf, TranscribeError> {
+    locate_whisper_cli()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

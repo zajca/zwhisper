@@ -77,6 +77,12 @@ const PREREADY_BUFFER_SLOTS: usize = 1;
 /// recording continues.
 const NOTIFY_TIMEOUT_MS: i32 = 3_000;
 
+/// Capacity of the settings-rebind signal mpsc. Sized at 4 so
+/// two back-to-back rebinds coalesce without back-pressuring the
+/// subscriber task: the recreate path is idempotent and one
+/// recreate covers an arbitrary number of queued signals.
+const REBIND_SIGNAL_CAPACITY: usize = 4;
+
 /// Hard cap on `notify-rust` `show()` round-trips. Mirrors the CLI's
 /// `NOTIFY_TIMEOUT` in `zwhisper-cli::commands::toggle`. The session
 /// bus that `notify-rust` talks to may be the very thing that broke
@@ -86,6 +92,12 @@ const NOTIFY_SHOW_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Control surface for the hotkey listener task. The tray menu's
 /// "Hotkey: …" callback `try_send`s these onto a bounded mpsc.
+///
+/// `Recreate` is fed by an internal D-Bus signal subscriber (see
+/// [`spawn_settings_rebind_subscriber`]) — when `zwhisper-settings`
+/// emits `cz.zajca.Zwhisper1.Settings.HotkeyRebound`, the listener
+/// drops the live `HotkeySession` and opens a fresh one so the
+/// next portal `Activated` payload reflects the user's new chord.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyControl {
     /// User clicked the menu entry — open the portal bind
@@ -97,6 +109,11 @@ pub enum HotkeyControl {
     Unbind,
     /// Re-run [`probe::probe`] and refresh `state.hotkey`.
     Probe,
+    /// `zwhisper-settings` rebound the chord on our behalf — drop
+    /// the live session and open a fresh one so future
+    /// `Activated` events come from the new portal binding (M7
+    /// `DoD` #16 / D7).
+    Recreate,
 }
 
 /// Run the hotkey listener task. Returns when `shutdown_rx`
@@ -155,6 +172,20 @@ pub async fn run_hotkey(
     let adapter: Arc<AshpdAdapter> = Arc::new(AshpdAdapter::new());
     let mut session: Option<HotkeySession<AshpdAdapter>> = None;
     let mut debouncer = Debouncer::new(&cfg);
+
+    // M7 `DoD` #16: subscribe to settings' `HotkeyRebound` signal
+    // and surface arrivals through a tiny mpsc<()> that the
+    // listener drains alongside the existing event stream. The
+    // capacity is intentionally small — coalescing two
+    // back-to-back rebinds is fine; the recreate path is
+    // idempotent and a single recreate covers both presses.
+    let (rebind_signal_tx, mut rebind_signal_rx) = mpsc::channel::<()>(REBIND_SIGNAL_CAPACITY);
+    let _rebind_subscriber = spawn_settings_rebind_subscriber(
+        conn.clone(),
+        rebind_signal_tx,
+        shutdown_rx.clone(),
+    )
+    .await;
 
     // Initial probe. The probe result drives the menu label
     // even before any bind attempt happens.
@@ -229,6 +260,24 @@ pub async fn run_hotkey(
                     // Bind/Unbind/Probe do not need the daemon —
                     // service them as usual.
                     handle_control(ctl, &cfg, &adapter, &mut session, &state_tx).await;
+                }
+                rebind = rebind_signal_rx.recv() => {
+                    if rebind.is_none() {
+                        debug!("hotkey: rebind signal channel closed in pre-ready loop");
+                        continue;
+                    }
+                    // Settings rebound the chord — recreate the
+                    // session so the next press carries the new
+                    // binding. Reuses the same Recreate handler
+                    // as the post-ready loop (M7 `DoD` #16).
+                    handle_control(
+                        HotkeyControl::Recreate,
+                        &cfg,
+                        &adapter,
+                        &mut session,
+                        &state_tx,
+                    )
+                    .await;
                 }
                 ev = event => {
                     match ev {
@@ -306,6 +355,23 @@ pub async fn run_hotkey(
                 };
                 handle_control(
                     ctl,
+                    &cfg,
+                    &adapter,
+                    &mut session,
+                    &state_tx,
+                )
+                .await;
+            }
+            rebind = rebind_signal_rx.recv() => {
+                if rebind.is_none() {
+                    debug!("hotkey: rebind signal channel closed");
+                    continue;
+                }
+                // Settings rebound the chord — recreate the
+                // session so future Activated payloads arrive
+                // with the new portal binding (M7 `DoD` #16).
+                handle_control(
+                    HotkeyControl::Recreate,
                     &cfg,
                     &adapter,
                     &mut session,
@@ -589,8 +655,172 @@ async fn handle_control(
                 refresh_bound_state(session.as_ref(), state_tx).await;
             }
         }
+        HotkeyControl::Recreate => {
+            // M7 `DoD` #16: settings emitted `HotkeyRebound`. Drop
+            // the live session and open a fresh one so the next
+            // `Activated` carries the user's new chord. The
+            // `recreate_session` helper applies the same
+            // 500 ms backoff as the SessionLost recovery path
+            // (`DoD` #9 B1) — flapping notifications cannot spin
+            // the listener.
+            info!("hotkey: settings rebound the chord; recreating portal session");
+            match recreate_session(adapter, session).await {
+                Ok(()) => {
+                    refresh_bound_state(session.as_ref(), state_tx).await;
+                }
+                Err(err) => {
+                    warn!(error = %err, "hotkey: recreate after settings rebind failed");
+                    set_hotkey(
+                        state_tx,
+                        HotkeyMenuState::Unavailable {
+                            reason: format!("recreate: {err}"),
+                        },
+                    );
+                    *session = None;
+                }
+            }
+        }
     }
 }
+
+/// Spawn the `cz.zajca.Zwhisper1.Settings.HotkeyRebound` signal
+/// subscriber task. The task lives for `shutdown_rx`'s lifetime
+/// and forwards every signal arrival as a unit value onto
+/// `signal_tx`. The receiver lives inside [`run_hotkey`]'s select
+/// loop and, on receipt, treats the wake-up identically to a
+/// menu-driven [`HotkeyControl::Recreate`].
+///
+/// Failures to install the match-rule are logged at warn — the
+/// tray must still come up if the signal subscription cannot be
+/// installed (e.g. broken bus). The user can rebind via the tray
+/// menu directly in that degraded state.
+///
+/// Returns the spawned `JoinHandle` so the caller (`run_hotkey`)
+/// can abort it on shutdown if it has not yet observed
+/// `shutdown_rx`. Production drops the handle and lets `Drop`
+/// cancel the inner task.
+#[allow(
+    clippy::unused_async,
+    reason = "kept async to leave room for an early-failure round-trip without churning callers"
+)]
+pub async fn spawn_settings_rebind_subscriber(
+    conn: zbus::Connection,
+    signal_tx: mpsc::Sender<()>,
+    mut shutdown_rx: watch::Receiver<()>,
+) -> tokio::task::JoinHandle<()> {
+    use futures_util::StreamExt;
+
+    tokio::spawn(async move {
+        let rule = match build_settings_match_rule() {
+            Ok(r) => r,
+            Err(err) => {
+                warn!(error = %err, "hotkey: settings rebind match-rule build failed");
+                wait_for_shutdown(&mut shutdown_rx).await;
+                return;
+            }
+        };
+
+        let mut stream = match zbus::MessageStream::for_match_rule(rule, &conn, None).await {
+            Ok(s) => s,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "hotkey: settings rebind subscription failed; rebind notifications disabled"
+                );
+                wait_for_shutdown(&mut shutdown_rx).await;
+                return;
+            }
+        };
+        debug!(
+            interface = SETTINGS_SIGNAL_INTERFACE,
+            path = SETTINGS_SIGNAL_PATH,
+            member = SETTINGS_SIGNAL_MEMBER,
+            "hotkey: settings rebind subscription installed"
+        );
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown_rx.changed() => {
+                    debug!("hotkey: settings rebind subscriber received shutdown");
+                    return;
+                }
+                next = stream.next() => {
+                    match next {
+                        Some(Ok(msg)) => {
+                            if !classify_settings_signal(&msg) {
+                                continue;
+                            }
+                            info!("hotkey: settings emitted HotkeyRebound; queuing Recreate");
+                            if let Err(err) = signal_tx.send(()).await {
+                                warn!(error = %err, "hotkey: rebind signal channel closed; subscriber exiting");
+                                return;
+                            }
+                        }
+                        Some(Err(err)) => {
+                            warn!(error = %err, "hotkey: settings rebind subscriber message error");
+                        }
+                        None => {
+                            warn!("hotkey: settings rebind subscriber stream ended unexpectedly");
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Build the `MatchRule` covering settings' `HotkeyRebound`
+/// signal. Factored out so unit tests can pin the rule shape
+/// without standing up a real bus connection.
+fn build_settings_match_rule() -> Result<zbus::MatchRule<'static>, String> {
+    let builder = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface(SETTINGS_SIGNAL_INTERFACE)
+        .map_err(|e| format!("interface: {e}"))?
+        .path(SETTINGS_SIGNAL_PATH)
+        .map_err(|e| format!("path: {e}"))?
+        .member(SETTINGS_SIGNAL_MEMBER)
+        .map_err(|e| format!("member: {e}"))?;
+    Ok(builder.build())
+}
+
+/// Pure helper — verify a candidate signal message is the one we
+/// care about. Belt-and-braces: the match rule already filters by
+/// interface + path + member, but we re-check so a future PR that
+/// loosens the rule does not silently start firing on unrelated
+/// signals.
+fn classify_settings_signal(msg: &zbus::Message) -> bool {
+    let header = msg.header();
+    let iface = header.interface().map(zbus::names::InterfaceName::as_str);
+    let member = header.member().map(zbus::names::MemberName::as_str);
+    let path = header.path().map(zbus::zvariant::ObjectPath::as_str);
+    let matches = matches!(iface, Some(SETTINGS_SIGNAL_INTERFACE))
+        && matches!(member, Some(SETTINGS_SIGNAL_MEMBER))
+        && matches!(path, Some(SETTINGS_SIGNAL_PATH));
+    if !matches {
+        debug!(
+            ?iface,
+            ?member,
+            ?path,
+            "hotkey: settings rebind subscriber dropped non-matching message"
+        );
+    }
+    matches
+}
+
+/// `cz.zajca.Zwhisper1.Settings.HotkeyRebound` — interface name
+/// owned by the settings binary. Settings emits this signal on a
+/// successful rebind; the tray subscribes via
+/// [`spawn_settings_rebind_subscriber`].
+const SETTINGS_SIGNAL_INTERFACE: &str = "cz.zajca.Zwhisper1.Settings";
+
+/// Object path the signal is emitted from.
+const SETTINGS_SIGNAL_PATH: &str = "/cz/zajca/Zwhisper1/Settings";
+
+/// Member name of the broadcast signal.
+const SETTINGS_SIGNAL_MEMBER: &str = "HotkeyRebound";
 
 /// Run one `toggle_once` against a freshly-built
 /// [`LiveRecorderClient`] and translate the result into a side
@@ -945,5 +1175,86 @@ mod tests {
             },
         );
         assert!(rx.has_changed().unwrap());
+    }
+
+    #[test]
+    fn settings_match_rule_pins_interface_path_member() {
+        // M7 `DoD` #16 / D7 — the tray subscribes to the
+        // signal owned by `zwhisper-settings`. Settings owns
+        // the interface name; tray pins this side. A rename
+        // on either side breaks the rebind notification path
+        // silently — this test makes the regression loud.
+        let rule = build_settings_match_rule().expect("rule builds");
+        assert_eq!(
+            rule.interface().map(zbus::names::InterfaceName::as_str),
+            Some(SETTINGS_SIGNAL_INTERFACE)
+        );
+        match rule.path_spec() {
+            Some(zbus::match_rule::PathSpec::Path(p)) => {
+                assert_eq!(p.as_str(), SETTINGS_SIGNAL_PATH);
+            }
+            other => panic!("expected exact-path spec, got {other:?}"),
+        }
+        assert_eq!(
+            rule.member().map(zbus::names::MemberName::as_str),
+            Some(SETTINGS_SIGNAL_MEMBER)
+        );
+        assert_eq!(rule.msg_type(), Some(zbus::message::Type::Signal));
+    }
+
+    /// `DoD` #16 — end-to-end test that a `HotkeyRebound` signal
+    /// emitted on the live session bus is observed by the tray's
+    /// subscriber and surfaces as one `()` on the rebind channel.
+    /// Skipped when no session bus is reachable (CI sandboxes).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tray_picks_up_settings_rebind_signal() {
+        use std::time::Duration;
+
+        // First connection: the subscriber side. If the bus is
+        // unreachable we skip — same gate the
+        // `zwhisper-settings::app::tests::second_launch_*` test
+        // uses for D-Bus-dependent paths.
+        let subscriber_conn = match zbus::Connection::session().await {
+            Ok(c) => c,
+            Err(err) => {
+                eprintln!("skipping: no session bus available ({err})");
+                return;
+            }
+        };
+        let emitter_conn = zbus::Connection::session()
+            .await
+            .expect("second connection");
+
+        let (tx, mut rx) = mpsc::channel::<()>(REBIND_SIGNAL_CAPACITY);
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let _join =
+            spawn_settings_rebind_subscriber(subscriber_conn, tx, shutdown_rx).await;
+
+        // Give the subscriber a brief window to install the
+        // match rule before we emit. The `add_match` round-trip
+        // is async; emitting too early races the broker.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        emitter_conn
+            .emit_signal(
+                None::<&str>,
+                SETTINGS_SIGNAL_PATH,
+                SETTINGS_SIGNAL_INTERFACE,
+                SETTINGS_SIGNAL_MEMBER,
+                &("Ctrl+Alt+R",),
+            )
+            .await
+            .expect("emit signal");
+
+        let received = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        let received = received.expect("rebind signal did not arrive within 5s");
+        assert!(
+            received.is_some(),
+            "rebind channel closed before signal arrived"
+        );
+
+        // Drop the subscriber so the test does not bleed into
+        // sibling runs on the same bus.
+        let _ = shutdown_tx.send(());
     }
 }

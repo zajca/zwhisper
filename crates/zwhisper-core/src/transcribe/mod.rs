@@ -11,9 +11,14 @@
 #![allow(clippy::result_large_err)]
 
 pub mod deepgram;
-pub(crate) mod discovery;
+// M7 (DoD #18): `discovery` and `models` are now `pub` so the
+// settings UI can call `discovery::detect_whisper_cli` and
+// `models::{resolve_model, models_dir}` directly. The `Locator` and
+// `ModelDirProvider` traits stay `pub(crate)`; only the free-function
+// entry points cross the crate boundary.
+pub mod discovery;
 pub mod error;
-pub(crate) mod models;
+pub mod models;
 pub mod speakers;
 pub(crate) mod whisper_cpp;
 
@@ -27,6 +32,12 @@ pub(crate) use discovery::locate_whisper_cli;
 #[allow(unused_imports)]
 pub use error::TranscribeError;
 pub use speakers::SpeakerSegment;
+
+// M7 (DoD #18): convenience re-exports at the `transcribe` namespace.
+// External callers may use either `zwhisper_core::transcribe::models::*`
+// (preserved) or these shorthand paths.
+pub use discovery::detect_whisper_cli;
+pub use models::{models_dir, resolve_model};
 
 use crate::profile::schema::DeepgramSettings;
 

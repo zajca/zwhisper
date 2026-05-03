@@ -415,6 +415,16 @@ impl Tray for ZwhisperTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
+                label: "Settings\u{2026}".to_owned(),
+                enabled: true,
+                activate: Box::new(move |_this: &mut Self| {
+                    spawn_settings_binary();
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
                 label: "Quit".to_owned(),
                 enabled: true,
                 activate: Box::new(move |_this: &mut Self| {
@@ -427,6 +437,53 @@ impl Tray for ZwhisperTray {
             .into(),
         ]
     }
+}
+
+/// M7: launch the on-demand `zwhisper-settings` binary. The
+/// binary itself enforces single-instance via the
+/// `cz.zajca.Zwhisper1.Settings` D-Bus name claim, so spawning
+/// while one is already running is harmless — the second
+/// instance exits 0 after raising the existing window.
+///
+/// We resolve via `$PATH` (`zwhisper-settings`) rather than an
+/// absolute path so a sibling-built binary in `target/<profile>/`
+/// works in dev without env tweaks: M8 packaging installs both
+/// binaries into `/usr/bin`, so the lookup succeeds in production.
+fn spawn_settings_binary() {
+    use std::process::Command;
+
+    let exe = settings_binary_path();
+    match Command::new(&exe).spawn() {
+        Ok(_child) => {
+            tracing::info!(binary = %exe, "tray: launched zwhisper-settings");
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                binary = %exe,
+                "tray: failed to launch zwhisper-settings — install it or build the workspace",
+            );
+        }
+    }
+}
+
+/// Resolve the settings binary path. In dev the workspace target
+/// directory is preferred so a `cargo build` produces a working
+/// menu entry without a system install. In production the binary
+/// name on `$PATH` is used.
+fn settings_binary_path() -> String {
+    // Dev convenience: if the tray itself was launched from
+    // `target/<profile>/zwhisper-tray`, prefer the sibling
+    // `zwhisper-settings` in the same directory.
+    if let Ok(self_exe) = std::env::current_exe() {
+        if let Some(parent) = self_exe.parent() {
+            let candidate = parent.join("zwhisper-settings");
+            if candidate.is_file() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "zwhisper-settings".to_owned()
 }
 
 #[cfg(test)]

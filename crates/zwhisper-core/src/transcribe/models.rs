@@ -109,8 +109,32 @@ pub(crate) fn resolve_with<P: ModelDirProvider>(
 }
 
 /// Production entry point — wires up [`RealModelDirProvider`].
-pub(crate) fn resolve_model(name: &str) -> Result<PathBuf, TranscribeError> {
+///
+/// M7 (DoD #18): promoted from `pub(crate)` to `pub` so
+/// `zwhisper-settings` can validate that a downloaded model lands at
+/// the path the runtime resolver will read from.
+pub fn resolve_model(name: &str) -> Result<PathBuf, TranscribeError> {
     resolve_with(&RealModelDirProvider, name)
+}
+
+/// M7 (DoD #18): public thin wrapper that returns the absolute
+/// `<data_local_dir>/zwhisper/models` directory `resolve_model` reads
+/// from. Wraps the crate-private `RealModelDirProvider` so external
+/// crates (notably `zwhisper-settings`) can compute download
+/// destinations without exposing the [`ModelDirProvider`] trait.
+///
+/// Returns the same `InvalidModelName` error variant the resolver
+/// itself surfaces when `dirs::data_local_dir()` is unavailable, with
+/// an empty `name` field to signal that the failure is global, not
+/// per-model.
+pub fn models_dir() -> Result<PathBuf, TranscribeError> {
+    let Some(data_dir) = RealModelDirProvider.data_local_dir() else {
+        return Err(TranscribeError::InvalidModelName {
+            name: String::new(),
+            reason: "cannot resolve XDG data dir; set $XDG_DATA_HOME",
+        });
+    };
+    Ok(data_dir.join("zwhisper").join("models"))
 }
 
 #[cfg(test)]

@@ -16,6 +16,12 @@ pub mod schema;
 pub use error::ProfileError;
 pub use schema::{OutputDest, Profile};
 
+// M7 (DoD #18): re-export the four `paths::*` helpers at the
+// `profile` module top-level so external crates (notably
+// `zwhisper-settings`) can call `zwhisper_core::profile::validate_name`
+// without reaching into the `pub(crate)` `paths` submodule.
+pub use paths::{shipped_path, user_override_path, user_profiles_dir, validate_name};
+
 use std::path::PathBuf;
 
 /// Where a resolved profile came from. Surfaces in `profile list` /
