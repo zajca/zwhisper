@@ -36,6 +36,11 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
+    # `webpki-roots >= 1.0.7` is dual-licensed MPL-2.0 (code) +
+    # CDLA-Permissive-2.0 (the bundled CA root data). CDLA-Permissive
+    # is an OSI-friendly permissive license; allowing it keeps the
+    # transitive `reqwest -> hyper-rustls -> webpki-roots` graph clean.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 exceptions = []

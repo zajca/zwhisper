@@ -21,6 +21,9 @@ on:
 
 permissions:
   contents: read
+  # `rustsec/audit-check` posts a check-run with the audit summary;
+  # without `checks: write` it errors with "Resource not accessible".
+  checks: write
 
 jobs:
   cargo-audit:
@@ -31,6 +34,11 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Match the ignore list in `deny.toml` so both advisory
+          # checks stay aligned. RUSTSEC-2024-0436 is `paste`
+          # (unmaintained, transient via gstreamer 0.23 — no safe
+          # upgrade available; revisit once gstreamer-rs migrates).
+          ignore: RUSTSEC-2024-0436
 
   cargo-deny:
     name: cargo deny
