@@ -10,7 +10,17 @@ feature-depth = 1
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # `paste` was archived by its author (`dtolnay/paste`). It is
+    # pulled in transitively by `gstreamer 0.23.x` (`gstreamer-rs`
+    # macros) and has no safe drop-in replacement until the
+    # gstreamer-rs crate graph migrates. The crate is a compile-time
+    # macro, performs no I/O, and only operates on tokens during
+    # macro expansion — the "unmaintained" designation does not
+    # expose us to a runtime issue. Revisit when gstreamer-rs ships
+    # a successor.
+    { id = "RUSTSEC-2024-0436", reason = "paste is a compile-time macro; transient via gstreamer 0.23. No safe upgrade until gstreamer-rs migrates." },
+]
 
 [licenses]
 version = 2

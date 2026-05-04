@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["Martin Zajic <martin.zajic@keboola.com>"]
 license = "MIT"
 repository = "https://github.com/zajca/zwhisper"
@@ -68,7 +68,9 @@ ksni = "0.3"
 # Hotkey toggle (M6) — global hotkey via XDG GlobalShortcuts portal.
 # `default-features = true` keeps the tokio executor (matches
 # `zbus.features = ["tokio"]`); MSRV 1.92 is satisfied (workspace
-# `rust-version = "1.85"` is the minimum, toolchain is stable >=1.92).
+# `rust-version = "1.88"` is the minimum (raised from 1.85 to pull in
+# `time >= 0.3.47` for the RFC-2822 stack-exhaustion fix from
+# RUSTSEC-2026-0009); toolchain is stable >=1.92.
 ashpd = { version = "0.13", default-features = true, features = ["global_shortcuts"] }
 # Pure deserializer for `hotkey.toml` (M6) — `toml_edit` is overkill
 # for read-only config and pulls extra surface area.

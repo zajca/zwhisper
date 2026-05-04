@@ -45,7 +45,7 @@ depends=(
 # fltk-bundled chain (M7-plan F1 / M8-plan DoD #2). Each entry maps
 # to a cmake/find_package check inside FLTK's own build.
 makedepends=(
-    'rust>=1.85'
+    'rust>=1.88'
     'cargo'
     'cmake'
     'gcc'
