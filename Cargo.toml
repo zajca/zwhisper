@@ -162,6 +162,8 @@ used_underscore_binding = "allow"  # zbus signal_emitter args bound `_emitter` d
 manual_let_else = "allow"
 unnecessary_trailing_comma = "allow"      # rustfmt re-introduces these on multi-arg macro calls
 unnecessary_debug_formatting = "allow"    # `{:?}` on PathBuf is intentional in error formatting
+collapsible_if = "allow"                  # MSRV >= 1.88 enables this lint via let-chains; nested `if let` reads clearer in the codebase
+collapsible_match = "allow"               # paired with collapsible_if for the same reason
 
 [profile.dev]
 opt-level = 0
