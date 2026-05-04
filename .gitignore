@@ -38,3 +38,12 @@ Thumbs.db
 # Local tooling caches (Claude Code, claude-mem, etc.)
 /.cache/
 /.claude/
+
+# makepkg build artifacts: `makepkg -f` extracts the upstream
+# tarball into packaging/arch/src/, stages the install tree under
+# packaging/arch/pkg/, and drops .tar.gz / .pkg.tar.zst alongside.
+# All three are reproducible and must never land in version control.
+/packaging/arch/src/
+/packaging/arch/pkg/
+/packaging/arch/*.tar.gz
+/packaging/arch/*.pkg.tar.zst

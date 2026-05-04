@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!--
-  zwhisper tray icon: idle.
-  Placeholder shipped with the M4 milestone. Final artwork lands in M8
-  (packaging). 24x24 viewbox, monochrome friendly.
--->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
-</svg>
