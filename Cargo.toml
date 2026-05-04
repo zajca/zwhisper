@@ -29,7 +29,7 @@ color-eyre = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Audio (M0)
-gstreamer = "0.23"
+gstreamer = "0.24"
 tokio = { version = "1", features = ["signal", "rt", "macros", "time", "sync", "process", "io-util", "fs"] }
 uuid = { version = "1", features = ["v4"] }
 
