@@ -41,6 +41,15 @@ allow = [
     # is an OSI-friendly permissive license; allowing it keeps the
     # transitive `reqwest -> hyper-rustls -> webpki-roots` graph clean.
     "CDLA-Permissive-2.0",
+    # BSL-1.0 (Boost Software License 1.0) is OSI-approved and used
+    # by `clipboard-win` + `error-code` (both pulled by the tray's
+    # clipboard sink and the win32 fallback layer). Permissive,
+    # GPL-compatible, no attribution needed in binaries.
+    "BSL-1.0",
+    # `Unlicense` is the public-domain dedication used by `ksni`
+    # (the StatusNotifierItem tray crate). Equivalent to public
+    # domain — no obligations on the consumer.
+    "Unlicense",
 ]
 confidence-threshold = 0.93
 exceptions = []
