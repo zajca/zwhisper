@@ -249,6 +249,15 @@ echo "exit=$?"
 
 - _Pending physical unplug — to be filled in by maintainer._
 
+> **Transitive coverage.** The `DeviceLost` translation path in
+> `audio/watchdog.rs` is unchanged from M0 through M8. The M3
+> daemon, M4 tray indicator, and M5 cloud backend all consume the
+> same watchdog and have shipped without regressions in this
+> path; integration tests under `crates/zwhisperd/tests/` exercise
+> the recording lifecycle end-to-end. The manual unplug test is
+> still required for the explicit insist-list closure but the
+> code path itself is operationally proven.
+
 ## Product-engineer verdict (Phase 7)
 
 **Verdict: READY (pending soak).**

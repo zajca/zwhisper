@@ -9,19 +9,47 @@
 
 ## Status
 
-_Pending — implementation in progress (Group A skeleton merged)._
+| Stage                                                              | State |
+| ------------------------------------------------------------------ | ----- |
+| Plan written (`docs/M7-plan.md`)                                   | done  |
+| Group A — Profile editor tab                                       | done  |
+| Group B — Models downloader tab                                    | done  |
+| Group C — Hotkey rebind tab + tray rebind signal                   | done  |
+| Group D — WhisperCLI backend health tab                            | done  |
+| Group E — Single-instance + on-demand launch                       | done  |
+| Multi-agent security + product-engineer DoD walk                   | done  |
+| Workspace test suite green at M7 ship                              | done  |
+| Manual verification gate (MV-1..MV-10)                             | _pending — run on a KDE / GNOME / wlroots host_ |
+| Open questions R1..R5 (RAM footprint, HiDPI matrix, etc.)          | _pending — measurement data not yet collected_  |
 
-## Test totals
+The implementation landed in commit `4ac0dd8 feat(m7): on-demand
+FLTK Settings GUI (zwhisper-settings)`. Follow-up M8 commits build
+on the M7 surface unchanged (the M8 protocol-version handshake is
+the only addition to the settings runtime bridge).
 
-```
-$ cargo test --workspace
-  (recorded after Groups A–E land)
+## Automated test inventory (M7)
 
-$ cargo clippy --workspace --all-targets -- -D warnings
-  (recorded after Groups A–E land)
+| File                                                                       | Coverage                                                        | DoD            |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------- |
+| `crates/zwhisper-settings/src/tabs/profile.rs` (`#[cfg(test)]`)            | profile listing, save validation, name-traversal rejection, diff renderer | #1, #2, #4, #5 |
+| `crates/zwhisper-settings/src/tabs/profile.rs` (save-during-recording)     | modal + skipped reload                                          | #3             |
+| `crates/zwhisper-settings/src/tabs/models/*.rs` (`#[cfg(test)]`)           | download state machine, HEAD validation, cross-FS rename, resume re-hash, 429 retry-after, cancel-during-close | #6–#13 |
+| `crates/zwhisper-settings/src/tabs/hotkey.rs` (`#[cfg(test)]`)             | rebind outcome truth-table                                      | #15            |
+| `crates/zwhisper-tray/src/hotkey.rs` (`tray_picks_up_settings_rebind_signal`) | settings → tray HotkeyRebound D-Bus signal                      | #16            |
+| `crates/zwhisper-settings/src/tabs/whisper_cli.rs` (`#[cfg(test)]`)        | binary discovery + GGML version match                           | Group D        |
+| `crates/zwhisper-settings/tests/desktop_file.rs`                           | `.desktop` validates (`desktop-file-validate`)                  | DoD #18 / E2   |
+| `crates/zwhisper-settings/src/main.rs` (`#[cfg(test)]`)                    | single-instance bus-name claim                                  | Group E        |
 
-$ cargo fmt --check
-  (recorded after Groups A–E land)
+## Test totals (recorded at ship)
+
+The M7 ship commit reports the workspace tree green; M8 ship
+(`abc2504`) explicitly records **609 tests passed** workspace-wide,
+which subsumes the M7 totals. Run locally:
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --check
 ```
 
 ## Manual verification matrix
@@ -72,3 +100,12 @@ gated on every row reading PASS.
 | Date    | Scenarios passed | Sign-off |
 | ------- | ---------------- | -------- |
 | pending | _pending_        | _pending_ |
+
+## Verdict
+
+_Pending manual verification gate run._
+
+> **Verdict line is set to `READY` only after every MV-N row reads
+> PASS on its target desktop (KDE Plasma 6 Wayland 1.0× and 1.5×
+> are mandatory; GNOME, Sway, X11 are recorded for awareness) and
+> the open questions R1..R5 carry concrete numeric answers.**

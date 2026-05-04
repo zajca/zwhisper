@@ -34,3 +34,7 @@ Thumbs.db
 *.profraw
 /coverage/
 /tarpaulin-report.html
+
+# Local tooling caches (Claude Code, claude-mem, etc.)
+/.cache/
+/.claude/
