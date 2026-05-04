@@ -84,19 +84,27 @@ static MISMATCH_NOTIFIED: OnceLock<()> = OnceLock::new();
 /// if the desktop notification service is unavailable, log a warn
 /// and move on — the canonical user-facing surface is still the
 /// `DaemonOffline` icon.
-pub(crate) fn notify_mismatch_once(err: &ProtocolMismatch) {
+///
+/// The body uses `show_async().await` against the workspace-pinned
+/// `notify-rust` `z-with-tokio` backend (matches the existing M4
+/// notification sink). Calling the sync `.show()` from a tokio
+/// worker thread would attempt to start a nested runtime — panics
+/// "Cannot start a runtime from within a runtime" — because the
+/// notify-rust internals depend on async zbus.
+pub(crate) async fn notify_mismatch_once(err: &ProtocolMismatch) {
     if MISMATCH_NOTIFIED.set(()).is_err() {
         // Already notified earlier in this process. Do not re-fire.
         return;
     }
-    if let Err(e) = notify_rust::Notification::new()
+    let result = notify_rust::Notification::new()
         .summary("zwhisper daemon version mismatch")
         .body(&format!(
             "{err}\nReinstall the matching zwhisperd to restore the tray."
         ))
         .icon("dialog-warning")
-        .show()
-    {
+        .show_async()
+        .await;
+    if let Err(e) = result {
         warn!(error = %e, "failed to deliver mismatch notification");
     }
 }

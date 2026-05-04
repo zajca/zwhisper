@@ -56,10 +56,37 @@ pub async fn run_dispatcher(
     state_tx: watch::Sender<TrayState>,
     state_rx: watch::Receiver<TrayState>,
     daemon_ready_tx: watch::Sender<bool>,
+    shutdown_broadcast: watch::Sender<()>,
     mut shutdown_rx: watch::Receiver<()>,
 ) -> Result<()> {
     let recorder = Recorder1Proxy::new(&conn).await?;
     let profiles = Profiles1Proxy::new(&conn).await?;
+
+    // M8 post-review fix: pre-flight protocol-version handshake.
+    // Pump runs the same handshake on its connection, but pump and
+    // dispatcher each own a *separate* `zbus::Connection`. If the
+    // dispatcher's `GetStatus` probe succeeds (which legacy daemons
+    // also implement) and we flip `daemon_ready_tx`, the hotkey
+    // listener releases its pre-ready buffer and starts dispatching
+    // toggle RPCs against the incompatible daemon. Run the
+    // handshake first; on mismatch keep the gate `false` AND
+    // broadcast a workspace shutdown so no further RPC paths fire.
+    match crate::version::verify_protocol(&recorder).await {
+        crate::version::HandshakeOutcome::Match | crate::version::HandshakeOutcome::DaemonDown => {}
+        crate::version::HandshakeOutcome::Mismatch(err) => {
+            warn!(
+                error = %err,
+                "dispatcher: protocol mismatch — broadcasting shutdown, leaving daemon-ready gate FALSE",
+            );
+            crate::version::notify_mismatch_once(&err).await;
+            if shutdown_broadcast.send(()).is_err() {
+                debug!(
+                    "dispatcher: shutdown broadcast had no receivers; siblings already exited",
+                );
+            }
+            return Ok(());
+        }
+    }
 
     // Daemon-readiness probe (A4). A successful `GetStatus`
     // round-trip proves the daemon owns the well-known bus name

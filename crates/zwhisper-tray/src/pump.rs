@@ -51,9 +51,19 @@ use crate::state::{
 ///
 /// On bus failures the pump backs off and reconnects forever.
 /// `shutdown` is the only sentinel that ends the loop.
+///
+/// `shutdown_broadcast` is the *sender* side of the same watch
+/// channel `shutdown` reads from. The pump uses it on the M8
+/// `ConnectionExit::ProtocolMismatch` path to broadcast a
+/// workspace-wide shutdown — otherwise the sibling dispatcher and
+/// hotkey listener tasks keep running with their own connections,
+/// flip `daemon_ready_tx` on a successful `GetStatus`, and end up
+/// dispatching menu / hotkey RPCs against an incompatible daemon.
+/// Confirmed by post-M8 review (see `docs/M8-verification.md`).
 pub async fn run_pump(
     state_tx: watch::Sender<TrayState>,
     sink_tx: mpsc::Sender<TranscriptJob>,
+    shutdown_broadcast: watch::Sender<()>,
     mut shutdown: watch::Receiver<()>,
 ) -> Result<()> {
     let mut backoff_idx: usize = 0;
@@ -86,21 +96,26 @@ pub async fn run_pump(
                     .min(BACKOFF_SCHEDULE_MS.len() - 1);
             }
             ConnectionExit::ProtocolMismatch(err) => {
-                // M8 DoD #13. The tray cannot recover from a
-                // mismatched daemon by reconnecting — only a
-                // reinstall will fix it. We mark the icon offline,
-                // wait for the shutdown signal, and exit cleanly so
-                // the user sees the (already-emitted) notification
-                // and a permanently-offline indicator instead of an
-                // infinite reconnect loop.
+                // M8 DoD #13 + post-M8 follow-up. The tray cannot
+                // recover from a mismatched daemon by reconnecting —
+                // only a reinstall will fix it. We mark the icon
+                // offline, **broadcast** workspace shutdown so the
+                // sibling dispatcher / hotkey / supervisor tasks
+                // also stop (each owns its own zbus connection and
+                // would otherwise keep dispatching RPCs against the
+                // incompatible daemon), then exit cleanly.
                 warn!(
                     error = %err,
-                    "tray pump halted — protocol mismatch detected",
+                    "tray pump halted — protocol mismatch detected; broadcasting shutdown",
                 );
                 state_tx.send_modify(|s| {
                     s.icon = crate::state::IconState::DaemonOffline;
                 });
-                let _ = shutdown.changed().await;
+                if shutdown_broadcast.send(()).is_err() {
+                    debug!(
+                        "shutdown broadcast had no receivers; siblings already exited",
+                    );
+                }
                 return Ok(());
             }
         }
@@ -166,7 +181,7 @@ async fn run_inner(
     match crate::version::verify_protocol(&recorder).await {
         crate::version::HandshakeOutcome::Match | crate::version::HandshakeOutcome::DaemonDown => {}
         crate::version::HandshakeOutcome::Mismatch(err) => {
-            crate::version::notify_mismatch_once(&err);
+            crate::version::notify_mismatch_once(&err).await;
             return ConnectionExit::ProtocolMismatch(err);
         }
     }

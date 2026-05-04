@@ -256,6 +256,11 @@ async fn main() -> Result<()> {
     // Activated press.
     let cmd_consumer = if let Some(conn) = dispatcher_conn {
         let dispatcher_daemon_ready_tx = daemon_ready_tx.clone();
+        // M8 follow-up: dispatcher needs to broadcast workspace
+        // shutdown when its own protocol-version handshake fails,
+        // because it owns a separate `zbus::Connection` from the
+        // pump and the hotkey listener.
+        let dispatcher_shutdown_broadcast = shutdown_tx.clone();
         tokio::spawn(async move {
             if let Err(err) = run_dispatcher(
                 conn,
@@ -263,6 +268,7 @@ async fn main() -> Result<()> {
                 dispatcher_state_tx,
                 dispatcher_state_rx,
                 dispatcher_daemon_ready_tx,
+                dispatcher_shutdown_broadcast,
                 shutdown_rx_dispatcher,
             )
             .await
@@ -298,8 +304,19 @@ async fn main() -> Result<()> {
     // produces sink jobs on `sink_tx` whenever a `TranscriptComplete`
     // signal arrives (P5).
     let pump_sink_tx = sink_tx.clone();
+    // M8 follow-up: pump needs the shutdown broadcaster so a
+    // protocol-version mismatch tears down the whole tray (not
+    // just the pump's own loop). See `pump::run_pump` rustdoc.
+    let pump_shutdown_broadcast = shutdown_tx.clone();
     let pump_join = tokio::spawn(async move {
-        if let Err(e) = run_pump(state_tx, pump_sink_tx, shutdown_rx_pump).await {
+        if let Err(e) = run_pump(
+            state_tx,
+            pump_sink_tx,
+            pump_shutdown_broadcast,
+            shutdown_rx_pump,
+        )
+        .await
+        {
             error!(error = %e, "pump task ended with error");
         }
     });
