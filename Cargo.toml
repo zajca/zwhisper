@@ -93,7 +93,7 @@ fltk = { version = "1.5", features = ["fltk-bundled", "use-wayland"] }
 # `crates/zwhisper-settings/checksums.toml` manifest).
 sha2 = "0.10"
 
-xdg = "2.5"
+xdg = "3.0"
 async-channel = "2"
 
 # Testing helpers
