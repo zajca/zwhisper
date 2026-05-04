@@ -89,7 +89,7 @@ fltk = { version = "1.5", features = ["fltk-bundled", "use-wayland"] }
 # SHA-256 streaming hashes (M7 model downloader integrity check —
 # verifies ggml weights against the compile-time embedded
 # `crates/zwhisper-settings/checksums.toml` manifest).
-sha2 = "0.10"
+sha2 = "0.11"
 
 xdg = "2.5"
 async-channel = "2"
