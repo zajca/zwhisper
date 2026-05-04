@@ -1,0 +1,34 @@
+schema_version = 1
+name = "cloud-meeting"
+description = "Mic + system sink monitor mono mix, auto-transcribed via Deepgram batch REST with word-level diarization. Requires ZWHISPER_DEEPGRAM_API_KEY env or ~/.config/zwhisper/secrets.toml [deepgram] api_key (mode 0600)."
+
+[sources]
+mic = "default"
+system_output = "default"
+mode = "mono_mix"
+
+[recording]
+codec = "flac"
+sample_rate = 16000
+max_duration_minutes = 180
+
+[transcription]
+backend = "deepgram"
+model = "nova-3"
+language = "auto"
+auto = true
+
+[transcription.deepgram]
+model = "nova-3"
+diarize = true
+language_detection = false
+timeout_s = 600
+max_retries = 4
+retry_total_budget_s = 90
+
+[[output]]
+type = "file"
+path = "~/Recordings/zwhisper/{profile}/{timestamp}.flac"
+
+[hotkey]
+toggle = ""

@@ -1,0 +1,40 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo local config
+.cargo/config.local.toml
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# Logs / runtime
+logs/
+*.log
+
+# OS / temp
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Local env / secrets
+.env
+.env.local
+.env.*.local
+
+# Recordings (project produces audio + transcripts at runtime)
+/recordings/
+
+# Coverage reports
+*.profraw
+/coverage/
+/tarpaulin-report.html
+
+# Local tooling caches (Claude Code, claude-mem, etc.)
+/.cache/
+/.claude/

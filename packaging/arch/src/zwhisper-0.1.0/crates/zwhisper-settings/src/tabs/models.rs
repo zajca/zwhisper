@@ -24,7 +24,7 @@ use fltk::misc::Progress;
 use fltk::prelude::*;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::app::UiMessage;
 use crate::checksums::{ChecksumManifest, Entry};
@@ -76,7 +76,6 @@ pub(crate) enum ModelsMsg {
 #[derive(Clone, Debug)]
 pub(crate) struct ModelRow {
     /// Static label: model name + size in MB.
-    #[allow(dead_code, reason = "kept alive for the FLTK widget tree")]
     pub(crate) name_label: Frame,
     /// Mutable status text: "installed", "downloading", "failed: …".
     pub(crate) status_label: Frame,
@@ -92,7 +91,6 @@ pub(crate) struct ModelsTab {
     #[allow(dead_code, reason = "kept alive for the FLTK widget tree")]
     group: Group,
     /// Top-of-tab banner showing the resolved base URL.
-    #[allow(dead_code, reason = "kept alive for the FLTK widget tree")]
     pub(crate) base_url_label: Frame,
     /// Per-model widget handles, keyed by manifest model name
     /// (e.g. "ggml-tiny"). Wrapped in `Arc<Mutex<...>>` so the
@@ -102,10 +100,6 @@ pub(crate) struct ModelsTab {
     /// Per-row cancellation tokens. A `Cancel` button click triggers
     /// `cancel_token.cancel()` for the running download. Kept on the
     /// tab so the cancellation outlives the closure that started it.
-    #[allow(
-        dead_code,
-        reason = "wired up by per-row Cancel callbacks; field outlives them"
-    )]
     cancel_tokens: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
@@ -573,7 +567,7 @@ pub(crate) fn apply_msg(rows: &Arc<Mutex<HashMap<String, ModelRow>>>, msg: &Mode
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

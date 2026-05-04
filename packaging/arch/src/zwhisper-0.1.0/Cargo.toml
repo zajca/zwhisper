@@ -1,0 +1,177 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Martin Zajic <martin.zajic@keboola.com>"]
+license = "MIT"
+repository = "https://github.com/zajca/zwhisper"
+homepage = "https://github.com/zajca/zwhisper"
+readme = "README.md"
+
+[workspace.dependencies]
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+
+# Errors
+thiserror = "2"
+color-eyre = "0.6"
+
+# Time
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# Audio (M0)
+gstreamer = "0.23"
+tokio = { version = "1", features = ["signal", "rt", "macros", "time", "sync", "process", "io-util", "fs"] }
+uuid = { version = "1", features = ["v4"] }
+
+# Paths (XDG)
+dirs = "5"
+
+# Async traits + serde + tool discovery (M1)
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+which = "6"
+libc = "0.2"
+
+# Profiles (M2)
+toml_edit = { version = "0.22", features = ["serde"] }
+include_dir = "0.7"
+shellexpand = "3"
+
+# IPC / D-Bus (M3)
+zbus = { version = "5.15", default-features = false, features = ["tokio"] }
+zvariant = "5.7"
+futures-util = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+
+# Cloud transcription HTTP (M5)
+# `default-features = false` keeps reqwest out of `native-tls` / OpenSSL
+# linkage; `rustls-tls` is pure-Rust and matches `zwhisper` portability.
+# `stream` enables `Body::wrap_stream` for FLAC upload without buffering
+# the full file in RAM (M5-plan DoD #17).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+tokio-util = { version = "0.7", features = ["io"] }
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# Tray (M4)
+ksni = "0.3"
+# Hotkey toggle (M6) — global hotkey via XDG GlobalShortcuts portal.
+# `default-features = true` keeps the tokio executor (matches
+# `zbus.features = ["tokio"]`); MSRV 1.92 is satisfied (workspace
+# `rust-version = "1.85"` is the minimum, toolchain is stable >=1.92).
+ashpd = { version = "0.13", default-features = true, features = ["global_shortcuts"] }
+# Pure deserializer for `hotkey.toml` (M6) — `toml_edit` is overkill
+# for read-only config and pulls extra surface area.
+toml = "0.8"
+# `z-with-tokio` swaps notify-rust's default async-io zbus backend for
+# tokio so the tray's `wait_for_action_async` lives on our runtime
+# rather than spawning a separate executor (M4-plan DoD #5 + #23).
+notify-rust = { version = "4.11", default-features = false, features = ["z-with-tokio"] }
+arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
+
+# Settings GUI (M7) — `fltk-bundled` builds FLTK as a static lib at
+# compile time, so consumers do not need a system FLTK install. Build
+# requires cmake >= 3.11, gcc >= 11, curl, and tar (documented in
+# `crates/zwhisper-settings/README.md`). The `use-wayland` feature
+# selects the Wayland backend when `WAYLAND_DISPLAY` is set, falling
+# back to X11 otherwise.
+fltk = { version = "1.5", features = ["fltk-bundled", "use-wayland"] }
+# SHA-256 streaming hashes (M7 model downloader integrity check —
+# verifies ggml weights against the compile-time embedded
+# `crates/zwhisper-settings/checksums.toml` manifest).
+sha2 = "0.10"
+
+xdg = "2.5"
+async-channel = "2"
+
+# Testing helpers
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+# M5 cloud-backend integration tests use wiremock to stub Deepgram REST
+# without hitting the real API or burning credit.
+wiremock = "0.6"
+tracing-test = "0.2"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+# Baseline
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Things we never want
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+dbg_macro = "warn"
+print_stdout = "allow"   # CLI uses println, fine
+print_stderr = "allow"
+
+# Pedantic items that are too noisy in practice
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+return_self_not_must_use = "allow"
+# Pedantic lints disabled either because they fire on the existing
+# (working, reviewed) M0–M7 codebase or because clippy 1.95 sharpened
+# their false-positive rate. Each entry is intentional, not laziness.
+doc_markdown = "allow"             # `MethodCallNotImplemented` etc. in prose
+many_single_char_names = "allow"   # FLTK callbacks naturally use `s`/`b`/`w`
+similar_names = "allow"            # `started_at` vs `starting_at` style pairs
+map_unwrap_or = "allow"            # the M5 retry budget pattern reads cleaner with .map().unwrap_or()
+cast_sign_loss = "allow"           # u8 / u32 widening in audio/duration math
+cast_precision_loss = "allow"      # u64 → f64 in duration formatters
+cast_possible_truncation = "allow" # u64 → u32 frame indices
+too_many_lines = "allow"           # async event-loop bodies span >100 lines deliberately
+uninlined_format_args = "allow"    # mixed style across older crates; format_args! in macros
+unchecked_duration_subtraction = "allow" # `Instant::now() - started_at` in already-monotonic paths
+redundant_closure_for_method_calls = "allow" # `.map(|e| e.to_string())` reads better than `.map(ToString::to_string)`
+items_after_statements = "allow"   # const ITEM blocks after the doc-comment they belong to
+unused_async = "allow"             # async-cargo helpers conform to a trait or zbus signature
+manual_checked_division = "allow"  # the daemon's duration math has explicit fallbacks
+format_collect = "allow"           # one-shot CLI status string assembly
+naive_bytecount = "allow"          # not a hot path
+needless_pass_by_value = "allow"   # M5 retry-budget structs by-value for clarity
+ptr_arg = "allow"                  # `&PathBuf` accepted in M2 profile helpers
+format_in_format_args = "allow"    # M5 deepgram error rendering nests Display
+format_push_string = "allow"       # M2 profile diff renderer appends to String
+unnested_or_patterns = "allow"     # `Err(skip @ (FixtureSkip::A | FixtureSkip::B))` reads cleaner
+doc_overindented_list_items = "allow"
+trailing_empty_array = "allow"
+used_underscore_binding = "allow"  # zbus signal_emitter args bound `_emitter` deliberately
+manual_let_else = "allow"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+debug = false
+panic = "abort"
+
+[profile.release-debug]
+inherits = "release"
+debug = true
+strip = "none"

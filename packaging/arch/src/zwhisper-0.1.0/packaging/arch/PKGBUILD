@@ -1,0 +1,168 @@
+# Maintainer: Martin Zajic <martin.zajic@keboola.com>
+# shellcheck disable=SC2034,SC2154
+#
+# zwhisper — Linux desktop voice recorder + whisper.cpp / Deepgram
+# transcription frontend. Ships four binaries:
+#
+# - zwhisperd          — D-Bus auto-activated recorder daemon
+# - zwhisper           — CLI client (`zwhisper-cli` crate)
+# - zwhisper-tray      — StatusNotifierItem indicator + lifecycle pump
+# - zwhisper-settings  — on-demand FLTK settings GUI (M7+)
+#
+# Build context: workspace uses the `fltk-bundled` cargo feature
+# which compiles FLTK 1.5 from source via cmake at build time. The
+# resulting GUI binary statically links FLTK, so the `depends`
+# array below only declares the system libraries that FLTK itself
+# dlopen()s at run time (X11 / Wayland display, fontconfig, …).
+# See docs/M8-plan.md § Architectural decisions for the rationale.
+
+pkgname=zwhisper
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Voice recorder daemon, CLI, tray, and on-demand settings GUI for Linux desktops"
+arch=('x86_64')
+url="https://github.com/zajca/zwhisper"
+license=('MIT')
+
+# Runtime dependencies. Audio path goes PipeWire -> GStreamer ->
+# FLAC; the daemon claims `cz.zajca.Zwhisper1` on the session bus.
+# The hotkey toggle (M6) requires xdg-desktop-portal's
+# GlobalShortcuts implementation.
+depends=(
+    'gstreamer'
+    'gst-plugins-base'
+    'gst-plugins-good'
+    'gst-plugin-pipewire'
+    'pipewire'
+    'wireplumber'
+    'dbus'
+    'xdg-desktop-portal'
+    'libnotify'
+    'gcc-libs'
+    'glibc'
+)
+
+# fltk-bundled chain (M7-plan F1 / M8-plan DoD #2). Each entry maps
+# to a cmake/find_package check inside FLTK's own build.
+makedepends=(
+    'rust>=1.85'
+    'cargo'
+    'cmake'
+    'gcc'
+    'curl'
+    'tar'
+    'pkgconf'
+    'autoconf'
+    'libxft'
+    'libxcursor'
+    'libxinerama'
+    'libxfixes'
+    'pango'
+    'fontconfig'
+    'freetype2'
+    'libxkbcommon'
+    'wayland'
+)
+
+# Hint to namcap that whisper.cpp is an optional companion: the
+# CLI will detect it via `which whisper-cli` at run time, so it is
+# not a hard dependency. Cloud-only users skip it entirely.
+optdepends=(
+    'whisper.cpp: local Whisper inference for the on-device backend'
+    'libsecret: Secret Service support for cloud API keys (deferred post-M8)'
+)
+
+# Source: tag tarball from the GitHub release.  `b2sums` are
+# generated at release tag time via `updpkgsums` (see
+# docs/RELEASE.md). The `SKIP` placeholder here is a deliberate
+# starter value — CI gates the real release on a populated b2sum.
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+b2sums=('SKIP')
+
+install="$pkgname.install"
+
+prepare() {
+    cd "$pkgname-$pkgver"
+
+    # `cargo fetch --locked` populates the cargo registry cache for
+    # every workspace crate against the committed `Cargo.lock`. The
+    # build step then runs with `--frozen` so any drift surfaces
+    # at build time rather than at run time.
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    # Reproducibility: drop debug info from the workspace release
+    # profile (already configured in Cargo.toml as `strip = "symbols"`,
+    # but RUSTFLAGS reinforces it for reproducible-builds tooling).
+    # No `-C target-cpu=native` — packaged binaries must run on any
+    # x86_64 chip, not just the build host.
+    export RUSTFLAGS="-C strip=symbols"
+
+    cargo build --frozen --release --workspace
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+
+    # Lib-only test pass: integration tests under tests/*.rs spawn
+    # a private dbus-daemon and (optionally) PipeWire, neither of
+    # which is reliably available inside an Arch chroot. The unit
+    # suite is the contract that gates the package build.
+    cargo test --frozen --release --workspace --lib
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    # 1. Binaries — `install -Dm755` creates the destination
+    #    directory tree on demand.
+    install -Dm755 "target/release/zwhisperd"        "$pkgdir/usr/bin/zwhisperd"
+    install -Dm755 "target/release/zwhisper"         "$pkgdir/usr/bin/zwhisper"
+    install -Dm755 "target/release/zwhisper-tray"    "$pkgdir/usr/bin/zwhisper-tray"
+    install -Dm755 "target/release/zwhisper-settings" "$pkgdir/usr/bin/zwhisper-settings"
+
+    # 2. systemd user units. `Type=dbus` for the daemon means the
+    #    unit waits for `cz.zajca.Zwhisper1` on the session bus —
+    #    the D-Bus activation file below also references it so the
+    #    daemon spawns on first call from any client.
+    install -Dm644 "systemd/zwhisperd.service"       "$pkgdir/usr/lib/systemd/user/zwhisperd.service"
+    install -Dm644 "systemd/zwhisper-tray.service"   "$pkgdir/usr/lib/systemd/user/zwhisper-tray.service"
+
+    # 3. D-Bus session-bus auto-activation entry.
+    install -Dm644 "dbus/cz.zajca.Zwhisper1.service" "$pkgdir/usr/share/dbus-1/services/cz.zajca.Zwhisper1.service"
+
+    # 4. Desktop entries — both validated by `desktop-file-validate`
+    #    in CI (see crates/zwhisper-tray/tests/m8_desktop_file.rs
+    #    and crates/zwhisper-settings/tests/desktop_file.rs).
+    install -Dm644 "packaging/zwhisper.desktop"          "$pkgdir/usr/share/applications/zwhisper.desktop"
+    install -Dm644 "packaging/zwhisper-settings.desktop" "$pkgdir/usr/share/applications/zwhisper-settings.desktop"
+
+    # 5. Icon (scalable). hicolor is the XDG fallback theme that
+    #    every other theme inherits from, so a single SVG covers
+    #    every desktop environment.
+    install -Dm644 "assets/icons/zwhisper.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/zwhisper.svg"
+
+    # 6. Read-only configuration templates and the embedded ggml
+    #    checksum manifest. Users copy the `.example` files into
+    #    `~/.config/zwhisper/` and `chmod 600` the secrets one.
+    install -Dm644 "docs/secrets.toml.example" \
+        "$pkgdir/usr/share/zwhisper/secrets.toml.example"
+    install -Dm644 "crates/zwhisper-settings/models.toml.example" \
+        "$pkgdir/usr/share/zwhisper/models.toml.example"
+    install -Dm644 "crates/zwhisper-settings/checksums.toml" \
+        "$pkgdir/usr/share/zwhisper/checksums.toml"
+
+    # 7. Documentation + license.
+    install -Dm644 "README.md"     "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 "CHANGELOG.md"  "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
+    install -Dm644 "LICENSE"       "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=cz.zajca.Zwhisper1
+Exec=/usr/bin/zwhisperd
+SystemdService=zwhisperd.service

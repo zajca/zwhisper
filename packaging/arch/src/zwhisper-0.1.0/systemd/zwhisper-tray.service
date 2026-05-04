@@ -1,0 +1,23 @@
+[Unit]
+Description=zwhisper tray indicator
+Documentation=https://github.com/zajca/zwhisper
+# `After=` (not `Requisite=`) so the unit also starts on wlroots
+# setups that never activate `graphical-session.target`. The binary
+# itself probes `WAYLAND_DISPLAY` / `DISPLAY` at startup and exits
+# cleanly if neither is set (M4-plan stress-test fix M4).
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/zwhisper-tray
+Restart=on-failure
+RestartSec=2
+SyslogIdentifier=zwhisper-tray
+
+# No D-Bus auto-activation: the tray must be explicitly enabled by
+# the user (`systemctl --user enable zwhisper-tray`); CLI-only
+# systems should never see a tray spawn.
+
+[Install]
+WantedBy=graphical-session.target

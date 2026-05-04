@@ -1,0 +1,16 @@
+# M7 — sample `~/.config/zwhisper/models.toml`.
+#
+# Copy to `~/.config/zwhisper/models.toml` and edit as needed. If the
+# file is absent, zwhisper-settings uses the built-in HuggingFace
+# default (DoD #12). If the file is present but malformed, the
+# Models tab shows a red banner and refuses to download until the
+# file is fixed (no silent fallback).
+#
+# Constraints enforced at parse time:
+# - The URL must be HTTPS (security guard against plain-text MITM).
+# - The URL must contain the literal token `{model}` exactly once.
+# - No other `{...}` placeholders are allowed (template-injection
+#   guard).
+
+# Default value (used when this file is absent):
+base_url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model}.bin"

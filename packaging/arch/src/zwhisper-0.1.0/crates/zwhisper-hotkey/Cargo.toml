@@ -1,0 +1,75 @@
+[package]
+name = "zwhisper-hotkey"
+description = "zwhisper hotkey toggle support (M6)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+# M6: library crate only. The CLI subcommands (`zwhisper toggle`,
+# `zwhisper hotkey {…}`) and the tray's portal flow both depend on
+# this crate. No `[[bin]]` here — see `docs/M6-plan.md` § "Crate
+# dependency graph".
+[lib]
+
+[features]
+default = ["portal"]
+# `portal` toggles the runtime XDG GlobalShortcuts integration via
+# `ashpd`. The CLI builds with `--no-default-features` for the toggle
+# subcommand (no portal needed — it just calls `Recorder1.Toggle`),
+# while the tray pulls the full feature set.
+portal = ["dep:ashpd"]
+# `test-fakes` exposes `portal::FakePortal` to other crates (used by
+# the tray's listener tests in Group E). Implies `portal` because the
+# fake implements the `PortalAdapter` trait, which itself only exists
+# under `portal`.
+test-fakes = ["portal"]
+
+[dependencies]
+# Wire contract — `toggle.rs` calls `Recorder1Proxy::toggle()` so we
+# need the generated proxy types from `zwhisper-ipc`.
+zwhisper-ipc = { path = "../zwhisper-ipc" }
+zbus = { workspace = true }
+# `rt`+`macros` are required for the `#[tokio::test]` attribute used
+# by debouncer/cooldown tests. `fs` is for async reads of
+# `active-session.json`.
+tokio = { workspace = true }
+serde = { workspace = true }
+# `active-session.json` is JSON; `hotkey.toml` is TOML.
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+# `chrono` powers the typed `started_at: DateTime<Utc>` on
+# `ActiveSessionRef`, which is converted from the on-disk
+# `started_at_unix_ms` u64 so callers do not have to think
+# about epochs.
+chrono = { workspace = true }
+# `dirs` resolves `$XDG_STATE_HOME` for the active-session.json
+# lookup. Same crate the daemon's writer uses, so path
+# resolution stays in lock-step (`active_session.rs:81`).
+dirs = { workspace = true }
+# `BoxStream` for the `PortalAdapter::activated()` trait method that
+# yields hotkey activation events.
+futures-util = { workspace = true }
+# Optional — only when the `portal` feature is on.
+ashpd = { workspace = true, optional = true }
+
+[dev-dependencies]
+# `test-util` enables `tokio::time::pause()` for deterministic
+# debounce + cooldown tests.
+tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
+tempfile = { workspace = true }
+# `tracing-test` captures `tracing::warn!` lines so the corrupt-
+# config and corrupt-active-session tests can assert that the
+# silent-fallback path is observable in the journal (D2 + B2
+# corruption tests).
+tracing-test = { workspace = true }
+
+[lints]
+workspace = true

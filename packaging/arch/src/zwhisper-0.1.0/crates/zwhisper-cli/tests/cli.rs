@@ -1,0 +1,143 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use assert_cmd::Command;
+use predicates::prelude::*;
+
+fn bin() -> Command {
+    Command::cargo_bin("zwhisper").expect("binary should be built by cargo test")
+}
+
+#[test]
+fn prints_help() {
+    bin()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("zwhisper"))
+        .stdout(predicate::str::contains("record"))
+        .stdout(predicate::str::contains("transcribe"));
+}
+
+#[test]
+fn prints_version() {
+    bin()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+}
+
+/// Phase 4 (M3) replaces the M2 placeholder string with a daemon
+/// RPC. When no daemon is on the bus, the CLI prints the actionable
+/// "daemon not running" hint to stderr and exits 2 (per `DoD` #12 the
+/// "user-facing protocol error" code).
+#[test]
+fn status_when_daemon_down_prints_actionable_hint() {
+    let assert = bin().arg("status").assert().failure();
+    let code = assert.get_output().status.code().expect("exit code");
+    assert_eq!(code, 2, "expected exit 2 when daemon is down, got {code}");
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
+    assert!(
+        stderr.contains("daemon not running"),
+        "stderr missing 'daemon not running' hint:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("systemctl --user start zwhisperd")
+            || stderr.contains("cz.zajca.Zwhisper1.service"),
+        "stderr missing actionable systemctl/activation hint:\n{stderr}"
+    );
+}
+
+/// Phase 4 narrowed `record` to require `--profile`. The bare-flag
+/// invocation (`--output --duration ...`) still parses at the clap
+/// layer (so the regression-net tests stay green) but the runtime
+/// dispatcher returns exit 2 with a hint pointing at `--profile
+/// default`. The previous live-FLAC test moved into
+/// `tests/profile.rs::record_with_meeting_profile_runs_end_to_end`
+/// (which already skips cleanly when no daemon / `PipeWire`).
+#[test]
+fn record_without_profile_returns_exit_2() {
+    let assert = bin()
+        .args(["record", "--output", "/tmp/x.flac", "--duration", "1"])
+        .assert()
+        .failure();
+    let code = assert.get_output().status.code().expect("exit code");
+    assert_eq!(
+        code, 2,
+        "expected exit 2 for M3 narrow violation, got {code}"
+    );
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
+    assert!(
+        stderr.contains("--profile"),
+        "stderr missing --profile hint:\n{stderr}"
+    );
+}
+
+/// `transcribe` against a missing file must surface a typed error
+/// from the façade — not the old "not implemented" `bail!` and not a
+/// panic. We do not pin the exact variant here because the failure
+/// host-dependently splits across `BackendUnavailable` (no whisper-cli
+/// on PATH) vs `InputAudio` (audio missing) — both are acceptable
+/// proofs that Phase 4 wired the call all the way to the backend.
+#[test]
+fn transcribe_missing_input_returns_typed_error() {
+    let assert = bin()
+        .args(["transcribe", "/tmp/zwhisper-does-not-exist.flac"])
+        .assert()
+        .failure();
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
+    assert!(
+        !stderr.contains("not implemented"),
+        "Phase 4 should have removed the placeholder bail message; stderr was:\n{stderr}"
+    );
+    let acceptable = stderr.contains("failed to open audio file")
+        || stderr.contains("no whisper.cpp binary found")
+        || stderr.contains("model")
+        || stderr.contains("whisper.cpp");
+    assert!(
+        acceptable,
+        "expected a typed transcribe error in stderr; got:\n{stderr}"
+    );
+}
+
+/// Unknown backend ids must be rejected by the façade up-front,
+/// before any subprocess work — so this test is reliable on every
+/// host regardless of whether whisper-cli is installed.
+#[test]
+fn transcribe_unknown_backend_returns_backend_unknown_error() {
+    let assert = bin()
+        .args([
+            "transcribe",
+            "/tmp/zwhisper-does-not-exist.flac",
+            "--backend",
+            "foobar",
+            "--model",
+            "small",
+            "--language",
+            "en",
+        ])
+        .assert()
+        .failure();
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
+    assert!(
+        stderr.contains("unknown backend"),
+        "expected `unknown backend` in stderr; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("whisper-cpp"),
+        "expected supported set listing `whisper-cpp` in stderr; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn record_requires_output_argument() {
+    bin()
+        .args(["record"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--output"));
+}

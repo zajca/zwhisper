@@ -1,0 +1,20 @@
+# Allow-listed namcap findings for zwhisper.
+#
+# Format: one line per known WARNING. New findings break the
+# packaging-shell CI job until they are either fixed or added here.
+# Any ERROR-level finding is unconditionally a CI failure.
+#
+# Sourced from `namcap PKGBUILD` and `namcap zwhisper-*.pkg.tar.zst`.
+
+# zwhisper-settings.desktop deliberately uses Categories=Settings;AudioVideo;Audio;
+# (matches the application's role as a recording-app preferences
+# pane). desktop-file-validate emits a hint about "multiple main
+# categories" — we accept it because the packaging context
+# resolves the ambiguity (Settings menu *and* Multimedia menu).
+W: zwhisper-settings.desktop has multiple main categories
+
+# `whisper.cpp` is intentionally `optdepends`, not a hard `depends`.
+# Cloud-only users (Deepgram backend) never need it. namcap might
+# flag a "missing optional dependency" link if it cannot find
+# whisper-cli during package linting.
+I: optdepends 'whisper.cpp' is not in the local pacman database

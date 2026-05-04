@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  zwhisper tray icon: error / daemon-offline.
+  Placeholder shipped with the M4 milestone. Final artwork lands in M8
+  (packaging). 24x24 viewbox, X glyph.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path d="M5 5 L19 19 M19 5 L5 19"
+        fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round"/>
+</svg>
