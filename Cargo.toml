@@ -11,6 +11,12 @@ license = "MIT"
 repository = "https://github.com/zajca/zwhisper"
 homepage = "https://github.com/zajca/zwhisper"
 readme = "README.md"
+# zwhisper crates are not intended for crates.io. Marking them
+# `publish = false` keeps the workspace honest, lets cargo-deny
+# treat them as private (which makes `[bans] allow-wildcard-paths`
+# accept the workspace-internal `path = "..."` deps), and makes any
+# future `cargo publish` a deliberate, opt-in action.
+publish = false
 
 [workspace.dependencies]
 # CLI

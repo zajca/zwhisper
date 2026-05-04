@@ -8,6 +8,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+publish.workspace = true
 readme.workspace = true
 
 # M6: library crate only. The CLI subcommands (`zwhisper toggle`,
