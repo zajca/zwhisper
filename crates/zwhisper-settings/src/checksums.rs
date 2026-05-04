@@ -1,6 +1,6 @@
 //! M7 — Whisper.cpp model SHA256 manifest, embedded at build time.
 //!
-//! The single source of truth is [`crates/zwhisper-settings/checksums.toml`]
+//! The single source of truth is `crates/zwhisper-settings/checksums.toml`
 //! (`include_str!`'d here). Group D (M7-plan § D3) chose compile-time
 //! embedding over a runtime fetch so a manifest-server compromise cannot
 //! tamper with the trust anchor — adding a new model is a release event,

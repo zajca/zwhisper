@@ -19,7 +19,7 @@
 //!
 //! The plan's `MultipleFound{paths}` state is intentionally NOT
 //! rendered: the production locator returns the first hit per
-//! [`zwhisper_core::transcribe::discovery::locate_with`] precedence
+//! `zwhisper_core::transcribe::discovery::locate_with` precedence
 //! order, so the "multiple installations" signal is unobservable
 //! without a second locator pass. Rendering only `Found` /
 //! `NotFound` keeps the UI honest about what we can actually

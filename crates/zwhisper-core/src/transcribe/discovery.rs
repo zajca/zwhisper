@@ -1,10 +1,10 @@
 //! `whisper-cli` binary discovery — implements the 5-step lookup
 //! from IDEA.md § 4 (steps 1–4 are runtime, step 5 is M7 settings UI).
 //!
-//! The lookup is wrapped behind a [`Locator`] trait so unit tests
+//! The lookup is wrapped behind a `Locator` trait so unit tests
 //! exercise every branch without mutating process-global env vars
 //! or relying on the host's `$PATH`. Production wires up
-//! [`RealLocator`].
+//! `RealLocator`.
 
 // The discovery surface is consumed by the runner that lands in M1
 // phase 3. Until then nothing calls `locate_whisper_cli` from main.rs
@@ -150,7 +150,7 @@ pub(crate) fn locate_whisper_cli() -> Result<PathBuf, TranscribeError> {
 }
 
 /// M7 (DoD #18): public thin wrapper around the crate-private
-/// `locate_whisper_cli`. The [`Locator`] trait stays internal so
+/// `locate_whisper_cli`. The `Locator` trait stays internal so
 /// `zwhisper-settings` reuses the daemon's exact 5-step lookup without
 /// taking on the test-injection surface as a public contract.
 pub fn detect_whisper_cli() -> Result<PathBuf, TranscribeError> {

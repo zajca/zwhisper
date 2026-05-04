@@ -4,9 +4,9 @@
 //! it to a path under `$XDG_DATA_HOME/zwhisper/models/ggml-<name>.bin`
 //! (or the platform equivalent via `dirs::data_local_dir()`).
 //!
-//! The resolver is wrapped behind a [`ModelDirProvider`] trait so
+//! The resolver is wrapped behind a `ModelDirProvider` trait so
 //! tests inject an isolated tempdir without touching `$HOME` or
-//! `$XDG_DATA_HOME`. Production wires up [`RealModelDirProvider`].
+//! `$XDG_DATA_HOME`. Production wires up `RealModelDirProvider`.
 
 // Surface is consumed by the runner that lands in M1 phase 3.
 // Until then nothing calls `resolve_model` from main.rs — the unit
@@ -26,7 +26,7 @@ pub(crate) trait ModelDirProvider {
     fn data_local_dir(&self) -> Option<PathBuf>;
 }
 
-/// Production [`ModelDirProvider`] backed by `dirs::data_local_dir`.
+/// Production `ModelDirProvider` backed by `dirs::data_local_dir`.
 #[derive(Debug, Default)]
 pub(crate) struct RealModelDirProvider;
 
@@ -108,7 +108,7 @@ pub(crate) fn resolve_with<P: ModelDirProvider>(
     Ok(expected)
 }
 
-/// Production entry point — wires up [`RealModelDirProvider`].
+/// Production entry point — wires up `RealModelDirProvider`.
 ///
 /// M7 (DoD #18): promoted from `pub(crate)` to `pub` so
 /// `zwhisper-settings` can validate that a downloaded model lands at
@@ -121,7 +121,7 @@ pub fn resolve_model(name: &str) -> Result<PathBuf, TranscribeError> {
 /// `<data_local_dir>/zwhisper/models` directory `resolve_model` reads
 /// from. Wraps the crate-private `RealModelDirProvider` so external
 /// crates (notably `zwhisper-settings`) can compute download
-/// destinations without exposing the [`ModelDirProvider`] trait.
+/// destinations without exposing the `ModelDirProvider` trait.
 ///
 /// Returns the same `InvalidModelName` error variant the resolver
 /// itself surfaces when `dirs::data_local_dir()` is unavailable, with
@@ -146,7 +146,7 @@ mod tests {
 
     use super::*;
 
-    /// Test [`ModelDirProvider`] returning a fixed tempdir path.
+    /// Test `ModelDirProvider` returning a fixed tempdir path.
     struct MockModelDirProvider {
         dir: PathBuf,
     }

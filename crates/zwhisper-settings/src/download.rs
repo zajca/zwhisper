@@ -33,7 +33,7 @@
 //!
 //! All constants below are `const` per CLAUDE.md "no magic numbers".
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -108,6 +108,7 @@ const RETRY_AFTER_MAX_SECS: u64 = 10 * 60;
 /// Public state surfaced to the UI. Cloning is cheap enough that
 /// we send a fresh value on every progress chunk.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // `Idle` reserved for the pre-run UI snapshot path; M7 only emits the post-run states.
 pub(crate) enum DownloadState {
     /// Constructed but `run` has not been called yet. Default when
     /// no `.part` exists on disk.
@@ -135,6 +136,7 @@ pub(crate) enum DownloadState {
 /// affordance. We avoid leaking `reqwest::Error` to keep the UI
 /// independent of the HTTP client choice.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // `UnknownModel` is constructed by manifest validation in M7+; downloader path errors out earlier.
 pub(crate) enum FailReason {
     /// Manifest lookup returned `None`. Caller should disable the
     /// row's Download button (DoD #10).
@@ -176,6 +178,7 @@ struct PartMeta {
 /// drops it. State across attempts lives on disk in the `.part` +
 /// meta sidecar.
 #[derive(Debug)]
+#[allow(dead_code)] // `model_name` retained for diagnostics; UI layer reads the field via Debug.
 pub(crate) struct ModelDownloader {
     /// Bare model name as it appears in `checksums.toml` (e.g.
     /// `"tiny"`, `"large-v3"`).
@@ -264,6 +267,7 @@ impl ModelDownloader {
 
     /// Snapshot of the on-disk `.part` size. UI uses this to render
     /// a `[Resume]` label vs `[Download]` *before* `run` is called.
+    #[allow(dead_code)] // public API; the M7 UI does not yet read it but tests rely on the contract.
     pub(crate) fn resume_offset(&self) -> u64 {
         std::fs::metadata(&self.part_path)
             .map(|m| m.len())

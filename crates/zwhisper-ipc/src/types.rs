@@ -12,7 +12,7 @@ use zvariant::Type;
 /// Snapshot returned by `Recorder1.GetStatus`.
 ///
 /// Wire signature: `(sst)` — two strings followed by an unsigned 64-bit
-/// integer. `state` is a [`zwhisper_core::audio::state::RecorderState`]
+/// integer. `state` is a `zwhisper_core::audio::state::RecorderState`
 /// rendered through its `Display` impl (`idle | starting | recording |
 /// stopping | failed`). `duration_ms` is monotonic from the start of the
 /// current recording, or `0` when no recording is active.

@@ -71,7 +71,7 @@ pub fn list_entries() -> Result<Vec<ProfileEntry>, ProfileError> {
 /// overwrites — the M2 review's TOCTOU-safe pattern.
 ///
 /// Returns the resolved destination path so callers can include it
-/// in a "cloned <src> -> <path>" message without re-deriving it.
+/// in a "cloned `<src>` -> `<path>`" message without re-deriving it.
 pub fn clone_to_user(src: &str, dst: &str) -> Result<PathBuf, ProfileError> {
     paths::validate_name(dst)?;
     let target = paths::user_override_path(dst)?;

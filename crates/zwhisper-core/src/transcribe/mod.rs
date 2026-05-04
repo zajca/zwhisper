@@ -127,7 +127,7 @@ pub struct TranscriptArtifacts {
 }
 
 /// Backend-side trait. M1 ships a single implementation
-/// ([`whisper_cpp::WhisperCppLocal`]); M5 adds cloud backends.
+/// (`whisper_cpp::WhisperCppLocal`); M5 adds cloud backends.
 #[async_trait::async_trait]
 #[allow(dead_code)] // Phase 4 calls this through the public façade.
 pub trait Transcriber: Send + Sync {

@@ -160,10 +160,7 @@ impl Drop for Fixture {
 }
 
 fn locate_session_conf() -> Option<PathBuf> {
-    for p in [
-        "/usr/share/dbus-1/session.conf",
-        "/etc/dbus-1/session.conf",
-    ] {
+    for p in ["/usr/share/dbus-1/session.conf", "/etc/dbus-1/session.conf"] {
         let pb = PathBuf::from(p);
         if pb.exists() {
             return Some(pb);
@@ -265,10 +262,7 @@ async fn try_fixture(test_name: &str, advertised_version: Option<String>) -> Opt
 /// broadcast within the test deadline. The dispatcher returns
 /// cleanly on the mismatch path; on the match path we send our own
 /// shutdown to terminate it after the handshake completes.
-async fn drive_dispatcher_once(
-    address: &str,
-    expect_match: bool,
-) -> (bool, bool) {
+async fn drive_dispatcher_once(address: &str, expect_match: bool) -> (bool, bool) {
     let conn = zbus::connection::Builder::address(address)
         .expect("address parse")
         .build()

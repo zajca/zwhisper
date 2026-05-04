@@ -43,7 +43,7 @@ pub struct SinkContext<'a> {
     pub backend: &'a str,
     /// True when the clipboard sink ran AHEAD of this sink and
     /// returned an error. The notification sink reads this to mutate
-    /// its body ("Clipboard unavailable, transcript at <path>").
+    /// its body ("Clipboard unavailable, transcript at `<path>`").
     pub clipboard_failed: bool,
     /// True when the dispatcher decided the transcript is too big
     /// for the clipboard (`DoD` #19); the notification sink also reads

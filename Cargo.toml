@@ -142,11 +142,11 @@ cast_precision_loss = "allow"      # u64 → f64 in duration formatters
 cast_possible_truncation = "allow" # u64 → u32 frame indices
 too_many_lines = "allow"           # async event-loop bodies span >100 lines deliberately
 uninlined_format_args = "allow"    # mixed style across older crates; format_args! in macros
-unchecked_duration_subtraction = "allow" # `Instant::now() - started_at` in already-monotonic paths
+unchecked_time_subtraction = "allow" # `Instant::now() - started_at` in already-monotonic paths
 redundant_closure_for_method_calls = "allow" # `.map(|e| e.to_string())` reads better than `.map(ToString::to_string)`
 items_after_statements = "allow"   # const ITEM blocks after the doc-comment they belong to
 unused_async = "allow"             # async-cargo helpers conform to a trait or zbus signature
-manual_checked_division = "allow"  # the daemon's duration math has explicit fallbacks
+manual_checked_ops = "allow"  # the daemon's duration math has explicit fallbacks
 format_collect = "allow"           # one-shot CLI status string assembly
 naive_bytecount = "allow"          # not a hot path
 needless_pass_by_value = "allow"   # M5 retry-budget structs by-value for clarity
@@ -158,6 +158,8 @@ doc_overindented_list_items = "allow"
 trailing_empty_array = "allow"
 used_underscore_binding = "allow"  # zbus signal_emitter args bound `_emitter` deliberately
 manual_let_else = "allow"
+unnecessary_trailing_comma = "allow"      # rustfmt re-introduces these on multi-arg macro calls
+unnecessary_debug_formatting = "allow"    # `{:?}` on PathBuf is intentional in error formatting
 
 [profile.dev]
 opt-level = 0

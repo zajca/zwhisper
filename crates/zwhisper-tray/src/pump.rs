@@ -112,9 +112,7 @@ pub async fn run_pump(
                     s.icon = crate::state::IconState::DaemonOffline;
                 });
                 if shutdown_broadcast.send(()).is_err() {
-                    debug!(
-                        "shutdown broadcast had no receivers; siblings already exited",
-                    );
+                    debug!("shutdown broadcast had no receivers; siblings already exited",);
                 }
                 return Ok(());
             }

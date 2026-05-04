@@ -80,9 +80,7 @@ pub async fn run_dispatcher(
             );
             crate::version::notify_mismatch_once(&err).await;
             if shutdown_broadcast.send(()).is_err() {
-                debug!(
-                    "dispatcher: shutdown broadcast had no receivers; siblings already exited",
-                );
+                debug!("dispatcher: shutdown broadcast had no receivers; siblings already exited",);
             }
             return Ok(());
         }

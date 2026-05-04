@@ -2,6 +2,8 @@
 //! via the system `desktop-file-validate` tool. Skipped when the
 //! tool is absent so CI sandboxes without it do not fail.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::process::Command;
 
 /// Resolve the workspace root from `CARGO_MANIFEST_DIR`. We ship

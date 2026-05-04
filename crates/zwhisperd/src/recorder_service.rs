@@ -325,6 +325,7 @@ impl RecorderInterface {
     /// Returning a `&'static str` keeps zbus from allocating per
     /// call and avoids any state-bearing locks on the property path.
     #[zbus(property)]
+    #[allow(clippy::unused_self, reason = "zbus property handlers must take &self")]
     fn protocol_version(&self) -> &'static str {
         zwhisper_ipc::PROTOCOL_VERSION
     }

@@ -1,0 +1,38 @@
+name: Install build deps
+description: |
+  Installs the system libraries the zwhisper workspace needs to compile
+  on Ubuntu runners — glib + gstreamer pkg-config files for the audio
+  pipeline, dbus headers for zbus + the M8 handshake test, and the X11
+  / Wayland / Pango stack that `fltk-bundled` (zwhisper-settings) links
+  against. Kept in one place so every CI job stays in sync.
+
+runs:
+  using: composite
+  steps:
+    - name: Install apt packages
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          pkg-config \
+          cmake \
+          libglib2.0-dev \
+          libgstreamer1.0-dev \
+          libgstreamer-plugins-base1.0-dev \
+          libdbus-1-dev \
+          dbus \
+          libfontconfig1-dev \
+          libfreetype6-dev \
+          libx11-dev \
+          libxext-dev \
+          libxft-dev \
+          libxinerama-dev \
+          libxcursor-dev \
+          libxrender-dev \
+          libxfixes-dev \
+          libxkbcommon-dev \
+          libpango1.0-dev \
+          libgl1-mesa-dev \
+          libglu1-mesa-dev \
+          libwayland-dev \
+          wayland-protocols
