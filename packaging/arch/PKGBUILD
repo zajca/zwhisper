@@ -77,7 +77,7 @@ optdepends=(
 # docs/RELEASE.md). The `SKIP` placeholder here is a deliberate
 # starter value — CI gates the real release on a populated b2sum.
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-b2sums=('SKIP')
+b2sums=('a2455553ce07c9916bbe58a27b5cf8cf585e005dba8ea0753a8db221bde5ec325f09dc60c0bdac5e68384d7f77fa218c80afc88190401f4026229787b9242abe')
 
 install="$pkgname.install"
 
