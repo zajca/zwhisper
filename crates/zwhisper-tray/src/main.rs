@@ -282,9 +282,11 @@ async fn main() -> Result<()> {
 
     // Build the tray and register it on the session bus. `spawn`
     // returns once the tray is registered with the desktop's
-    // `StatusNotifierWatcher`; on systems without a watcher (e.g.
-    // headless CI), it returns `Error::WontShow` and we fall back
-    // to logging the failure instead of crashing.
+    // `StatusNotifierWatcher`; if registration fails we route the
+    // raw `ksni::Error` through `tray_diag::diagnose` to print an
+    // actionable summary plus next-step bullets before exiting.
+    // The mapping covers the three current failure modes (no D-Bus,
+    // no watcher, no host) — see `tray_diag` rustdoc for rationale.
     let tray = ZwhisperTray::new(cmd_tx.clone(), quit_tx.clone(), hotkey_ctl_tx.clone());
     let handle = match tray.spawn().await {
         Ok(h) => {
@@ -292,11 +294,20 @@ async fn main() -> Result<()> {
             h
         }
         Err(err) => {
+            let diag = zwhisper_tray::tray_diag::diagnose(&err);
             error!(
+                category = ?diag.category,
                 error = %err,
-                "failed to register ksni tray; will exit",
+                "{}",
+                diag.summary,
             );
-            return Err(color_eyre::eyre::eyre!("ksni spawn failed: {err}"));
+            for step in diag.next_steps {
+                error!("  - {}", step);
+            }
+            return Err(color_eyre::eyre::eyre!(
+                "tray registration failed: {} ({err})",
+                diag.summary,
+            ));
         }
     };
 

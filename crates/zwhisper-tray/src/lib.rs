@@ -17,4 +17,5 @@ pub mod sink;
 pub mod state;
 pub mod supervisor;
 pub mod tray;
+pub mod tray_diag;
 pub(crate) mod version;
