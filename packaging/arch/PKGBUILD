@@ -24,6 +24,14 @@ arch=('x86_64')
 url="https://github.com/zajca/zwhisper"
 license=('MIT')
 
+# Disable makepkg-injected `-flto=auto` (default `lto` in /etc/makepkg.conf
+# OPTIONS). When the system LTO flag reaches ring's build.rs the C/asm
+# objects are emitted as GCC LTO bitcode which rust-lld cannot resolve at
+# the final Rust link step (undefined `ring_core_*` symbols). cargo handles
+# LTO itself via `[profile.release] lto = "thin"` in workspace Cargo.toml,
+# so opting out at the makepkg layer is the correct fix.
+options=('!lto')
+
 # Runtime dependencies. Audio path goes PipeWire -> GStreamer ->
 # FLAC; the daemon claims `cz.zajca.Zwhisper1` on the session bus.
 # The hotkey toggle (M6) requires xdg-desktop-portal's
