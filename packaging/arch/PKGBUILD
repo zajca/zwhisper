@@ -9,12 +9,9 @@
 # - zwhisper-tray      — StatusNotifierItem indicator + lifecycle pump
 # - zwhisper-settings  — on-demand FLTK settings GUI (M7+)
 #
-# Build context: workspace uses the `fltk-bundled` cargo feature
-# which compiles FLTK 1.5 from source via cmake at build time. The
-# resulting GUI binary statically links FLTK, so the `depends`
-# array below only declares the system libraries that FLTK itself
-# dlopen()s at run time (X11 / Wayland display, fontconfig, …).
-# See docs/M8-plan.md § Architectural decisions for the rationale.
+# Build context: workspace builds FLTK 1.5 from source via cmake at
+# build time with `CFLTK_WAYLAND_ONLY=1`. The resulting GUI binary
+# does not carry the retired X11 backend.
 
 pkgname=zwhisper
 pkgver=0.1.0
@@ -50,26 +47,21 @@ depends=(
     'glibc'
 )
 
-# fltk-bundled chain (M7-plan F1 / M8-plan DoD #2). Each entry maps
-# to a cmake/find_package check inside FLTK's own build.
+# FLTK source-build chain. Each entry maps to a cmake/find_package
+# check inside FLTK's own Wayland backend build.
 makedepends=(
     'rust>=1.88'
     'cargo'
     'cmake'
     'gcc'
-    'curl'
-    'tar'
     'pkgconf'
     'autoconf'
-    'libxft'
-    'libxcursor'
-    'libxinerama'
-    'libxfixes'
     'pango'
     'fontconfig'
     'freetype2'
     'libxkbcommon'
     'wayland'
+    'wayland-protocols'
 )
 
 # Hint to namcap that whisper.cpp is an optional companion: the
@@ -105,6 +97,7 @@ build() {
 
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
+    export CFLTK_WAYLAND_ONLY=1
     # Reproducibility: drop debug info from the workspace release
     # profile (already configured in Cargo.toml as `strip = "symbols"`,
     # but RUSTFLAGS reinforces it for reproducible-builds tooling).
@@ -120,6 +113,7 @@ check() {
 
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
+    export CFLTK_WAYLAND_ONLY=1
 
     # Lib-only test pass: integration tests under tests/*.rs spawn
     # a private dbus-daemon and (optionally) PipeWire, neither of

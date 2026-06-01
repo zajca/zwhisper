@@ -19,7 +19,8 @@ zwhisper-core = { path = "../zwhisper-core" }
 zwhisper-ipc = { path = "../zwhisper-ipc" }
 zwhisper-hotkey = { path = "../zwhisper-hotkey", features = ["portal"] }
 
-# GUI (workspace dep adds `fltk-bundled` + `use-wayland`).
+# GUI (workspace dep builds FLTK with `use-wayland`; `.cargo/config.toml`
+# forces Wayland-only mode through `CFLTK_WAYLAND_ONLY=1`).
 fltk = { workspace = true }
 
 # Async runtime — the model downloader and D-Bus calls run on a

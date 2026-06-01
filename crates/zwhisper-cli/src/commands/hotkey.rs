@@ -114,12 +114,11 @@ fn format_status_report(
     list_result: Option<&Result<Vec<BoundShortcut>, PortalError>>,
 ) -> (i32, String, String) {
     if !report.global_shortcuts_available {
-        // Same wording as architecture § 4 — the i3/X11 case is
-        // the daily driver reality, so we explicitly point at
-        // `zwhisper toggle` as the WM-bind path.
+        // Portal-less Wayland sessions still support compositor
+        // binds, so point directly at the universal toggle command.
         let stderr = format!(
             "hotkey: UNAVAILABLE (no GlobalShortcuts portal — {} detected; \
-             use `zwhisper toggle` and bind in your WM)",
+             use `zwhisper toggle` in a Wayland compositor bind)",
             backend_label_for_unavailable(&report.backend),
         );
         return (EXIT_PROTOCOL_ERROR, String::new(), stderr);
@@ -308,12 +307,11 @@ fn backend_label(backend: &BackendDetected) -> String {
 }
 
 /// Hint string for the `UNAVAILABLE` line when probing detected
-/// no portal. Matches the tone the architecture proposal § 4 set:
-/// the i3/X11 case is the daily-driver reality, so we point users
-/// at `zwhisper toggle`.
+/// no portal. We point users at `zwhisper toggle`, which stays
+/// usable from compositor keybinds without a portal.
 fn backend_label_for_unavailable(backend: &BackendDetected) -> String {
     match backend {
-        BackendDetected::None => "i3/X11".to_owned(),
+        BackendDetected::None => "Wayland compositor bind".to_owned(),
         other => format!("portal={}", backend_label(other)),
     }
 }
@@ -322,7 +320,7 @@ fn backend_label_for_unavailable(backend: &BackendDetected) -> String {
 /// without having a `ProbeReport` in scope.
 fn unavailable_line_no_backend() -> String {
     "hotkey: UNAVAILABLE (no GlobalShortcuts portal — \
-     use `zwhisper toggle` and bind in your WM)"
+     use `zwhisper toggle` in a Wayland compositor bind)"
         .to_owned()
 }
 
@@ -361,8 +359,9 @@ mod tests {
             backend: BackendDetected::None,
             global_shortcuts_available: false,
             portal_version: None,
-            reason: "no GlobalShortcuts portal — i3/X11 detected; bind via your WM config"
-                .to_owned(),
+            reason:
+                "no GlobalShortcuts portal — use a Wayland compositor bind for `zwhisper toggle`"
+                    .to_owned(),
         }
     }
 
@@ -392,7 +391,8 @@ mod tests {
         assert_eq!(code, EXIT_PROTOCOL_ERROR);
         assert!(stdout.is_empty());
         assert!(stderr.contains("UNAVAILABLE"), "got: {stderr}");
-        assert!(stderr.contains("i3/X11"), "got: {stderr}");
+        assert!(stderr.contains("Wayland compositor bind"), "got: {stderr}");
+        assert!(!stderr.contains("i3/X11"), "got: {stderr}");
         assert!(stderr.contains("zwhisper toggle"), "got: {stderr}");
     }
 
@@ -454,7 +454,8 @@ mod tests {
         assert!(stdout.contains("portal=none"), "got: {stdout}");
         assert!(stdout.contains("GlobalShortcuts=false"), "got: {stdout}",);
         assert!(stdout.contains("version=none"), "got: {stdout}");
-        assert!(stdout.contains("i3/X11"), "got: {stdout}");
+        assert!(stdout.contains("Wayland compositor bind"), "got: {stdout}");
+        assert!(!stdout.contains("i3/X11"), "got: {stdout}");
     }
 
     #[test]

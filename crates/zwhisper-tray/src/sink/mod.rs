@@ -2,7 +2,7 @@
 //!
 //! Per IDEA.md § 5, these sinks live in the tray process (not the
 //! daemon) because they need an active graphical session
-//! (`WAYLAND_DISPLAY` / `DISPLAY`, notification bus). Sinks fire ONLY
+//! (`WAYLAND_DISPLAY`, notification bus). Sinks fire ONLY
 //! on `TranscriptComplete` (`DoD` item 8). `RecordingComplete` is
 //! informational only — it bumps state, it does NOT trigger sinks.
 

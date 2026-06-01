@@ -1,0 +1,82 @@
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+pub fn check_cfltk_empty() {
+    if PathBuf::from("cfltk")
+        .read_dir()
+        .map(|mut i| i.next().is_none())
+        .unwrap_or(false)
+    {
+        panic!("cfltk submodule not initialized! Run: git submodule update --init --recursive");
+    }
+}
+
+pub fn has_program(prog: &str) -> bool {
+    match Command::new(prog).arg("--version").output() {
+        Ok(out) => !out.stdout.is_empty(),
+        _ => {
+            println!("cargo:warning=Could not find invokable {}!", prog);
+            false
+        }
+    }
+}
+
+pub fn use_static_msvcrt() -> bool {
+    cfg!(target_feature = "crt-static") || cfg!(feature = "static-msvcrt")
+}
+
+pub fn get_macos_deployment_target() -> String {
+    let env = env::var("MACOSX_DEPLOYMENT_TARGET");
+    if let Ok(env) = env {
+        env
+    } else {
+        "11.0.0".to_string()
+    }
+}
+
+pub fn link_macos_framework_if_exists(frameworks: &[(&str, i32)]) {
+    let target: i32 = get_macos_deployment_target()
+        .trim()
+        .split('.')
+        .next()
+        .expect("Couldn't get macos version!")
+        .parse()
+        .expect("Counldn't get macos version!");
+    let sdk = if let Ok(p) = env::var("SDKROOT") {
+        p
+    } else {
+        Command::new("xcrun")
+            .args(["--sdk", "macosx", "--show-sdk-path"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim_end().to_owned())
+            .unwrap_or_default()
+    };
+
+    for f in frameworks {
+        let framework = f.0;
+        if target >= f.1 {
+            let candidates = [
+                &format!("/System/Library/Frameworks/{framework}.framework"),
+                &format!("/System/Library/PrivateFrameworks/{framework}.framework"),
+                &format!("{sdk}/System/Library/Frameworks/{framework}.framework"),
+                &format!("{sdk}/System/Library/PrivateFrameworks/{framework}.framework"),
+            ];
+
+            let found_path = candidates.iter().find(|p| Path::new(p).exists());
+
+            if let Some(path) = found_path {
+                println!("cargo:rustc-link-lib=framework={framework}");
+                if path.starts_with("/System/Library/PrivateFrameworks") {
+                    println!("cargo:rustc-link-search=framework=/System/Library/PrivateFrameworks");
+                }
+            } else {
+                println!("cargo:warning={framework} not found ─ building without it");
+            }
+        }
+    }
+}

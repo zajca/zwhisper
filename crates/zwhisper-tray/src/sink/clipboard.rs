@@ -13,7 +13,7 @@
 //!
 //! `arboard` is synchronous; we run all clipboard interactions inside
 //! `tokio::task::spawn_blocking` so the tokio worker thread is never
-//! blocked by an X11 / Wayland round-trip.
+//! blocked by a Wayland clipboard round-trip.
 
 use std::sync::{Arc, Mutex};
 

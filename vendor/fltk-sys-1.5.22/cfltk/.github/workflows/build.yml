@@ -1,0 +1,25 @@
+name: CMake
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    steps:
+    - name: Download deps
+      run: |
+         if [ "$RUNNER_OS" == "Linux" ]; then
+          sudo apt-get update && sudo apt-get install -y libpango1.0-dev libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev libxfixes-dev
+         fi
+      shell: bash
+    - uses: actions/checkout@v3
+    - name: Build
+      run: git submodule update --init --recursive && cmake -Bbin -DCMAKE_BUILD_TYPE=Release -DFLTK_USE_SYSTEM_LIBPNG=OFF -DFLTK_USE_SYSTEM_LIBJPEG=OFF -DFLTK_USE_SYSTEM_ZLIB=OFF -DFLTK_BUILD_GL=OFF -DFLTK_BUILD_EXAMPLES=OFF -DFLTK_BUILD_TEST=OFF -DFLTK_OPTION_LARGE_FILE=ON -DFLTK_BUILD_HTML_DOCS=OFF -DFLTK_BUILD_PDF_DOCS=OFF && cmake --build bin --parallel

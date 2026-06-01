@@ -31,29 +31,25 @@ asserts_required_fields() {
     echo "ok: asserts_required_fields"
 }
 
-makedepends_covers_fltk_bundled_chain() {
+makedepends_covers_fltk_source_chain() {
     local f="$PKGBUILD"
-    # The fltk-bundled chain must contain cmake, gcc, curl, tar,
-    # pkgconf, fontconfig, freetype2, plus the X11/Wayland link
-    # bag (libxft, libxcursor, libxinerama, libxfixes, pango,
-    # libxkbcommon, wayland). M8 DoD #2.
+    # The FLTK source-build chain must contain cmake, gcc, pkgconf,
+    # fontconfig, freetype2, plus the Wayland link surface (pango,
+    # libxkbcommon, wayland, wayland-protocols, dbus). X11 headers
+    # are intentionally forbidden.
     local required=(
         "rust"
         "cargo"
         "cmake"
         "gcc"
-        "curl"
-        "tar"
         "pkgconf"
-        "libxft"
-        "libxcursor"
-        "libxinerama"
-        "libxfixes"
         "pango"
         "fontconfig"
         "freetype2"
         "libxkbcommon"
         "wayland"
+        "wayland-protocols"
+        "dbus"
     )
     for dep in "${required[@]}"; do
         # The file uses single-quoted entries; some carry version
@@ -64,7 +60,19 @@ makedepends_covers_fltk_bundled_chain() {
             return 1
         fi
     done
-    echo "ok: makedepends_covers_fltk_bundled_chain"
+    local forbidden=(
+        "libxft"
+        "libxcursor"
+        "libxinerama"
+        "libxfixes"
+    )
+    for dep in "${forbidden[@]}"; do
+        if grep -qE "'${dep}(>=[0-9.]+)?'" "$f"; then
+            echo "FAIL: makedepends must not include X11 dependency '${dep}'" >&2
+            return 1
+        fi
+    done
+    echo "ok: makedepends_covers_fltk_source_chain"
 }
 
 runtime_depends_match_runtime_features() {
@@ -95,11 +103,13 @@ build_uses_frozen_release_workspace() {
         || { echo "FAIL: build() does not use --frozen --release --workspace" >&2; return 1; }
     grep -q 'cargo fetch --locked' "$f" \
         || { echo "FAIL: prepare() does not run cargo fetch --locked" >&2; return 1; }
+    grep -q 'CFLTK_WAYLAND_ONLY=1' "$f" \
+        || { echo "FAIL: build() does not force FLTK Wayland-only mode" >&2; return 1; }
     echo "ok: build_uses_frozen_release_workspace"
 }
 
 asserts_required_fields
-makedepends_covers_fltk_bundled_chain
+makedepends_covers_fltk_source_chain
 runtime_depends_match_runtime_features
 build_uses_frozen_release_workspace
 echo "all PKGBUILD metadata checks passed"

@@ -2,10 +2,10 @@
 //!
 //! ksni's three error variants collapse two fundamentally different
 //! environment problems (no D-Bus, no SNI watcher, no SNI host) into
-//! the same `failed to register …` log line. Users on tiling WMs
-//! such as sway or i3 — which ship no built-in StatusNotifierWatcher
-//! — see the `ServiceUnknown: The name is not activatable` D-Bus
-//! error and have no idea what to install.
+//! the same `failed to register …` log line. Users on Wayland
+//! compositors such as Sway or Hyprland — which often rely on an
+//! external StatusNotifierWatcher — see the `ServiceUnknown: The name
+//! is not activatable` D-Bus error and have no idea what to install.
 //!
 //! This module turns each variant into an actionable diagnostic
 //! (one-line summary plus a bullet list of next steps) so the binary
@@ -34,7 +34,7 @@ pub enum Category {
     /// tray spec.
     Dbus,
     /// Session bus works, but no `org.kde.StatusNotifierWatcher`
-    /// is activatable. Typical on sway, i3, and bare wlroots
+    /// is activatable. Typical on Sway, Hyprland, and bare wlroots
     /// without a panel.
     NoWatcher,
     /// Watcher exists but reports zero registered hosts (panels).
@@ -79,9 +79,8 @@ pub fn diagnose(err: &Error) -> Diagnostic {
             summary: "no StatusNotifierWatcher is registered on the session bus \
                       (your desktop has no system tray host)",
             next_steps: &[
-                "Sway / wlroots: install `waybar` and add `\"tray\"` to its modules-right",
-                "i3 (X11): install `polybar` with the `tray` module, \
-                 or `snixembed` to bridge SNI to i3bar's legacy XEmbed tray",
+                "Sway: install `waybar` and add `\"tray\"` to its modules-right",
+                "Hyprland: run Waybar with the tray module, or another StatusNotifierItem host",
                 "GNOME: install the AppIndicator extension \
                  (gnome-shell-extension-appindicator)",
                 "verify with: `busctl --user list | grep StatusNotifierWatcher`",
@@ -157,14 +156,24 @@ mod tests {
     #[test]
     fn watcher_arm_maps_to_no_watcher_category() {
         // zbus::fdo::Error::ServiceUnknown matches the real-world
-        // failure on sway/i3 (`name is not activatable`).
+        // failure on Sway/Hyprland (`name is not activatable`).
         let fdo_err = zbus::fdo::Error::ServiceUnknown("synthetic".to_string());
         let diag = diagnose(&Error::Watcher(fdo_err));
         assert_eq!(diag.category, Category::NoWatcher);
         assert!(diag.summary.contains("StatusNotifierWatcher"));
         assert!(diag.next_steps.iter().any(|s| s.contains("waybar")));
-        assert!(diag.next_steps.iter().any(|s| s.contains("polybar")));
-        assert!(diag.next_steps.iter().any(|s| s.contains("CLI keep working")));
+        assert!(diag.next_steps.iter().any(|s| s.contains("Hyprland")));
+        assert!(
+            !diag
+                .next_steps
+                .iter()
+                .any(|s| s.contains("snixembed") || s.contains("XEmbed"))
+        );
+        assert!(
+            diag.next_steps
+                .iter()
+                .any(|s| s.contains("CLI keep working"))
+        );
     }
 
     #[test]

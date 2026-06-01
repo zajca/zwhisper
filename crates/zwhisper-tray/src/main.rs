@@ -87,12 +87,9 @@ async fn main() -> Result<()> {
     // activate the target — this check turns that into a clean
     // user-visible exit instead of a useless tray process.
     if matches!(session_probe(), SessionProbe::Unavailable) {
-        error!(
-            "neither WAYLAND_DISPLAY nor DISPLAY is set; \
-             zwhisper-tray needs a graphical session — exiting",
-        );
+        error!("WAYLAND_DISPLAY is not set; zwhisper-tray needs a Wayland session — exiting",);
         return Err(color_eyre::eyre::eyre!(
-            "no graphical session: WAYLAND_DISPLAY and DISPLAY are both unset",
+            "no Wayland session: WAYLAND_DISPLAY is unset",
         ));
     }
 

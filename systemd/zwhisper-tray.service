@@ -3,8 +3,8 @@ Description=zwhisper tray indicator
 Documentation=https://github.com/zajca/zwhisper
 # `After=` (not `Requisite=`) so the unit also starts on wlroots
 # setups that never activate `graphical-session.target`. The binary
-# itself probes `WAYLAND_DISPLAY` / `DISPLAY` at startup and exits
-# cleanly if neither is set (M4-plan stress-test fix M4).
+# itself probes `WAYLAND_DISPLAY` at startup and exits cleanly if
+# no Wayland session is available (M4-plan stress-test fix M4).
 After=graphical-session.target
 PartOf=graphical-session.target
 

@@ -24,8 +24,7 @@ or cloud backends (Deepgram).
   Secrets are resolved from `ZWHISPER_<BACKEND>_API_KEY` or
   `~/.config/zwhisper/secrets.toml` (mode 0600 enforced).
 - **Global hotkey toggle** via `xdg-desktop-portal` GlobalShortcuts on
-  KDE / GNOME / wlroots, or via the window manager's own bind on
-  i3/X11.
+  KDE / wlroots, or via the compositor's own Wayland bind.
 - **Settings GUI** (FLTK, on-demand) for profile editing, model
   download, hotkey rebind, and whisper.cpp backend health.
 - **Protocol-version handshake** — mismatched daemon + client
@@ -33,11 +32,11 @@ or cloud backends (Deepgram).
 
 ## Targets
 
-- **Primary:** Arch Linux + KDE Plasma 6, PipeWire, Wayland-first.
-- **Secondary:** GNOME 47+, wlroots compositors (Sway, Hyprland) and
-  i3 / X11 — best effort, hotkey rebind degrades gracefully where the
-  GlobalShortcuts portal is absent.
-- **Out of scope:** non-Linux platforms, PulseAudio-only systems.
+- **Primary:** Arch Linux + KDE Plasma 6, PipeWire, Wayland.
+- **Secondary:** wlroots compositors (Sway, Hyprland) and GNOME 47+
+  on Wayland — best effort, hotkey rebind degrades gracefully where
+  the GlobalShortcuts portal is absent.
+- **Out of scope:** X11 sessions, non-Linux platforms, PulseAudio-only systems.
 
 ## Install
 
@@ -54,9 +53,8 @@ makepkg -si
 
 What `makepkg -si` does:
 
-1. Pulls `makedepends` (`cargo`, `rust>=1.85`, `cmake`, `gcc`,
-   X11/Wayland headers, fontconfig, freetype) for the
-   `fltk-bundled` build chain.
+1. Pulls `makedepends` (`cargo`, `rust>=1.88`, `cmake`, `gcc`,
+   Wayland headers, fontconfig, freetype) for the FLTK source build.
 2. Runs `cargo build --frozen --release --workspace` and
    `cargo test --frozen --release --workspace --lib` (unit tests
    gate the package; integration tests that need a live PipeWire
@@ -82,7 +80,7 @@ on demand by D-Bus when any client first calls
 ### Other distributions
 
 Not yet packaged. The build-from-source path below works on any
-modern Linux with PipeWire ≥ 1.0 and Rust ≥ 1.85. Native packages
+modern Linux with PipeWire >= 1.0 and Rust >= 1.88. Native packages
 for Debian / Ubuntu (`.deb`), Fedora (`.rpm`), Flatpak, and a NixOS
 module are deferred — see
 [`docs/M8-plan.md`](./docs/M8-plan.md) § "Out of scope" for
@@ -111,14 +109,12 @@ sudo pacman -S --needed \
     rust cargo cmake gcc pkgconf \
     gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire \
     pipewire wireplumber dbus xdg-desktop-portal libnotify \
-    libxft libxcursor libxinerama libxfixes pango fontconfig \
-    freetype2 libxkbcommon wayland
+    pango fontconfig freetype2 libxkbcommon wayland wayland-protocols
 ```
 
 For KDE Plasma desktops, also install `xdg-desktop-portal-kde`
-to enable the GlobalShortcuts hotkey portal. GNOME ships
-`xdg-desktop-portal-gnome` by default; wlroots compositors need
-`xdg-desktop-portal-wlr`.
+to enable the GlobalShortcuts hotkey portal. Sway and Hyprland need
+`xdg-desktop-portal-wlr` for portal-backed hotkey rebinding.
 
 #### Fedora / RHEL
 
@@ -127,10 +123,8 @@ sudo dnf install \
     rust cargo cmake gcc pkgconfig \
     gstreamer1-devel gstreamer1-plugins-base gstreamer1-plugins-good \
     pipewire pipewire-gstreamer wireplumber dbus libnotify \
-    libxkbcommon-devel wayland-devel \
-    fltk-devel fontconfig-devel freetype-devel \
-    libXft-devel libXcursor-devel libXinerama-devel libXfixes-devel \
-    pango-devel
+    dbus-devel libxkbcommon-devel wayland-devel wayland-protocols-devel \
+    fontconfig-devel freetype-devel pango-devel
 ```
 
 #### Debian / Ubuntu
@@ -141,13 +135,11 @@ sudo apt install \
     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     gstreamer1.0-plugins-good gstreamer1.0-pipewire \
     pipewire wireplumber dbus libnotify-dev \
-    libxkbcommon-dev libwayland-dev \
-    libfltk1.3-dev libfontconfig-dev libfreetype-dev \
-    libxft-dev libxcursor-dev libxinerama-dev libxfixes-dev \
-    libpango1.0-dev
+    libdbus-1-dev libxkbcommon-dev libwayland-dev wayland-protocols \
+    libfontconfig-dev libfreetype-dev libpango1.0-dev
 ```
 
-Rust ≥ 1.85 may need to come from `rustup` rather than the distro
+Rust >= 1.88 may need to come from `rustup` rather than the distro
 repo on older Debian/Ubuntu releases.
 
 ### Build
@@ -272,12 +264,12 @@ is the only placeholder allowed; HTTPS is required.
 
 Default chord: `Ctrl+Alt+R` (toggles recording on/off).
 
-- **KDE / GNOME / Sway with `xdg-desktop-portal-*` installed:** open
+- **KDE / Sway / Hyprland with `xdg-desktop-portal-*` installed:** open
   `zwhisper-settings` → **Hotkey** tab → click **Rebind**.
-- **i3 / Hyprland / no portal:** bind in your WM config to invoke
-  `zwhisper toggle`. Example for i3:
+- **No GlobalShortcuts portal:** bind in your compositor config to invoke
+  `zwhisper toggle`. Example for Sway:
   ```
-  bindsym Mod4+Shift+r exec --no-startup-id /usr/bin/zwhisper toggle
+  bindsym Mod4+Shift+r exec /usr/bin/zwhisper toggle
   ```
 
 Probe the portal availability with `zwhisper hotkey probe`.
@@ -303,6 +295,16 @@ Run `zwhisper --help` for the full command surface.
 The tray icon shows the current state (`idle` / `recording` /
 `stopping` / `transcribing`), exposes the profile picker, and shows
 toast notifications for transitions, errors, and protocol mismatches.
+
+`zwhisper-tray` is a StatusNotifierItem/AppIndicator tray icon. KDE
+Plasma provides a tray host by default. On Sway or Hyprland, run an
+SNI host such as Waybar with the tray module enabled before starting
+`zwhisper-tray`:
+
+```sh
+busctl --user list | grep StatusNotifierWatcher
+systemctl --user restart zwhisper-tray.service
+```
 
 ### Settings GUI
 
@@ -357,7 +359,7 @@ zwhisper hotkey status        # check current binding
 
 Outcomes:
 
-- `portal=NONE` → use your WM's bind (i3/Hyprland section above).
+- `portal=none` → use your compositor bind with `zwhisper toggle`.
 - `portal=<name> GlobalShortcuts=unavailable` → install the matching
   `xdg-desktop-portal-{kde,gnome,wlr}` and restart the user session
   (or `systemctl --user restart xdg-desktop-portal*`).
@@ -377,7 +379,7 @@ log will show the `pipewiresrc target-object=<name>` it resolved.
 
 ### Settings GUI crashes on launch
 
-Most often a missing X11/Wayland or fontconfig library. Verify:
+Most often a missing Wayland, fontconfig, or freetype library. Verify:
 
 ```sh
 ldd $(which zwhisper-settings) | grep -i 'not found'

@@ -87,13 +87,11 @@ toml = "0.8"
 notify-rust = { version = "4.11", default-features = false, features = ["z-with-tokio"] }
 arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
 
-# Settings GUI (M7) — `fltk-bundled` builds FLTK as a static lib at
-# compile time, so consumers do not need a system FLTK install. Build
-# requires cmake >= 3.11, gcc >= 11, curl, and tar (documented in
-# `crates/zwhisper-settings/README.md`). The `use-wayland` feature
-# selects the Wayland backend when `WAYLAND_DISPLAY` is set, falling
-# back to X11 otherwise.
-fltk = { version = "1.5", features = ["fltk-bundled", "use-wayland"] }
+# Settings GUI (M7) — FLTK is built from source with Wayland enabled.
+# `.cargo/config.toml` sets `CFLTK_WAYLAND_ONLY=1`, which makes the
+# underlying `fltk-sys` build pass `FLTK_BACKEND_X11=OFF`; this keeps
+# zwhisper-settings free of the retired X11 backend.
+fltk = { version = "1.5", features = ["use-wayland"] }
 # SHA-256 streaming hashes (M7 model downloader integrity check —
 # verifies ggml weights against the compile-time embedded
 # `crates/zwhisper-settings/checksums.toml` manifest).
@@ -110,6 +108,12 @@ tempfile = "3"
 # without hitting the real API or burning credit.
 wiremock = "0.6"
 tracing-test = "0.2"
+
+[patch.crates-io]
+# fltk-sys 1.5.22's C wrapper still references X11-only symbols when
+# FLTK is built with `FLTK_BACKEND_X11=OFF`. Keep a minimal local
+# patch until upstream supports Wayland-only cfltk builds cleanly.
+fltk-sys = { path = "vendor/fltk-sys-1.5.22" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

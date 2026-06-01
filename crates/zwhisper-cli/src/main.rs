@@ -67,7 +67,7 @@ enum Command {
     Status,
 
     /// M6 — universal toggle (start if idle, stop if recording).
-    /// Bind in your WM (e.g. i3 `bindsym`) for a tray-less hotkey.
+    /// Bind in your Wayland compositor for a tray-less hotkey.
     Toggle,
 
     /// M6 — manage and probe the system-wide hotkey binding

@@ -217,15 +217,14 @@ pub enum PendingCmd {
 /// `Unknown` is the bootstrap state before the listener task has
 /// run its first probe. `Unavailable` carries a short reason
 /// string suitable for a tooltip (e.g. "no portal — bind via your
-/// WM"). `NotBound` and `Bound` are the two operational states
+/// compositor"). `NotBound` and `Bound` are the two operational states
 /// the user clicks between.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum HotkeyMenuState {
     /// Listener has not yet probed the portal.
     #[default]
     Unknown,
-    /// Portal is not usable on this desktop (e.g. i3/X11 with no
-    /// xdg-desktop-portal). Click is a no-op; the reason string
+    /// Portal is not usable in this Wayland session. Click is a no-op; the reason string
     /// is shown as the tooltip.
     Unavailable { reason: String },
     /// Portal is available but no shortcut is currently bound.

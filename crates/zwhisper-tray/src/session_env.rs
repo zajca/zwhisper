@@ -4,27 +4,26 @@
 //! `After=graphical-session.target` (not `Requisite=`) so the unit
 //! starts even on wlroots setups that never activate the target. To
 //! keep the no-graphical-session case from running a useless tray
-//! process, the binary checks `WAYLAND_DISPLAY` / `DISPLAY` at
-//! startup and exits cleanly when neither is set.
+//! process, the binary checks `WAYLAND_DISPLAY` at startup and
+//! exits cleanly when it is unset.
 //!
 //! This is a pure-function module so the decision logic is
 //! testable without env mutation.
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SessionProbe {
-    /// At least one of `WAYLAND_DISPLAY` / `DISPLAY` is set; tray
-    /// proceeds.
+    /// `WAYLAND_DISPLAY` is set; tray proceeds.
     Available,
-    /// Neither is set; tray exits with a clear error message.
+    /// Wayland is unavailable; tray exits with a clear error message.
     Unavailable,
 }
 
-/// Pure decision: returns `Available` iff one of the two env values
-/// is `Some(non-empty)`.
-pub fn classify(wayland_display: Option<&str>, x_display: Option<&str>) -> SessionProbe {
+/// Pure decision: returns `Available` iff `WAYLAND_DISPLAY` is
+/// `Some(non-empty)`. `DISPLAY` is accepted as an argument only so
+/// tests can pin that X11 no longer unlocks tray startup.
+pub fn classify(wayland_display: Option<&str>, _x_display: Option<&str>) -> SessionProbe {
     let has_wayland = wayland_display.is_some_and(|s| !s.is_empty());
-    let has_x = x_display.is_some_and(|s| !s.is_empty());
-    if has_wayland || has_x {
+    if has_wayland {
         SessionProbe::Available
     } else {
         SessionProbe::Unavailable
@@ -50,8 +49,8 @@ mod tests {
     }
 
     #[test]
-    fn classify_x_only_is_available() {
-        assert_eq!(classify(None, Some(":0")), SessionProbe::Available);
+    fn classify_x_only_is_unavailable() {
+        assert_eq!(classify(None, Some(":0")), SessionProbe::Unavailable);
     }
 
     #[test]
@@ -73,5 +72,6 @@ mod tests {
         // treat that the same as unset.
         assert_eq!(classify(Some(""), Some("")), SessionProbe::Unavailable);
         assert_eq!(classify(Some(""), None), SessionProbe::Unavailable);
+        assert_eq!(classify(None, Some("")), SessionProbe::Unavailable);
     }
 }

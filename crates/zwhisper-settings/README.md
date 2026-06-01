@@ -7,15 +7,20 @@ binary is ephemeral — closing the window exits.
 
 ## Build dependencies
 
-This crate links FLTK statically through the `fltk-bundled` feature.
-The bundled build pulls and compiles FLTK at build time and requires:
+This crate builds FLTK from source in Wayland-only mode. The workspace
+sets `CFLTK_WAYLAND_ONLY=1` in `.cargo/config.toml`, which disables the
+FLTK X11 backend at build time. The build requires:
 
 - `cmake >= 3.11`
 - `gcc >= 11` (or another C++17-capable compiler)
-- `curl`
-- `tar`
+- Wayland development headers and protocols
+- `libxkbcommon`, D-Bus, Pango, fontconfig, and freetype development headers
 
-On Arch Linux: `pacman -S --needed cmake gcc curl tar`.
+On Arch Linux:
+
+```
+pacman -S --needed cmake gcc pkgconf wayland wayland-protocols libxkbcommon dbus pango fontconfig freetype2
+```
 
 The first compile takes several minutes (FLTK ~30 MB of C++).
 Subsequent builds reuse the cached static library.

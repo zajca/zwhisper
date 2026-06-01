@@ -35,8 +35,8 @@ cargo build --workspace --release --locked
 ```
 
 The `--locked` flag verifies no manifest drift; the build also
-exercises the `fltk-bundled` chain so this is the first place a
-broken cmake / gcc combination would surface.
+exercises the Wayland-only FLTK source build so this is the first
+place a broken cmake / gcc combination would surface.
 
 Verify with `git diff --stat Cargo.lock` (one line changed: the
 workspace `[package]` reference).
@@ -110,8 +110,8 @@ cd packaging/arch
 makepkg -si
 ```
 
-`-s` installs missing build deps (drag in the fltk-bundled chain on
-a clean machine), `-i` installs the resulting `.pkg.tar.zst` so the
+`-s` installs missing build deps (including the FLTK source-build
+chain on a clean machine), `-i` installs the resulting `.pkg.tar.zst` so the
 maintainer can also walk the manual verification gate
 (`docs/M8-verification.md`).
 

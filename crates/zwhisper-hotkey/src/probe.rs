@@ -9,8 +9,8 @@
 //! Detection strategy:
 //!
 //! 1. Ask the session bus whether `org.freedesktop.portal.Desktop`
-//!    has an owner. If not → [`BackendDetected::None`] (typical
-//!    i3/X11 case where xdg-desktop-portal isn't running).
+//!    has an owner. If not → [`BackendDetected::None`] (no usable
+//!    GlobalShortcuts portal in the current Wayland session).
 //! 2. Resolve the owner's PID and read `/proc/<pid>/cmdline` to
 //!    figure out which portal binary is providing the bus name
 //!    (`xdg-desktop-portal-kde` / `…-gnome` / `…-wlr`). NOTE: we
@@ -56,8 +56,7 @@ pub enum BackendDetected {
     /// Some other portal binary owns the well-known name. Carries
     /// the raw `/proc/<pid>/comm` string for diagnostics.
     Other(String),
-    /// `org.freedesktop.portal.Desktop` is not on the session bus —
-    /// classic i3/X11 setup with no xdg-desktop-portal installed.
+    /// `org.freedesktop.portal.Desktop` is not on the session bus.
     None,
 }
 
@@ -309,7 +308,7 @@ fn backend_label(backend: &BackendDetected) -> String {
 ///
 /// Three states map onto the truth table from `DoD` #10:
 ///
-/// * `backend = None` → no xdg-desktop-portal (i3/X11),
+/// * `backend = None` → no usable xdg-desktop-portal frontend,
 /// * `backend = Kde/Gnome/Wlr/Other` and `available = false` →
 ///   portal is up but doesn't expose `GlobalShortcuts`,
 /// * `available = true` → fully usable, `portal_version` is set.
@@ -369,7 +368,8 @@ fn probe_unavailable_no_portal() -> ProbeReport {
         backend: BackendDetected::None,
         global_shortcuts_available: false,
         portal_version: None,
-        reason: "no GlobalShortcuts portal — i3/X11 detected; bind via your WM config".to_string(),
+        reason: "no GlobalShortcuts portal — use a Wayland compositor bind for `zwhisper toggle`"
+            .to_string(),
     }
 }
 
@@ -528,17 +528,18 @@ mod tests {
     // ---- probe() truth table -------------------------------------
 
     #[tokio::test]
-    async fn probe_with_no_portal_returns_unavailable_with_i3_message() {
+    async fn probe_with_no_portal_returns_unavailable_with_wayland_message() {
         let portal = FakePortal::missing();
         let report = probe_with(BackendDetected::None, &portal).await;
         assert_eq!(report.backend, BackendDetected::None);
         assert!(!report.global_shortcuts_available);
         assert_eq!(report.portal_version, None);
         assert!(
-            report.reason.contains("i3/X11"),
-            "reason should mention i3/X11; got: {}",
+            report.reason.contains("Wayland compositor bind"),
+            "reason should mention Wayland compositor bind; got: {}",
             report.reason
         );
+        assert!(!report.reason.contains("i3/X11"), "got: {}", report.reason);
         assert!(
             report.reason.contains("no GlobalShortcuts portal"),
             "reason should mention missing portal; got: {}",
