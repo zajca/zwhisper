@@ -4,7 +4,11 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn bin() -> Command {
-    Command::cargo_bin("zwhisper").expect("binary should be built by cargo test")
+    let mut cmd = Command::cargo_bin("zwhisper").expect("binary should be built by cargo test");
+    let state_dir = std::env::temp_dir().join("zwhisper-cli-tests-state");
+    std::fs::create_dir_all(&state_dir).expect("test state dir should be writable");
+    cmd.env("XDG_STATE_HOME", state_dir);
+    cmd
 }
 
 #[test]
@@ -15,6 +19,7 @@ fn prints_help() {
         .success()
         .stdout(predicate::str::contains("zwhisper"))
         .stdout(predicate::str::contains("record"))
+        .stdout(predicate::str::contains("model"))
         .stdout(predicate::str::contains("transcribe"));
 }
 
@@ -28,16 +33,23 @@ fn prints_version() {
 }
 
 /// Phase 4 (M3) replaces the M2 placeholder string with a daemon
-/// RPC. When no daemon is on the bus, the CLI prints the actionable
-/// "daemon not running" hint to stderr and exits 2 (per `DoD` #12 the
-/// "user-facing protocol error" code).
+/// RPC. Developer machines may have a live daemon; otherwise the CLI
+/// prints the actionable "daemon not running" hint to stderr and exits
+/// 2 (per `DoD` #12 the "user-facing protocol error" code).
 #[test]
-fn status_when_daemon_down_prints_actionable_hint() {
-    let assert = bin().arg("status").assert().failure();
-    let code = assert.get_output().status.code().expect("exit code");
+fn status_reports_live_daemon_or_actionable_hint() {
+    let assert = bin().arg("status").assert();
+    let output = assert.get_output();
+    let stdout = String::from_utf8(output.stdout.clone()).expect("stdout should be utf8");
+    let stderr = String::from_utf8(output.stderr.clone()).expect("stderr should be utf8");
+
+    if output.status.success() {
+        assert!(stdout.contains("state:"), "stdout missing state:\n{stdout}");
+        return;
+    }
+
+    let code = output.status.code().expect("exit code");
     assert_eq!(code, 2, "expected exit 2 when daemon is down, got {code}");
-    let stderr =
-        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf8");
     assert!(
         stderr.contains("daemon not running"),
         "stderr missing 'daemon not running' hint:\n{stderr}"
@@ -131,6 +143,34 @@ fn transcribe_unknown_backend_returns_backend_unknown_error() {
         stderr.contains("whisper-cpp"),
         "expected supported set listing `whisper-cpp` in stderr; got:\n{stderr}"
     );
+}
+
+#[test]
+fn model_list_prints_known_manifest_models() {
+    bin()
+        .args(["model", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tiny"))
+        .stdout(predicate::str::contains("large-v3"));
+}
+
+#[test]
+fn model_path_prints_expected_model_file() {
+    bin()
+        .args(["model", "path", "tiny"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ggml-tiny.bin"));
+}
+
+#[test]
+fn model_path_rejects_unknown_model() {
+    bin()
+        .args(["model", "path", "not-a-known-model"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown model"));
 }
 
 #[test]

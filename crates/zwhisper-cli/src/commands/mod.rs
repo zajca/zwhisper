@@ -27,6 +27,8 @@
 
 pub(crate) mod backend;
 pub(crate) mod hotkey;
+pub(crate) mod instructions;
+pub(crate) mod model;
 pub(crate) mod profile;
 pub(crate) mod record;
 pub(crate) mod status;
@@ -99,11 +101,14 @@ pub(crate) fn classify_error(err: &zbus::Error) -> i32 {
 /// well-known name. Callers print [`DAEMON_DOWN_HINT`] in that case.
 #[must_use]
 pub(crate) fn is_daemon_down(err: &zbus::Error) -> bool {
-    if let zbus::Error::MethodError(name, ..) = err {
-        let name_str: &str = name.as_str();
-        return name_str == ERR_SERVICE_UNKNOWN || name_str == ERR_NAME_HAS_NO_OWNER;
+    match err {
+        zbus::Error::MethodError(name, ..) => {
+            let name_str: &str = name.as_str();
+            name_str == ERR_SERVICE_UNKNOWN || name_str == ERR_NAME_HAS_NO_OWNER
+        }
+        zbus::Error::InputOutput(_) | zbus::Error::Address(_) | zbus::Error::Handshake(_) => true,
+        _ => false,
     }
-    false
 }
 
 /// Outcome of the M8 pre-flight handshake (DoD #12).

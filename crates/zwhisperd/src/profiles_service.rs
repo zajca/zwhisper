@@ -17,6 +17,8 @@ use tracing::{info, warn};
 use zwhisper_core::profile;
 use zwhisper_ipc::{ProfileEntry, ProfileEntryV2, RpcError};
 
+use crate::active_profile;
+
 /// State held by the `Profiles1` interface impl.
 #[derive(Debug)]
 pub(crate) struct ProfilesInterface {
@@ -111,6 +113,9 @@ impl ProfilesInterface {
         if let Err(e) = profile::load(name) {
             return Err(map_profile_error(name, e));
         }
+        active_profile::store(name).map_err(|err| RpcError::Transient {
+            reason: format!("failed to persist active profile: {err}"),
+        })?;
         *self.active_profile.lock().await = name.to_owned();
         Ok(())
     }

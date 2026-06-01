@@ -18,6 +18,7 @@ pub mod deepgram;
 // entry points cross the crate boundary.
 pub mod discovery;
 pub mod error;
+pub mod model_management;
 pub mod models;
 pub mod speakers;
 pub(crate) mod whisper_cpp;

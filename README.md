@@ -1,9 +1,10 @@
 # zwhisper
 
-Linux desktop tool for recording PipeWire audio (microphone + system
-output) with tray control, profiles, and a transcription pipeline
-backed by local [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp)
-or cloud backends (Deepgram).
+CLI-first Linux tool for recording PipeWire audio (microphone +
+system output) with a user daemon, file-based profiles, and a
+transcription pipeline backed by local
+[`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) or cloud
+backends (Deepgram).
 
 > **Status:** `0.1.0` (M8) — first packageable release. Milestones
 > M0–M8 are complete; the M8 manual verification gate
@@ -16,17 +17,20 @@ or cloud backends (Deepgram).
 
 - **PipeWire-native capture.** Records the microphone *and* the system
   audio monitor into a single FLAC mix, no PulseAudio loopback.
-- **Daemon + tray + CLI + settings GUI** — four binaries, single D-Bus
+- **Daemon + CLI** — `zwhisperd` owns recording/transcription and
+  `zwhisper` is the user-facing control surface over the single D-Bus
   contract (`cz.zajca.Zwhisper1`).
 - **Profiles.** Versioned TOML profiles select the backend, model, and
   capture options. User overrides shadow shipped + embedded profiles.
 - **Local whisper.cpp** with optional Deepgram cloud backend (Nova-3).
   Secrets are resolved from `ZWHISPER_<BACKEND>_API_KEY` or
   `~/.config/zwhisper/secrets.toml` (mode 0600 enforced).
-- **Global hotkey toggle** via `xdg-desktop-portal` GlobalShortcuts on
-  KDE / wlroots, or via the compositor's own Wayland bind.
-- **Settings GUI** (FLTK, on-demand) for profile editing, model
-  download, hotkey rebind, and whisper.cpp backend health.
+- **Manual desktop integration** via compositor key bindings, Waybar
+  custom modules, or scripts that call `zwhisper status` and
+  `zwhisper toggle`.
+- **File-based configuration** for profiles, secrets, backend options,
+  and model cache selection. GUI settings and tray services are not
+  part of the CLI-only product.
 - **Protocol-version handshake** — mismatched daemon + client
   binaries refuse to talk and surface a single, actionable error.
 
@@ -53,29 +57,28 @@ makepkg -si
 
 What `makepkg -si` does:
 
-1. Pulls `makedepends` (`cargo`, `rust>=1.88`, `cmake`, `gcc`,
-   Wayland headers, fontconfig, freetype) for the FLTK source build.
-2. Runs `cargo build --frozen --release --workspace` and
-   `cargo test --frozen --release --workspace --lib` (unit tests
-   gate the package; integration tests that need a live PipeWire
-   bus are skipped here).
-3. Installs all four binaries to `/usr/bin/`, the systemd-user
-   units to `/usr/lib/systemd/user/`, the D-Bus service file, both
-   `.desktop` launchers, the SVG icon, and the example config
-   files (see [`packaging/README.md`](./packaging/README.md)
-   for the canonical layout).
+1. Pulls `makedepends` (`cargo`, `rust>=1.88`, `gcc`, `pkgconf`)
+   for the daemon + CLI build.
+2. Builds the CLI-only product packages (`zwhisperd` and
+   `zwhisper`) and runs the package-gating unit tests that do not
+   need a live desktop session.
+3. Installs both binaries to `/usr/bin/`, the daemon systemd-user
+   unit to `/usr/lib/systemd/user/`, the D-Bus service file, and
+   example config files (see
+   [`packaging/README.md`](./packaging/README.md) for the canonical
+   layout).
 
-After install, enable the daemon and tray for your user:
+After install, enable the daemon for your user if you want it running
+before the first CLI call:
 
 ```sh
 systemctl --user daemon-reload
 systemctl --user enable --now zwhisperd.service
-systemctl --user enable --now zwhisper-tray.service
 ```
 
-The tray autostarts on next login. The daemon is also activated
-on demand by D-Bus when any client first calls
-`cz.zajca.Zwhisper1`.
+The daemon is also activated on demand by D-Bus when any client first
+calls `cz.zajca.Zwhisper1`, so enabling the unit is optional for
+normal CLI use.
 
 ### Other distributions
 
@@ -99,44 +102,40 @@ passes on a clean Arch box. Until then, build from source or use
 ### Prerequisites
 
 The Rust toolchain is pinned in
-[`rust-toolchain.toml`](./rust-toolchain.toml). You also need
-system libraries for PipeWire, GStreamer, D-Bus, and the FLTK GUI.
+[`rust-toolchain.toml`](./rust-toolchain.toml). You also need system
+libraries for PipeWire, GStreamer, D-Bus, and desktop notifications.
 
 #### Arch Linux
 
 ```sh
 sudo pacman -S --needed \
-    rust cargo cmake gcc pkgconf \
+    rust cargo gcc pkgconf \
     gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire \
-    pipewire wireplumber dbus xdg-desktop-portal libnotify \
-    pango fontconfig freetype2 libxkbcommon wayland wayland-protocols
+    pipewire wireplumber dbus libnotify
 ```
 
-For KDE Plasma desktops, also install `xdg-desktop-portal-kde`
-to enable the GlobalShortcuts hotkey portal. Sway and Hyprland need
-`xdg-desktop-portal-wlr` for portal-backed hotkey rebinding.
+Install `xdg-desktop-portal-kde`, `xdg-desktop-portal-gnome`, or
+`xdg-desktop-portal-wlr` only if you want to use the optional
+portal-backed hotkey commands. Compositor-native key binds that run
+`zwhisper toggle` do not need the portal.
 
 #### Fedora / RHEL
 
 ```sh
 sudo dnf install \
-    rust cargo cmake gcc pkgconfig \
+    rust cargo gcc pkgconfig \
     gstreamer1-devel gstreamer1-plugins-base gstreamer1-plugins-good \
-    pipewire pipewire-gstreamer wireplumber dbus libnotify \
-    dbus-devel libxkbcommon-devel wayland-devel wayland-protocols-devel \
-    fontconfig-devel freetype-devel pango-devel
+    pipewire pipewire-gstreamer wireplumber dbus libnotify dbus-devel
 ```
 
 #### Debian / Ubuntu
 
 ```sh
 sudo apt install \
-    cargo cmake gcc pkg-config \
+    cargo gcc pkg-config \
     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     gstreamer1.0-plugins-good gstreamer1.0-pipewire \
-    pipewire wireplumber dbus libnotify-dev \
-    libdbus-1-dev libxkbcommon-dev libwayland-dev wayland-protocols \
-    libfontconfig-dev libfreetype-dev libpango1.0-dev
+    pipewire wireplumber dbus libnotify-dev libdbus-1-dev
 ```
 
 Rust >= 1.88 may need to come from `rustup` rather than the distro
@@ -149,56 +148,42 @@ git clone https://github.com/zajca/zwhisper
 cd zwhisper
 
 # Debug build (fast compile, no optimisation)
-cargo build --workspace
+cargo build -p zwhisperd -p zwhisper-cli
 
 # Release build (use this for daily driving)
-cargo build --workspace --release
+cargo build -p zwhisperd -p zwhisper-cli --release
 ```
 
-Release artefacts land in `target/release/`:
+Product artefacts land in `target/release/`:
 
 | Binary             | Role                                                    |
 | ------------------ | ------------------------------------------------------- |
 | `zwhisperd`        | D-Bus daemon — owns recording, transcription, profiles. |
-| `zwhisper`         | CLI — `record`, `toggle`, `status`, `profile`, `hotkey`, `transcribe`, `backend`. |
-| `zwhisper-tray`    | StatusNotifier tray indicator + hotkey listener.        |
-| `zwhisper-settings`| FLTK GUI (Profile / Models / Hotkey / WhisperCLI tabs). |
+| `zwhisper`         | CLI — `record`, `toggle`, `status`, `profile`, `model`, `hotkey`, `transcribe`, `backend`. |
 
 ### Manual install (no `makepkg`)
 
-After `cargo build --release`:
+After `cargo build -p zwhisperd -p zwhisper-cli --release`:
 
 ```sh
 # Binaries
 sudo install -Dm755 target/release/zwhisperd        /usr/local/bin/zwhisperd
 sudo install -Dm755 target/release/zwhisper         /usr/local/bin/zwhisper
-sudo install -Dm755 target/release/zwhisper-tray    /usr/local/bin/zwhisper-tray
-sudo install -Dm755 target/release/zwhisper-settings /usr/local/bin/zwhisper-settings
 
 # systemd-user units (note: ExecStart references /usr/bin — edit if
 # you installed under /usr/local/bin)
 install -Dm644 systemd/zwhisperd.service       ~/.config/systemd/user/zwhisperd.service
-install -Dm644 systemd/zwhisper-tray.service   ~/.config/systemd/user/zwhisper-tray.service
 
 # D-Bus auto-activation
 sudo install -Dm644 dbus/cz.zajca.Zwhisper1.service \
     /usr/share/dbus-1/services/cz.zajca.Zwhisper1.service
 
-# Desktop entries
-sudo install -Dm644 packaging/zwhisper.desktop \
-    /usr/share/applications/zwhisper.desktop
-sudo install -Dm644 packaging/zwhisper-settings.desktop \
-    /usr/share/applications/zwhisper-settings.desktop
-sudo install -Dm644 assets/icons/zwhisper.svg \
-    /usr/share/icons/hicolor/scalable/apps/zwhisper.svg
-
 systemctl --user daemon-reload
-systemctl --user enable --now zwhisperd.service zwhisper-tray.service
+systemctl --user enable --now zwhisperd.service
 ```
 
 For a fully-isolated install, prefer `makepkg -si` on Arch — it
-puts every file under `pacman` ownership and the
-post-install hook refreshes the desktop and icon caches.
+puts every file under `pacman` ownership.
 
 ## Configure
 
@@ -219,9 +204,9 @@ zwhisper profile set local-whisper       # set active
 zwhisper profile show                    # print resolved active profile
 ```
 
-The Profiles tab in `zwhisper-settings` is the GUI editor for the
-same files; it warns on save while the daemon is recording and
-defers `Profiles1.reload` until the recording ends.
+Edit profiles with `$EDITOR`. If you change the active profile while
+the daemon is running, stop the current recording first and reload or
+restart the daemon before relying on the new values.
 
 ### Secrets (cloud backends)
 
@@ -250,27 +235,63 @@ busctl --user call cz.zajca.Zwhisper1 \
 
 ### whisper.cpp models
 
-Models live under `~/.local/share/zwhisper/models/`. Use the
-**Models** tab in `zwhisper-settings` to download, verify SHA-256,
-and manage them. Default download base URL:
-`https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model}.bin`.
+Models live under `~/.local/share/zwhisper/models/` by default. To
+share a single model cache with other whisper.cpp tools, point
+`ZWHISPER_MODELS_DIR` at that directory; it must be an absolute path
+and contain files named `ggml-{model}.bin`.
 
-To use a custom mirror or a local cache, copy
-[`crates/zwhisper-settings/models.toml.example`](./crates/zwhisper-settings/models.toml.example)
-to `~/.config/zwhisper/models.toml` and edit. The `{model}` token
-is the only placeholder allowed; HTTPS is required.
+```sh
+export ZWHISPER_MODELS_DIR="$HOME/.local/share/whisper.cpp/models"
+```
+
+The CLI-only target is `zwhisper model ...` for model discovery,
+download, verification, and cache-path inspection:
+
+```sh
+zwhisper model list
+zwhisper model download large-v3-turbo-q5_0
+zwhisper model verify large-v3-turbo-q5_0
+zwhisper model path
+```
+
+During the CLI transition, run `zwhisper model --help` in your
+checkout for the exact subcommands that have landed. Until the model
+download command is available, place `ggml-{model}.bin` files in the
+resolved models directory yourself.
+
+To use a custom mirror or a local cache, create
+`~/.config/zwhisper/models.toml` and edit it as a regular TOML config
+file. The intended mirror URL format keeps `{model}` as the only
+placeholder and requires HTTPS.
+
+Profiles can pass additional whisper.cpp options through the optional
+`[transcription.whisper_cpp]` block. zwhisper owns `--model`,
+`--language`, `--output-txt`, `--output-json`, `--output-file`, and
+the input audio path; those cannot be overridden via `extra_args`.
+
+```toml
+[transcription.whisper_cpp]
+threads = 16
+processors = 1
+no_gpu = true
+flash_attn = false
+vad = true
+vad_model = "/absolute/path/to/silero.bin"
+extra_args = ["--zen5-special"]
+```
 
 ### Global hotkey
 
 Default chord: `Ctrl+Alt+R` (toggles recording on/off).
 
-- **KDE / Sway / Hyprland with `xdg-desktop-portal-*` installed:** open
-  `zwhisper-settings` → **Hotkey** tab → click **Rebind**.
-- **No GlobalShortcuts portal:** bind in your compositor config to invoke
-  `zwhisper toggle`. Example for Sway:
+- **Compositor-native bind:** bind a key to `zwhisper toggle`.
+  Example for Sway:
   ```
   bindsym Mod4+Shift+r exec /usr/bin/zwhisper toggle
   ```
+- **Portal-backed bind:** `zwhisper hotkey probe` and
+  `zwhisper hotkey bind` are the intended CLI surface where the
+  desktop portal supports GlobalShortcuts.
 
 Probe the portal availability with `zwhisper hotkey probe`.
 
@@ -284,38 +305,29 @@ zwhisper toggle              # start/stop recording with the active profile
 zwhisper record              # one-shot recording (foreground)
 zwhisper transcribe FILE     # transcribe an existing audio file
 zwhisper profile list|set|show
+zwhisper model ...           # intended model list/download/verify/path surface
 zwhisper hotkey probe|status|bind
 zwhisper backend health      # local whisper.cpp + cloud backend reachability
 ```
 
 Run `zwhisper --help` for the full command surface.
 
-### Tray
+### Waybar and manual integration
 
-The tray icon shows the current state (`idle` / `recording` /
-`stopping` / `transcribing`), exposes the profile picker, and shows
-toast notifications for transitions, errors, and protocol mismatches.
+There is no packaged tray service in the CLI-only product. Panels and
+window managers should call the CLI directly. A minimal Waybar custom
+module can poll status and toggle recording on click:
 
-`zwhisper-tray` is a StatusNotifierItem/AppIndicator tray icon. KDE
-Plasma provides a tray host by default. On Sway or Hyprland, run an
-SNI host such as Waybar with the tray module enabled before starting
-`zwhisper-tray`:
-
-```sh
-busctl --user list | grep StatusNotifierWatcher
-systemctl --user restart zwhisper-tray.service
+```json
+"custom/zwhisper": {
+    "exec": "zwhisper status",
+    "on-click": "zwhisper toggle",
+    "interval": 2
+}
 ```
 
-### Settings GUI
-
-```sh
-zwhisper-settings
-```
-
-Four tabs: **Profile** (editor + diff viewer), **Models**
-(downloader with SHA-256 verification), **Hotkey** (portal-backed
-rebind), **WhisperCLI** (whisper.cpp binary health + GGML version
-match). Single-instance — a second launch raises the existing window.
+For KDE, GNOME, Sway, Hyprland, or other compositors, create a normal
+keyboard shortcut whose command is `/usr/bin/zwhisper toggle`.
 
 ## Troubleshooting
 
@@ -342,7 +354,7 @@ versions. Reinstall both:
 ```sh
 # Arch
 sudo pacman -Syu zwhisper
-systemctl --user restart zwhisperd.service zwhisper-tray.service
+systemctl --user restart zwhisperd.service
 ```
 
 If the message is `daemon does not implement ProtocolVersion
@@ -377,20 +389,12 @@ pactl list short sources      # mic + monitor source names
 Check the active profile's `mic` and `monitor` fields; the daemon
 log will show the `pipewiresrc target-object=<name>` it resolved.
 
-### Settings GUI crashes on launch
-
-Most often a missing Wayland, fontconfig, or freetype library. Verify:
-
-```sh
-ldd $(which zwhisper-settings) | grep -i 'not found'
-```
-
-Install the missing system library (see
-[Build from source § Prerequisites](#prerequisites)).
-
 ## Project layout
 
-Cargo workspace. M8 ships eight crates and four binaries.
+Cargo workspace. The CLI-only product is the daemon, CLI, shared core
+libraries, D-Bus interface, and optional hotkey helper code. Legacy
+tray/settings crates may still exist in the tree during the
+transition, but they are not part of the packaged product.
 
 ```
 zwhisper/
@@ -401,22 +405,18 @@ zwhisper/
 ├── crates/
 │   ├── zwhisperd/                   # bin: D-Bus daemon
 │   ├── zwhisper-cli/                # bin: CLI (binary name "zwhisper")
-│   ├── zwhisper-tray/               # bin: tray indicator
-│   ├── zwhisper-settings/           # bin: FLTK GUI
 │   ├── zwhisper-core/               # lib: profiles, audio, transcribe, secrets
 │   ├── zwhisper-ipc/                # lib: D-Bus wire types + PROTOCOL_VERSION
-│   └── zwhisper-hotkey/             # lib: GlobalShortcuts portal adapter
-├── systemd/                         # zwhisperd.service, zwhisper-tray.service
+│   └── zwhisper-hotkey/             # lib: optional GlobalShortcuts portal adapter
+├── systemd/                         # zwhisperd.service
 ├── dbus/                            # cz.zajca.Zwhisper1.service
 ├── packaging/
-│   ├── arch/                        # PKGBUILD, install hook, namcap allow-list
-│   ├── zwhisper.desktop             # tray launcher
-│   └── zwhisper-settings.desktop    # settings launcher
+│   └── arch/                        # PKGBUILD, install hook, namcap allow-list
 ├── assets/icons/zwhisper.svg
 ├── scripts/
 │   ├── refresh-checksums.sh         # release tool: refresh ggml checksums
 │   ├── m0-soak.sh                   # M0 60-min soak harness
-│   └── install-desktop.sh
+│   └── install-desktop.sh           # legacy desktop helper
 └── docs/                            # milestone plans + verification docs
 ```
 
@@ -444,10 +444,7 @@ cargo doc --workspace --no-deps --open                         # docs
 # Terminal 1: daemon
 RUST_LOG=zwhisperd=debug ./target/release/zwhisperd
 
-# Terminal 2: tray
-RUST_LOG=zwhisper_tray=debug ./target/release/zwhisper-tray
-
-# Terminal 3: CLI
+# Terminal 2: CLI
 ./target/release/zwhisper status
 ./target/release/zwhisper toggle
 ```

@@ -42,6 +42,7 @@ tempfile = { workspace = true }
 reqwest = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true, optional = true }
@@ -66,6 +67,7 @@ transcribe = [
     "dep:reqwest",
     "dep:tokio-util",
     "dep:zeroize",
+    "dep:sha2",
 ]
 # `test-utils` exposes the test-only escape hatches on the Deepgram
 # backend (`with_base_url`, `transcribe_file_with_key`) that would

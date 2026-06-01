@@ -27,7 +27,10 @@ mod cli;
 mod commands;
 mod profile_commands;
 
-use crate::cli::{BackendCmd, HotkeyCmd, ProfileCmd, RecordArgs, TranscribeArgs};
+use crate::cli::{
+    BackendCmd, HotkeyCmd, InstructionsArgs, ModelCmd, ProfileCmd, RecordArgs, StatusArgs,
+    TranscribeArgs,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -57,6 +60,10 @@ enum Command {
     #[command(subcommand)]
     Profile(ProfileCmd),
 
+    /// Manage local whisper.cpp models.
+    #[command(subcommand)]
+    Model(ModelCmd),
+
     /// Direct cloud-backend probes (M5+) — health check, etc.
     /// Bypasses the daemon; reads the API key from the same
     /// resolution chain as the recorder.
@@ -64,7 +71,10 @@ enum Command {
     Backend(BackendCmd),
 
     /// Print runtime status from the daemon.
-    Status,
+    Status(StatusArgs),
+
+    /// Print concise operating instructions for humans or agents.
+    Instructions(InstructionsArgs),
 
     /// M6 — universal toggle (start if idle, stop if recording).
     /// Bind in your Wayland compositor for a tray-less hotkey.
@@ -86,8 +96,10 @@ fn main() -> color_eyre::Result<()> {
         Command::Record(args) => commands::record::run(args),
         Command::Transcribe(args) => commands::transcribe::run(args),
         Command::Profile(cmd) => commands::profile::run(cmd),
+        Command::Model(cmd) => commands::model::run(cmd),
         Command::Backend(cmd) => commands::backend::run(cmd),
-        Command::Status => commands::status::run(),
+        Command::Status(args) => commands::status::run(args),
+        Command::Instructions(args) => commands::instructions::run(args),
         Command::Toggle => commands::toggle::run(),
         Command::Hotkey(cmd) => commands::hotkey::run(cmd),
     }
@@ -108,7 +120,7 @@ fn init_tracing(verbosity: u8) -> Option<WorkerGuard> {
     // If we cannot create the directory, log only to stderr — never abort the
     // CLI just because the log file is unavailable.
     let (file_layer, guard) = match log_dir() {
-        Some(dir) if std::fs::create_dir_all(&dir).is_ok() => {
+        Some(dir) if log_dir_is_writable(&dir) => {
             let appender = tracing_appender::rolling::daily(dir, "zwhisper.log");
             let (writer, guard) = tracing_appender::non_blocking(appender);
             (
@@ -126,6 +138,24 @@ fn init_tracing(verbosity: u8) -> Option<WorkerGuard> {
         .init();
 
     guard
+}
+
+fn log_dir_is_writable(dir: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".zwhisper-log-write-test");
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 fn log_dir() -> Option<PathBuf> {

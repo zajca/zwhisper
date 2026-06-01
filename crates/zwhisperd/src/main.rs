@@ -23,6 +23,7 @@ use tracing::{error, info, warn};
 use zwhisper_core::audio::state::StopReason;
 use zwhisper_ipc::{BUS_NAME, OBJECT_PATH};
 
+mod active_profile;
 mod active_session;
 mod config;
 mod last_session;
@@ -45,7 +46,7 @@ async fn main() -> color_eyre::Result<()> {
     info!(version = env!("CARGO_PKG_VERSION"), "zwhisperd starting");
 
     let sessions = Arc::new(SessionManager::new());
-    let active_profile = Arc::new(AsyncMutex::new(String::new()));
+    let active_profile = Arc::new(AsyncMutex::new(active_profile::load().unwrap_or_default()));
 
     let recorder_iface = RecorderInterface::new(Arc::clone(&sessions), Arc::clone(&active_profile));
     let profiles_iface = ProfilesInterface::new(Arc::clone(&active_profile));

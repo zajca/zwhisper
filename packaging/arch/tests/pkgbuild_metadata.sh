@@ -31,25 +31,15 @@ asserts_required_fields() {
     echo "ok: asserts_required_fields"
 }
 
-makedepends_covers_fltk_source_chain() {
+makedepends_covers_cli_daemon_build_chain() {
     local f="$PKGBUILD"
-    # The FLTK source-build chain must contain cmake, gcc, pkgconf,
-    # fontconfig, freetype2, plus the Wayland link surface (pango,
-    # libxkbcommon, wayland, wayland-protocols, dbus). X11 headers
-    # are intentionally forbidden.
+    # The CLI-only package builds the daemon and CLI without FLTK or
+    # desktop launcher prerequisites.
     local required=(
         "rust"
         "cargo"
-        "cmake"
         "gcc"
         "pkgconf"
-        "pango"
-        "fontconfig"
-        "freetype2"
-        "libxkbcommon"
-        "wayland"
-        "wayland-protocols"
-        "dbus"
     )
     for dep in "${required[@]}"; do
         # The file uses single-quoted entries; some carry version
@@ -61,6 +51,14 @@ makedepends_covers_fltk_source_chain() {
         fi
     done
     local forbidden=(
+        "autoconf"
+        "cmake"
+        "pango"
+        "fontconfig"
+        "freetype2"
+        "libxkbcommon"
+        "wayland"
+        "wayland-protocols"
         "libxft"
         "libxcursor"
         "libxinerama"
@@ -68,11 +66,11 @@ makedepends_covers_fltk_source_chain() {
     )
     for dep in "${forbidden[@]}"; do
         if grep -qE "'${dep}(>=[0-9.]+)?'" "$f"; then
-            echo "FAIL: makedepends must not include X11 dependency '${dep}'" >&2
+            echo "FAIL: makedepends must not include retired GUI dependency '${dep}'" >&2
             return 1
         fi
     done
-    echo "ok: makedepends_covers_fltk_source_chain"
+    echo "ok: makedepends_covers_cli_daemon_build_chain"
 }
 
 runtime_depends_match_runtime_features() {
@@ -85,7 +83,6 @@ runtime_depends_match_runtime_features() {
         "pipewire"
         "wireplumber"
         "dbus"
-        "xdg-desktop-portal"
         "libnotify"
     )
     for dep in "${required[@]}"; do
@@ -99,17 +96,19 @@ runtime_depends_match_runtime_features() {
 
 build_uses_frozen_release_workspace() {
     local f="$PKGBUILD"
-    grep -q 'cargo build --frozen --release --workspace' "$f" \
-        || { echo "FAIL: build() does not use --frozen --release --workspace" >&2; return 1; }
+    grep -q 'cargo build --frozen --release -p zwhisperd -p zwhisper-cli' "$f" \
+        || { echo "FAIL: build() does not build the CLI-only product packages" >&2; return 1; }
     grep -q 'cargo fetch --locked' "$f" \
         || { echo "FAIL: prepare() does not run cargo fetch --locked" >&2; return 1; }
-    grep -q 'CFLTK_WAYLAND_ONLY=1' "$f" \
-        || { echo "FAIL: build() does not force FLTK Wayland-only mode" >&2; return 1; }
+    if grep -q 'CFLTK_WAYLAND_ONLY=1' "$f"; then
+        echo "FAIL: build() still references FLTK" >&2
+        return 1
+    fi
     echo "ok: build_uses_frozen_release_workspace"
 }
 
 asserts_required_fields
-makedepends_covers_fltk_source_chain
+makedepends_covers_cli_daemon_build_chain
 runtime_depends_match_runtime_features
 build_uses_frozen_release_workspace
 echo "all PKGBUILD metadata checks passed"

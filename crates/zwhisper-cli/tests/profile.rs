@@ -146,6 +146,16 @@ fn profile_clone_unknown_source_returns_not_found() {
         .stderr(predicate::str::contains("not found"));
 }
 
+#[test]
+fn profile_set_unknown_profile_returns_not_found_before_dbus() {
+    let home = TempDir::new().unwrap();
+    bin(home.path())
+        .args(["profile", "set", "no-such-source"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
 /// M3 routes `record` through D-Bus, so the typed `ProfileNotFound`
 /// error originates in the daemon. Without a daemon on the bus the
 /// CLI surfaces a "daemon not running" hint instead — both are

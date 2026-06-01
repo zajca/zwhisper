@@ -98,8 +98,9 @@ async fn run_async(profile_name: &str) -> i32 {
     let conn = match zbus::Connection::session().await {
         Ok(c) => c,
         Err(err) => {
+            eprintln!("{DAEMON_DOWN_HINT}");
             eprintln!("failed to connect to session bus: {err}");
-            return EXIT_IPC_FAILURE;
+            return EXIT_PROTOCOL_ERROR;
         }
     };
 
@@ -107,6 +108,10 @@ async fn run_async(profile_name: &str) -> i32 {
     let proxy = match Recorder1Proxy::new(&conn).await {
         Ok(p) => p,
         Err(err) => {
+            if is_daemon_down(&err) {
+                eprintln!("{DAEMON_DOWN_HINT}");
+                return EXIT_PROTOCOL_ERROR;
+            }
             eprintln!("failed to build Recorder1 proxy: {err}");
             return EXIT_IPC_FAILURE;
         }

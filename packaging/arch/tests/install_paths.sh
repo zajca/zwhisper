@@ -30,26 +30,34 @@ package_installs_all_artefacts() {
     # Binaries.
     assert_install_target '/usr/bin/zwhisperd'
     assert_install_target '/usr/bin/zwhisper'
-    assert_install_target '/usr/bin/zwhisper-tray'
-    assert_install_target '/usr/bin/zwhisper-settings'
-    # systemd user units.
+    # systemd user unit.
     assert_install_target '/usr/lib/systemd/user/zwhisperd.service'
-    assert_install_target '/usr/lib/systemd/user/zwhisper-tray.service'
     # D-Bus session-bus auto-activation.
     assert_install_target '/usr/share/dbus-1/services/cz.zajca.Zwhisper1.service'
-    # Desktop entries.
-    assert_install_target '/usr/share/applications/zwhisper.desktop'
-    assert_install_target '/usr/share/applications/zwhisper-settings.desktop'
-    # Icon (scalable).
-    assert_install_target '/usr/share/icons/hicolor/scalable/apps/zwhisper.svg'
     # Shared data templates.
     assert_install_target '/usr/share/zwhisper/secrets.toml.example'
-    assert_install_target '/usr/share/zwhisper/models.toml.example'
-    assert_install_target '/usr/share/zwhisper/checksums.toml'
     # License + docs.
     assert_install_target '/usr/share/licenses/'
     assert_install_target '/usr/share/doc/'
     echo "ok: package_installs_all_artefacts"
+}
+
+package_excludes_retired_gui_artefacts() {
+    local forbidden=(
+        '/usr/bin/zwhisper-tray'
+        '/usr/bin/zwhisper-settings'
+        '/usr/lib/systemd/user/zwhisper-tray.service'
+        '/usr/share/applications/zwhisper.desktop'
+        '/usr/share/applications/zwhisper-settings.desktop'
+        '/usr/share/icons/hicolor/scalable/apps/zwhisper.svg'
+    )
+    for target in "${forbidden[@]}"; do
+        if grep -q "$target" "$PKGBUILD"; then
+            echo "FAIL: retired GUI/tray target still installed: $target" >&2
+            return 1
+        fi
+    done
+    echo "ok: package_excludes_retired_gui_artefacts"
 }
 
 package_uses_install_only() {
@@ -80,18 +88,16 @@ dbus_service_points_at_usr_bin() {
     echo "ok: dbus_service_points_at_usr_bin"
 }
 
-installed_units_use_usr_bin() {
+installed_unit_uses_usr_bin() {
     local zwhisperd_unit="$SCRIPT_DIR/../../../systemd/zwhisperd.service"
-    local tray_unit="$SCRIPT_DIR/../../../systemd/zwhisper-tray.service"
     grep -q '^ExecStart=/usr/bin/zwhisperd$' "$zwhisperd_unit" \
         || { echo "FAIL: zwhisperd.service ExecStart must be /usr/bin/zwhisperd" >&2; return 1; }
-    grep -q '^ExecStart=/usr/bin/zwhisper-tray$' "$tray_unit" \
-        || { echo "FAIL: zwhisper-tray.service ExecStart must be /usr/bin/zwhisper-tray" >&2; return 1; }
-    echo "ok: installed_units_use_usr_bin"
+    echo "ok: installed_unit_uses_usr_bin"
 }
 
 package_installs_all_artefacts
+package_excludes_retired_gui_artefacts
 package_uses_install_only
 dbus_service_points_at_usr_bin
-installed_units_use_usr_bin
+installed_unit_uses_usr_bin
 echo "all install-path checks passed"

@@ -19,11 +19,36 @@ use super::{build_runtime, is_daemon_down};
 pub(crate) fn run(cmd: &ProfileCmd) -> color_eyre::Result<()> {
     match cmd {
         ProfileCmd::List => list(),
+        ProfileCmd::Set { name } => set_active(name),
         ProfileCmd::Show { name } => show(name),
         // Clone + migrate stay local — see the M3-plan rationale in
         // `commands/mod.rs`.
         ProfileCmd::Clone { src, dst } => profile_commands::clone(src, dst),
         ProfileCmd::Migrate { name } => profile_commands::migrate(name),
+    }
+}
+
+fn set_active(name: &str) -> color_eyre::Result<()> {
+    // Validate locally before touching the daemon so typos get the
+    // profile loader's detailed file-path diagnostics.
+    zwhisper_core::profile::load(name).map_err(|e| eyre!("{e}"))?;
+
+    let rt = build_runtime()?;
+    match rt.block_on(set_active_via_dbus(name)) {
+        Ok(()) => {
+            println!("active profile: {name}");
+            Ok(())
+        }
+        Err(err) => {
+            if is_daemon_down(&err) {
+                Err(eyre!(
+                    "daemon not running; could not persist active profile through Profiles1.SetActive. \
+                     Start it with `systemctl --user start zwhisperd` and retry."
+                ))
+            } else {
+                Err(eyre!("Profiles1.SetActive failed: {err}"))
+            }
+        }
     }
 }
 
@@ -81,6 +106,12 @@ fn show(name: &str) -> color_eyre::Result<()> {
             }
         }
     }
+}
+
+async fn set_active_via_dbus(name: &str) -> Result<(), zbus::Error> {
+    let conn = zbus::Connection::session().await?;
+    let proxy = Profiles1Proxy::new(&conn).await?;
+    proxy.set_active(name).await
 }
 
 async fn fetch_list_via_dbus() -> Result<Vec<ProfileEntry>, zbus::Error> {

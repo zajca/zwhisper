@@ -11,16 +11,16 @@ packaging/
 │   └── tests/                 — bash smoke tests for the PKGBUILD
 │       ├── pkgbuild_metadata.sh
 │       └── install_paths.sh
-├── zwhisper.desktop           — tray entry (Exec=zwhisper-tray)
-└── zwhisper-settings.desktop  — settings GUI entry (Exec=zwhisper-settings)
 ```
 
 ## Arch Linux
 
-The PKGBUILD builds the workspace with `--frozen --release --workspace`
-and installs every artefact under the standard system paths. See
-`packaging/arch/PKGBUILD` for the full file. The release process,
-including how to refresh `b2sums` after a tag, is in
+The PKGBUILD builds the CLI-only product binaries (`zwhisperd` and
+`zwhisper`) and installs them under the standard system paths. It
+does not package tray services, settings GUI launchers, or FLTK
+runtime/build prerequisites. See `packaging/arch/PKGBUILD` for the
+full file. The release process, including how to refresh `b2sums`
+after a tag, is in
 [`docs/RELEASE.md`](../docs/RELEASE.md).
 
 ### Local install

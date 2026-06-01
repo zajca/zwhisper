@@ -31,12 +31,12 @@ Verify with `grep '^version' Cargo.toml | head -1`.
 ## 3. Refresh `Cargo.lock`
 
 ```sh
-cargo build --workspace --release --locked
+cargo build -p zwhisperd -p zwhisper-cli --release --locked
 ```
 
 The `--locked` flag verifies no manifest drift; the build also
-exercises the Wayland-only FLTK source build so this is the first
-place a broken cmake / gcc combination would surface.
+exercises the packaged daemon + CLI product without pulling retired
+tray/settings GUI prerequisites into the release gate.
 
 Verify with `git diff --stat Cargo.lock` (one line changed: the
 workspace `[package]` reference).
@@ -44,16 +44,14 @@ workspace `[package]` reference).
 ## 4. Verify ggml model checksums
 
 ```sh
-scripts/refresh-checksums.sh
+zwhisper model verify --all
 ```
 
-The script downloads each model listed in
-`crates/zwhisper-settings/checksums.toml`, recomputes the SHA-256,
-and exits non-zero on drift. **A non-zero exit blocks the release**
-— upstream HuggingFace re-encoded a model and the embedded manifest
-must be regenerated before the new version ships, otherwise users
-will hit `download::tests::resume_re_hashes_from_zero_then_continues`
-mismatches in production.
+The CLI-only target is for `zwhisper model verify --all` to check the
+model manifest used by `zwhisper model download`. If this subcommand
+has not landed in the checkout being released yet, use the temporary
+`scripts/refresh-checksums.sh` helper and treat any checksum drift as
+a release blocker.
 
 Verify with `echo $?` (must be `0`).
 
@@ -72,7 +70,7 @@ cargo test -p zwhisperd --release --test m8_perf_gate -- --include-ignored
 ## 6. Commit and tag
 
 ```sh
-git add CHANGELOG.md Cargo.toml Cargo.lock crates/zwhisper-settings/checksums.toml
+git add CHANGELOG.md Cargo.toml Cargo.lock
 git commit -m "release: vX.Y.Z"
 git tag -s vX.Y.Z -m "zwhisper vX.Y.Z"
 git push origin main vX.Y.Z
@@ -110,9 +108,9 @@ cd packaging/arch
 makepkg -si
 ```
 
-`-s` installs missing build deps (including the FLTK source-build
-chain on a clean machine), `-i` installs the resulting `.pkg.tar.zst` so the
-maintainer can also walk the manual verification gate
+`-s` installs missing daemon/CLI build dependencies, `-i` installs
+the resulting `.pkg.tar.zst` so the maintainer can also walk the
+manual verification gate
 (`docs/M8-verification.md`).
 
 Verify with `pacman -Q zwhisper` (reports `X.Y.Z-1`) and the

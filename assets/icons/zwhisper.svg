@@ -6,7 +6,7 @@
   Microphone glyph + waveform. Colour is `currentColor` so the
   icon picks up the active theme's accent automatically.
 
-  Validated by `crates/zwhisper-tray/tests/m8_icon_asset.rs`.
+  Kept for downstream packagers that still want an application icon.
 -->
 <svg xmlns="http://www.w3.org/2000/svg"
      viewBox="0 0 64 64"

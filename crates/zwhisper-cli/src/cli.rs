@@ -119,6 +119,30 @@ pub(crate) struct TranscribeArgs {
     pub(crate) language: String,
 }
 
+#[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("status-format")
+        .required(false)
+        .multiple(false)
+        .args(["json", "waybar"])
+))]
+pub(crate) struct StatusArgs {
+    /// Print the daemon status as JSON for scripts.
+    #[arg(long)]
+    pub(crate) json: bool,
+
+    /// Print Waybar-compatible JSON.
+    #[arg(long)]
+    pub(crate) waybar: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct InstructionsArgs {
+    /// Print concise Markdown intended for an AI agent operating zwhisper.
+    #[arg(long)]
+    pub(crate) agent: bool,
+}
+
 /// `zwhisper backend` subcommands — direct calls into a backend's
 /// API surface, bypassing the daemon. M5 ships a single `health`
 /// action that probes Deepgram's `/v1/projects` endpoint with the
@@ -160,6 +184,11 @@ pub(crate) enum HotkeyCmd {
 pub(crate) enum ProfileCmd {
     /// List all profiles (user override > shipped > embedded).
     List,
+    /// Set the active profile used by `zwhisper toggle`.
+    Set {
+        /// Profile name (`[A-Za-z0-9._-]+`).
+        name: String,
+    },
     /// Show the resolved TOML for a named profile.
     Show {
         /// Profile name (`[A-Za-z0-9._-]+`).
@@ -177,6 +206,30 @@ pub(crate) enum ProfileCmd {
     Migrate {
         /// User override profile name.
         name: String,
+    },
+}
+
+/// `zwhisper model` subcommands — manage local whisper.cpp model
+/// files used by the `whisper-cpp` backend.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum ModelCmd {
+    /// List known models from the embedded manifest and local install state.
+    List,
+    /// Print the models directory, or the expected path for a known model.
+    Path {
+        /// Manifest model name, e.g. `tiny`, `small`, `large-v3`.
+        model: Option<String>,
+    },
+    /// Download and verify a known model into the local models directory.
+    #[command(alias = "download")]
+    Install {
+        /// Manifest model name, e.g. `tiny`, `small`, `large-v3`.
+        model: String,
+    },
+    /// Verify an installed model against the embedded SHA-256 manifest.
+    Verify {
+        /// Manifest model name, e.g. `tiny`, `small`, `large-v3`.
+        model: String,
     },
 }
 
@@ -216,7 +269,10 @@ pub(crate) fn resolve_duration(duration_s: u64, max_minutes: u64) -> color_eyre:
 mod tests {
     use clap::Parser;
 
-    use super::{HotkeyCmd, ProfileCmd, RecordArgs, TranscribeArgs, resolve_duration};
+    use super::{
+        HotkeyCmd, InstructionsArgs, ModelCmd, ProfileCmd, RecordArgs, StatusArgs, TranscribeArgs,
+        resolve_duration,
+    };
 
     #[derive(Debug, Parser)]
     #[command(name = "zwhisper")]
@@ -229,8 +285,12 @@ mod tests {
     enum TestCommand {
         Record(RecordArgs),
         Transcribe(TranscribeArgs),
+        Status(StatusArgs),
+        Instructions(InstructionsArgs),
         #[command(subcommand)]
         Profile(ProfileCmd),
+        #[command(subcommand)]
+        Model(ModelCmd),
         /// M6 — universal toggle, no flags.
         Toggle,
         /// M6 — hotkey binding management.
@@ -387,6 +447,7 @@ mod tests {
     fn profile_subcommands_parse() {
         for argv in [
             ["zwhisper", "profile", "list", "", ""].as_slice(),
+            ["zwhisper", "profile", "set", "meeting", ""].as_slice(),
             ["zwhisper", "profile", "show", "meeting", ""].as_slice(),
             ["zwhisper", "profile", "clone", "meeting", "my"].as_slice(),
             ["zwhisper", "profile", "migrate", "meeting", ""].as_slice(),
@@ -394,6 +455,43 @@ mod tests {
             let argv: Vec<&str> = argv.iter().filter(|s| !s.is_empty()).copied().collect();
             TestCli::try_parse_from(argv).expect("parse should succeed");
         }
+    }
+
+    #[test]
+    fn model_subcommands_parse() {
+        let list =
+            TestCli::try_parse_from(["zwhisper", "model", "list"]).expect("parse should succeed");
+        assert!(matches!(list.command, TestCommand::Model(ModelCmd::List)));
+
+        let path = TestCli::try_parse_from(["zwhisper", "model", "path", "tiny"])
+            .expect("parse should succeed");
+        assert!(matches!(
+            path.command,
+            TestCommand::Model(ModelCmd::Path { ref model }) if model.as_deref() == Some("tiny")
+        ));
+
+        let dir_path =
+            TestCli::try_parse_from(["zwhisper", "model", "path"]).expect("parse should succeed");
+        assert!(matches!(
+            dir_path.command,
+            TestCommand::Model(ModelCmd::Path { model: None })
+        ));
+
+        for command in ["install", "download"] {
+            let install = TestCli::try_parse_from(["zwhisper", "model", command, "large-v3"])
+                .expect("parse should succeed");
+            assert!(matches!(
+                install.command,
+                TestCommand::Model(ModelCmd::Install { ref model }) if model == "large-v3"
+            ));
+        }
+
+        let verify = TestCli::try_parse_from(["zwhisper", "model", "verify", "large-v3"])
+            .expect("parse should succeed");
+        assert!(matches!(
+            verify.command,
+            TestCommand::Model(ModelCmd::Verify { ref model }) if model == "large-v3"
+        ));
     }
 
     // ============================================================
@@ -446,6 +544,36 @@ mod tests {
         match cli.command {
             TestCommand::Hotkey(cmd) => assert_eq!(cmd, HotkeyCmd::Probe),
             other => panic!("expected Hotkey(Probe), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_formats_parse() {
+        for argv in [
+            ["zwhisper", "status", "--json"].as_slice(),
+            ["zwhisper", "status", "--waybar"].as_slice(),
+        ] {
+            let cli = TestCli::try_parse_from(argv).unwrap();
+            match cli.command {
+                TestCommand::Status(_) => {}
+                other => panic!("expected status command, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn status_formats_conflict() {
+        let err = TestCli::try_parse_from(["zwhisper", "status", "--json", "--waybar"])
+            .expect_err("clap must reject two status formats");
+        assert!(err.to_string().contains("--json") || err.to_string().contains("--waybar"));
+    }
+
+    #[test]
+    fn instructions_agent_parses() {
+        let cli = TestCli::try_parse_from(["zwhisper", "instructions", "--agent"]).unwrap();
+        match cli.command {
+            TestCommand::Instructions(args) => assert!(args.agent),
+            other => panic!("expected instructions command, got {other:?}"),
         }
     }
 }
