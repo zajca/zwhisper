@@ -59,6 +59,7 @@ pub(crate) struct LifecycleHooks {
     pub(crate) transcribe_backend: String,
     pub(crate) transcribe_model: String,
     pub(crate) transcribe_language: String,
+    pub(crate) transcribe_whisper_cpp: zwhisper_core::profile::schema::WhisperCppSettings,
     /// M5 — typed routing for cloud backends. Default
     /// [`zwhisper_core::transcribe::BackendConfig::WhisperCpp`] keeps
     /// the legacy whisper-cpp flow intact.
@@ -177,6 +178,7 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                     backend: hooks.transcribe_backend.clone(),
                     model: hooks.transcribe_model.clone(),
                     language: hooks.transcribe_language.clone(),
+                    whisper_cpp: hooks.transcribe_whisper_cpp.clone(),
                     backend_config: hooks.transcribe_backend_config.clone(),
                 };
                 match transcribe_file(&report.audio_path, &opts).await {

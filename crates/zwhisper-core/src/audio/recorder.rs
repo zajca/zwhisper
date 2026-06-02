@@ -302,12 +302,13 @@ impl Recorder {
             warn!("pipeline rejected EOS event — falling through to Null transition");
         }
 
-        // Wait until the bus thread classifies the EOS message (or any
-        // stop-worthy event) into the watch channel. Polling the
-        // channel here instead of `bus.timed_pop_filtered` prevents a
-        // race where the bus thread consumes the EOS first and our
-        // direct read times out empty-handed.
-        let eos_seen = wait_for_stop_signal(&mut self.stop_rx_anchor.clone());
+        // Wait until the bus thread classifies the EOS message, or a
+        // recorder-side error, into the watch channel. Caller-side
+        // stop reasons (`UserRequested`, `DurationElapsed`) are only
+        // triggers for entering this drain path; treating them as EOS
+        // would tear the pipeline down before `flacenc` has flushed
+        // the final STREAMINFO sample count.
+        let eos_seen = wait_for_drain_signal(&mut self.stop_rx_anchor.clone());
 
         // After observing (or failing to observe) the stop signal,
         // shut the bus thread down so we own the bus exclusively for
@@ -608,19 +609,22 @@ fn verify_samples_match_duration(
     )))
 }
 
-/// Block the calling thread until the watch channel reports a
-/// non-`Running` `StopReason` (sent by the bus thread when it
-/// classifies an `Eos`/`Error`/`DeviceLost` message), or until
-/// `EOS_TIMEOUT_SECS` elapses. Returns `true` when an `EosObserved`
-/// reason arrived in time. Any other reason (`BusError`,
-/// `DeviceLost`) is also a "stop signal received" — we return `true`
-/// to skip the timeout error path and let `stop()` translate the
-/// watch value.
-fn wait_for_stop_signal(stop_rx: &mut watch::Receiver<StopReason>) -> bool {
+/// Block the calling thread until the bus thread reports that the
+/// drain completed (`EosObserved`) or failed (`BusError` /
+/// `DeviceLost`), or until `EOS_TIMEOUT_SECS` elapses. Caller-side
+/// reasons (`UserRequested`, `DurationElapsed`) are deliberately
+/// ignored here: they requested the drain, but they do not prove that
+/// `flacenc` has flushed the final STREAMINFO sample count to disk.
+fn wait_for_drain_signal(stop_rx: &mut watch::Receiver<StopReason>) -> bool {
     let deadline = Instant::now() + Duration::from_secs(EOS_TIMEOUT_SECS);
     loop {
-        if !matches!(*stop_rx.borrow_and_update(), StopReason::Running) {
-            return true;
+        match &*stop_rx.borrow_and_update() {
+            StopReason::EosObserved
+            | StopReason::BusError { .. }
+            | StopReason::DeviceLost { .. } => {
+                return true;
+            }
+            StopReason::Running | StopReason::DurationElapsed | StopReason::UserRequested => {}
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -769,6 +773,24 @@ mod tests {
     fn stop_reason_device_lost_is_an_error() {
         let r = StopReason::DeviceLost { node: "x".into() };
         assert!(r.is_error());
+    }
+
+    #[test]
+    fn wait_for_drain_signal_ignores_caller_stop_until_eos() {
+        let (tx, mut rx) = watch::channel(StopReason::UserRequested);
+        let started = Instant::now();
+
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            tx.send_replace(StopReason::EosObserved);
+        });
+
+        assert!(wait_for_drain_signal(&mut rx));
+        handle.join().unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(25),
+            "caller-side stop reason must not satisfy the drain wait"
+        );
     }
 
     #[test]

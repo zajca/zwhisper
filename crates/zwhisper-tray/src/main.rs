@@ -52,7 +52,9 @@ use tracing_subscriber::EnvFilter;
 use zwhisper_hotkey::config::HotkeyConfig;
 
 use zwhisper_tray::cmd::run_dispatcher;
-use zwhisper_tray::config::{COMMAND_CHANNEL_CAPACITY, Config, SINK_CHANNEL_CAPACITY};
+use zwhisper_tray::config::{
+    COMMAND_CHANNEL_CAPACITY, Config, SINK_CHANNEL_CAPACITY, tray_registration_retry_delay,
+};
 use zwhisper_tray::dbus::connect_session;
 use zwhisper_tray::hotkey::{HotkeyControl, run_hotkey};
 use zwhisper_tray::pump::run_pump;
@@ -277,40 +279,11 @@ async fn main() -> Result<()> {
         tokio::spawn(drain_commands_offline(cmd_rx))
     };
 
-    // Build the tray and register it on the session bus. `spawn`
-    // returns once the tray is registered with the desktop's
-    // `StatusNotifierWatcher`; if registration fails we route the
-    // raw `ksni::Error` through `tray_diag::diagnose` to print an
-    // actionable summary plus next-step bullets before exiting.
-    // The mapping covers the three current failure modes (no D-Bus,
-    // no watcher, no host) — see `tray_diag` rustdoc for rationale.
-    let tray = ZwhisperTray::new(cmd_tx.clone(), quit_tx.clone(), hotkey_ctl_tx.clone());
-    let handle = match tray.spawn().await {
-        Ok(h) => {
-            info!("ksni tray registered with StatusNotifierWatcher");
-            h
-        }
-        Err(err) => {
-            let diag = zwhisper_tray::tray_diag::diagnose(&err);
-            error!(
-                category = ?diag.category,
-                error = %err,
-                "{}",
-                diag.summary,
-            );
-            for step in diag.next_steps {
-                error!("  - {}", step);
-            }
-            return Err(color_eyre::eyre::eyre!(
-                "tray registration failed: {} ({err})",
-                diag.summary,
-            ));
-        }
-    };
-
     // Pump task — owns the single writer of `state_tx`. Also
     // produces sink jobs on `sink_tx` whenever a `TranscriptComplete`
-    // signal arrives (P5).
+    // signal arrives (P5). It starts before SNI registration so
+    // notifications and state tracking still work while a Wayland
+    // tray host such as Waybar is starting.
     let pump_sink_tx = sink_tx.clone();
     // M8 follow-up: pump needs the shutdown broadcaster so a
     // protocol-version mismatch tears down the whole tray (not
@@ -328,6 +301,15 @@ async fn main() -> Result<()> {
             error!(error = %e, "pump task ended with error");
         }
     });
+
+    // Build the tray and register it on the session bus. `spawn`
+    // returns once the tray is registered with the desktop's
+    // `StatusNotifierWatcher`. Missing watcher/host is retryable:
+    // Sway, Hyprland, and other compositor setups commonly start
+    // the watcher via an external process (`waybar`, a panel) after
+    // this user service is already up.
+    let handle =
+        spawn_tray_with_retry(cmd_tx.clone(), quit_tx.clone(), hotkey_ctl_tx.clone()).await?;
 
     // Supervisor task — forwards state snapshots to ksni and exits 1
     // if ksni dies (M4-plan C3).
@@ -402,6 +384,61 @@ async fn drain_commands_offline(mut rx: mpsc::Receiver<PendingCmd>) {
 async fn drain_hotkey_offline(mut rx: mpsc::Receiver<HotkeyControl>) {
     while let Some(ctl) = rx.recv().await {
         warn!(?ctl, "dropping hotkey control (no D-Bus connection)");
+    }
+}
+
+/// Register the SNI tray item, retrying when the desktop tray host
+/// is not ready yet.
+async fn spawn_tray_with_retry(
+    cmd_tx: mpsc::Sender<PendingCmd>,
+    quit_tx: mpsc::Sender<()>,
+    hotkey_ctl_tx: mpsc::Sender<HotkeyControl>,
+) -> Result<ksni::Handle<ZwhisperTray>> {
+    let mut attempt = 0usize;
+
+    loop {
+        let tray = ZwhisperTray::new(cmd_tx.clone(), quit_tx.clone(), hotkey_ctl_tx.clone());
+        match tray.spawn().await {
+            Ok(handle) => {
+                info!(
+                    attempts = attempt + 1,
+                    "ksni tray registered with StatusNotifierWatcher"
+                );
+                return Ok(handle);
+            }
+            Err(err) => {
+                let diag = zwhisper_tray::tray_diag::diagnose(&err);
+                let retryable =
+                    zwhisper_tray::tray_diag::registration_failure_is_retryable(diag.category);
+                if attempt == 0 || !retryable {
+                    error!(
+                        category = ?diag.category,
+                        error = %err,
+                        "{}",
+                        diag.summary,
+                    );
+                    for step in diag.next_steps {
+                        error!("  - {}", step);
+                    }
+                }
+                if !retryable {
+                    return Err(color_eyre::eyre::eyre!(
+                        "tray registration failed: {} ({err})",
+                        diag.summary,
+                    ));
+                }
+
+                let delay = tray_registration_retry_delay(attempt);
+                warn!(
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis(),
+                    category = ?diag.category,
+                    "tray host unavailable; retrying registration"
+                );
+                tokio::time::sleep(delay).await;
+                attempt = attempt.saturating_add(1);
+            }
+        }
     }
 }
 

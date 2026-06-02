@@ -266,6 +266,11 @@ impl RecorderInterface {
             transcribe_backend: profile.transcription.backend.as_str().to_owned(),
             transcribe_model,
             transcribe_language: profile.transcription.language.clone(),
+            transcribe_whisper_cpp: profile
+                .transcription
+                .whisper_cpp
+                .clone()
+                .unwrap_or_default(),
             transcribe_backend_config: backend_config,
         };
 

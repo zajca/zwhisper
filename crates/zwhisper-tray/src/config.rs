@@ -80,6 +80,27 @@ pub const PROFILE_REFRESH_PERIOD: Duration = Duration::from_secs(60);
 pub const BACKOFF_SCHEDULE_MS: &[u64] = &[250, 500, 1000, 2000, 5000];
 
 // ---------------------------------------------------------------------------
+// Tray registration - StatusNotifierWatcher startup races
+// ---------------------------------------------------------------------------
+
+/// Retry schedule for registering the SNI item with the desktop watcher.
+///
+/// **Rationale.** On Wayland compositors the StatusNotifierWatcher is
+/// often provided by an external process (`waybar`, a panel) that
+/// starts independently from this systemd user service. Treat
+/// missing watcher/host as a recoverable startup race and keep
+/// retrying with the same cap as daemon reconnects: responsive when
+/// the host appears, quiet enough once the host is simply absent.
+pub const TRAY_REGISTRATION_BACKOFF_SCHEDULE_MS: &[u64] = &[250, 500, 1000, 2000, 5000];
+
+/// Delay for the Nth tray-registration retry attempt.
+#[must_use]
+pub fn tray_registration_retry_delay(attempt: usize) -> Duration {
+    let idx = attempt.min(TRAY_REGISTRATION_BACKOFF_SCHEDULE_MS.len() - 1);
+    Duration::from_millis(TRAY_REGISTRATION_BACKOFF_SCHEDULE_MS[idx])
+}
+
+// ---------------------------------------------------------------------------
 // Sinks — clipboard size guard
 // ---------------------------------------------------------------------------
 
@@ -204,6 +225,20 @@ mod tests {
         // operators with a tray that stays offline for a minute.
         let cap = *BACKOFF_SCHEDULE_MS.last().unwrap();
         assert!(cap <= 30_000, "backoff cap exceeds 30 s: {cap} ms");
+    }
+
+    #[test]
+    fn tray_registration_backoff_schedule_is_non_empty_and_capped() {
+        let cap = *TRAY_REGISTRATION_BACKOFF_SCHEDULE_MS
+            .last()
+            .expect("registration backoff schedule must not be empty");
+        assert!(cap <= 30_000, "registration backoff cap too high: {cap} ms");
+    }
+
+    #[test]
+    fn tray_registration_retry_delay_caps_at_last_entry() {
+        let last = Duration::from_millis(*TRAY_REGISTRATION_BACKOFF_SCHEDULE_MS.last().unwrap());
+        assert_eq!(tray_registration_retry_delay(usize::MAX), last);
     }
 
     #[test]

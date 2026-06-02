@@ -30,6 +30,7 @@ use tracing::{debug, error, info, warn};
 use super::error::TranscribeError;
 use super::{Capabilities, TranscribeOpts, Transcriber, TranscriptArtifacts};
 use super::{discovery, models};
+use crate::profile::schema::WhisperCppSettings;
 
 const STEM: &str = "transcript";
 const LOG_TRUNCATE_BYTES: usize = 4096;
@@ -271,8 +272,27 @@ impl Transcriber for WhisperCppLocal {
         cmd.arg("--model")
             .arg(&model_path)
             .arg("--language")
-            .arg(&opts.language)
-            .arg("--output-txt")
+            .arg(&opts.language);
+
+        if let Err(message) = opts.whisper_cpp.validate() {
+            let err = TranscribeError::InvalidBackendOption {
+                option: message,
+                reason: "invalid whisper.cpp settings",
+            };
+            write_backtest_log(
+                audio,
+                opts,
+                "err:backend-option",
+                started_at.elapsed(),
+                None,
+                None,
+            )
+            .await;
+            return Err(err);
+        }
+        append_whisper_cpp_args(&mut cmd, &opts.whisper_cpp);
+
+        cmd.arg("--output-txt")
             .arg("--output-json")
             .arg("--output-file")
             .arg(&stem)
@@ -443,6 +463,125 @@ impl Transcriber for WhisperCppLocal {
         .await;
 
         Ok(artifacts)
+    }
+}
+
+fn append_whisper_cpp_args(cmd: &mut Command, settings: &WhisperCppSettings) {
+    fn arg_value<T: ToString>(cmd: &mut Command, flag: &str, value: Option<T>) {
+        if let Some(value) = value {
+            cmd.arg(flag).arg(value.to_string());
+        }
+    }
+
+    fn arg_path_like(cmd: &mut Command, flag: &str, value: &Option<String>) {
+        if let Some(value) = value {
+            cmd.arg(flag).arg(value);
+        }
+    }
+
+    arg_value(cmd, "--threads", settings.threads);
+    arg_value(cmd, "--processors", settings.processors);
+    arg_value(cmd, "--offset-t", settings.offset_ms);
+    arg_value(cmd, "--offset-n", settings.offset_n);
+    arg_value(cmd, "--duration", settings.duration_ms);
+    arg_value(cmd, "--max-context", settings.max_context);
+    arg_value(cmd, "--max-len", settings.max_len);
+    if settings.split_on_word {
+        cmd.arg("--split-on-word");
+    }
+    arg_value(cmd, "--best-of", settings.best_of);
+    arg_value(cmd, "--beam-size", settings.beam_size);
+    arg_value(cmd, "--audio-ctx", settings.audio_ctx);
+    arg_value(cmd, "--word-thold", settings.word_threshold);
+    arg_value(cmd, "--entropy-thold", settings.entropy_threshold);
+    arg_value(cmd, "--logprob-thold", settings.logprob_threshold);
+    arg_value(cmd, "--no-speech-thold", settings.no_speech_threshold);
+    arg_value(cmd, "--temperature", settings.temperature);
+    arg_value(cmd, "--temperature-inc", settings.temperature_inc);
+    if settings.translate {
+        cmd.arg("--translate");
+    }
+    if settings.diarize {
+        cmd.arg("--diarize");
+    }
+    if settings.tinydiarize {
+        cmd.arg("--tinydiarize");
+    }
+    if settings.no_fallback {
+        cmd.arg("--no-fallback");
+    }
+    if settings.no_prints {
+        cmd.arg("--no-prints");
+    }
+    if settings.print_special {
+        cmd.arg("--print-special");
+    }
+    if settings.print_colors {
+        cmd.arg("--print-colors");
+    }
+    if settings.print_confidence {
+        cmd.arg("--print-confidence");
+    }
+    if settings.print_progress {
+        cmd.arg("--print-progress");
+    }
+    if settings.no_timestamps {
+        cmd.arg("--no-timestamps");
+    }
+    arg_path_like(cmd, "--prompt", &settings.prompt);
+    if settings.carry_initial_prompt {
+        cmd.arg("--carry-initial-prompt");
+    }
+    arg_path_like(cmd, "--ov-e-device", &settings.openvino_device);
+    arg_path_like(cmd, "--dtw", &settings.dtw);
+    if settings.log_score {
+        cmd.arg("--log-score");
+    }
+    if settings.no_gpu {
+        cmd.arg("--no-gpu");
+    }
+    arg_value(cmd, "--device", settings.device);
+    match settings.flash_attn {
+        Some(true) => {
+            cmd.arg("--flash-attn");
+        }
+        Some(false) => {
+            cmd.arg("--no-flash-attn");
+        }
+        None => {}
+    }
+    if settings.suppress_nst {
+        cmd.arg("--suppress-nst");
+    }
+    arg_path_like(cmd, "--suppress-regex", &settings.suppress_regex);
+    arg_path_like(cmd, "--grammar", &settings.grammar);
+    arg_path_like(cmd, "--grammar-rule", &settings.grammar_rule);
+    arg_value(cmd, "--grammar-penalty", settings.grammar_penalty);
+    if settings.vad {
+        cmd.arg("--vad");
+    }
+    arg_path_like(cmd, "--vad-model", &settings.vad_model);
+    arg_value(cmd, "--vad-threshold", settings.vad_threshold);
+    arg_value(
+        cmd,
+        "--vad-min-speech-duration-ms",
+        settings.vad_min_speech_duration_ms,
+    );
+    arg_value(
+        cmd,
+        "--vad-min-silence-duration-ms",
+        settings.vad_min_silence_duration_ms,
+    );
+    arg_value(
+        cmd,
+        "--vad-max-speech-duration-s",
+        settings.vad_max_speech_duration_s,
+    );
+    arg_value(cmd, "--vad-speech-pad-ms", settings.vad_speech_pad_ms);
+    arg_value(cmd, "--vad-samples-overlap", settings.vad_samples_overlap);
+
+    for arg in &settings.extra_args {
+        cmd.arg(arg);
     }
 }
 
@@ -758,7 +897,7 @@ fn backtest_log_dir() -> Option<PathBuf> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::os::unix::process::ExitStatusExt;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use tempfile::TempDir;
     use tokio::fs;
@@ -775,6 +914,7 @@ mod tests {
         status: ExitStatus,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
+        observed_args: Option<Arc<Mutex<Vec<String>>>>,
         /// If set, the runner returns this error instead of a
         /// successful `RunOutput`. Wrapped in Mutex<Option<…>> so
         /// the trait's `&self` stays object-safe.
@@ -788,6 +928,7 @@ mod tests {
                 status: ExitStatus::from_raw(0),
                 stdout: Vec::new(),
                 stderr: Vec::new(),
+                observed_args: None,
                 spawn_error: Mutex::new(None),
             }
         }
@@ -813,13 +954,26 @@ mod tests {
             *self.spawn_error.lock().unwrap() = Some(err);
             self
         }
+
+        fn observing_args(mut self, observed: Arc<Mutex<Vec<String>>>) -> Self {
+            self.observed_args = Some(observed);
+            self
+        }
     }
 
     #[async_trait]
     impl Runner for MockRunner {
-        async fn run(&self, _cmd: Command, workdir: &Path) -> Result<RunOutput, TranscribeError> {
+        async fn run(&self, cmd: Command, workdir: &Path) -> Result<RunOutput, TranscribeError> {
             if let Some(e) = self.spawn_error.lock().unwrap().take() {
                 return Err(e);
+            }
+            if let Some(observed) = &self.observed_args {
+                let args = cmd
+                    .as_std()
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect();
+                *observed.lock().unwrap() = args;
             }
             for (name, contents) in &self.files {
                 fs::write(workdir.join(name), contents).await.unwrap();
@@ -1067,6 +1221,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(artifacts.audio_duration, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn whisper_cpp_settings_are_forwarded_before_owned_output_args() {
+        let (_model_dir, model_path) = make_model_file("small");
+        let (_audio_dir, audio) = make_audio("clip.flac").await;
+        let observed = Arc::new(Mutex::new(Vec::new()));
+
+        let runner = MockRunner::new()
+            .with_file("transcript.txt", b"Hello\n")
+            .with_file("transcript.json", one_segment_json().as_bytes())
+            .with_status(0)
+            .observing_args(Arc::clone(&observed));
+
+        let backend = WhisperCppLocal::with_runner_and_locator(
+            Box::new(runner),
+            PathBuf::from("/usr/bin/whisper-cli"),
+            model_path,
+        );
+        let mut opts = opts("small");
+        opts.whisper_cpp = WhisperCppSettings {
+            threads: Some(16),
+            processors: Some(1),
+            no_gpu: true,
+            flash_attn: Some(false),
+            vad: true,
+            vad_model: Some("/models/silero.bin".into()),
+            extra_args: vec!["--zen5-special".into()],
+            ..Default::default()
+        };
+
+        backend.transcribe_file(&audio, &opts).await.unwrap();
+
+        let args = observed.lock().unwrap().clone();
+        assert!(args.contains(&"--threads".to_owned()), "{args:?}");
+        assert!(args.contains(&"16".to_owned()), "{args:?}");
+        assert!(args.contains(&"--no-gpu".to_owned()), "{args:?}");
+        assert!(args.contains(&"--no-flash-attn".to_owned()), "{args:?}");
+        assert!(args.contains(&"--vad".to_owned()), "{args:?}");
+        assert!(args.contains(&"--vad-model".to_owned()), "{args:?}");
+        assert!(args.contains(&"/models/silero.bin".to_owned()), "{args:?}");
+        assert!(args.contains(&"--zen5-special".to_owned()), "{args:?}");
+        let extra_arg_pos = args
+            .iter()
+            .position(|arg| arg == "--zen5-special")
+            .expect("extra arg should be present");
+        let output_pos = args
+            .iter()
+            .position(|arg| arg == "--output-file")
+            .expect("output arg should be present");
+        assert!(
+            extra_arg_pos < output_pos,
+            "owned output args should remain after configurable args: {args:?}"
+        );
     }
 
     #[tokio::test]

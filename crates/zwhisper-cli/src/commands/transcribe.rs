@@ -55,6 +55,11 @@ async fn run_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
             backend: profile.transcription.backend.as_str().to_owned(),
             model,
             language: profile.transcription.language.clone(),
+            whisper_cpp: profile
+                .transcription
+                .whisper_cpp
+                .clone()
+                .unwrap_or_default(),
             backend_config,
         }
     } else {
@@ -69,6 +74,7 @@ async fn run_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
             backend: args.backend.clone(),
             model: args.model.clone(),
             language: args.language.clone(),
+            whisper_cpp: Default::default(),
             backend_config,
         }
     };

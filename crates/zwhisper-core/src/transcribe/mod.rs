@@ -40,7 +40,7 @@ pub use speakers::SpeakerSegment;
 pub use discovery::detect_whisper_cli;
 pub use models::{models_dir, resolve_model};
 
-use crate::profile::schema::DeepgramSettings;
+use crate::profile::schema::{DeepgramSettings, WhisperCppSettings};
 
 /// Backend-specific configuration carried by [`TranscribeOpts`].
 /// M5 introduces this enum as the typed alternative to the legacy
@@ -94,6 +94,9 @@ pub struct TranscribeOpts {
     pub model: String,
     /// ISO 639-1 language code or `"auto"`.
     pub language: String,
+    /// Optional whisper.cpp CLI tuning. Empty settings keep
+    /// `whisper-cli` defaults for every non-zwhisper-owned option.
+    pub whisper_cpp: WhisperCppSettings,
     /// Typed backend config. Defaults to [`BackendConfig::WhisperCpp`]
     /// so existing call sites compile unchanged.
     #[allow(dead_code)]

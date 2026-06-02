@@ -1,8 +1,9 @@
 //! Whisper model discovery and metadata (GGUF/GGML files on disk).
 //!
 //! `resolve_model` validates a user-supplied model name and resolves
-//! it to a path under `$XDG_DATA_HOME/zwhisper/models/ggml-<name>.bin`
-//! (or the platform equivalent via `dirs::data_local_dir()`).
+//! it to `ggml-<name>.bin` under `ZWHISPER_MODELS_DIR`, when set, or
+//! `$XDG_DATA_HOME/zwhisper/models` (or the platform equivalent via
+//! `dirs::data_local_dir()`).
 //!
 //! The resolver is wrapped behind a `ModelDirProvider` trait so
 //! tests inject an isolated tempdir without touching `$HOME` or
@@ -20,6 +21,9 @@ use super::error::TranscribeError;
 /// Indirection over the XDG/data-dir lookup so the resolver can be
 /// unit tested without touching process state.
 pub(crate) trait ModelDirProvider {
+    /// Look up an env var by name. Returns `None` if unset or empty.
+    fn env_var(&self, name: &str) -> Option<String>;
+
     /// Returns the platform "local data" dir — i.e. the parent of
     /// `zwhisper/models`. On Linux this is typically
     /// `$XDG_DATA_HOME` (defaulting to `~/.local/share`).
@@ -31,10 +35,19 @@ pub(crate) trait ModelDirProvider {
 pub(crate) struct RealModelDirProvider;
 
 impl ModelDirProvider for RealModelDirProvider {
+    fn env_var(&self, name: &str) -> Option<String> {
+        match std::env::var(name) {
+            Ok(v) if !v.is_empty() => Some(v),
+            _ => None,
+        }
+    }
+
     fn data_local_dir(&self) -> Option<PathBuf> {
         dirs::data_local_dir()
     }
 }
+
+const MODELS_DIR_ENV: &str = "ZWHISPER_MODELS_DIR";
 
 /// Validate `name` against the allow-list `[A-Za-z0-9._-]+` plus a
 /// few rejected literals (`""`, `auto`). On success the validated
@@ -86,17 +99,9 @@ pub(crate) fn resolve_with<P: ModelDirProvider>(
 ) -> Result<PathBuf, TranscribeError> {
     validate_name(name)?;
 
-    let Some(data_dir) = provider.data_local_dir() else {
-        return Err(TranscribeError::InvalidModelName {
-            name: name.to_owned(),
-            reason: "cannot resolve XDG data dir; set $XDG_DATA_HOME",
-        });
-    };
+    let models_dir = resolve_models_dir_with(provider, name)?;
 
-    let expected = data_dir
-        .join("zwhisper")
-        .join("models")
-        .join(format!("ggml-{name}.bin"));
+    let expected = models_dir.join(format!("ggml-{name}.bin"));
 
     if !Path::is_file(&expected) {
         return Err(TranscribeError::ModelNotFound {
@@ -106,6 +111,33 @@ pub(crate) fn resolve_with<P: ModelDirProvider>(
     }
 
     Ok(expected)
+}
+
+fn resolve_models_dir_with<P: ModelDirProvider>(
+    provider: &P,
+    model_name_for_error: &str,
+) -> Result<PathBuf, TranscribeError> {
+    if let Some(raw) = provider.env_var(MODELS_DIR_ENV) {
+        let expanded = shellexpand::tilde(&raw).into_owned();
+        let path = PathBuf::from(expanded);
+        if !path.is_absolute() {
+            return Err(TranscribeError::InvalidModelDir {
+                env_var: MODELS_DIR_ENV,
+                path,
+                reason: "path must be absolute",
+            });
+        }
+        return Ok(path);
+    }
+
+    let Some(data_dir) = provider.data_local_dir() else {
+        return Err(TranscribeError::InvalidModelName {
+            name: model_name_for_error.to_owned(),
+            reason: "cannot resolve XDG data dir; set $XDG_DATA_HOME",
+        });
+    };
+
+    Ok(data_dir.join("zwhisper").join("models"))
 }
 
 /// Production entry point — wires up `RealModelDirProvider`.
@@ -128,13 +160,7 @@ pub fn resolve_model(name: &str) -> Result<PathBuf, TranscribeError> {
 /// an empty `name` field to signal that the failure is global, not
 /// per-model.
 pub fn models_dir() -> Result<PathBuf, TranscribeError> {
-    let Some(data_dir) = RealModelDirProvider.data_local_dir() else {
-        return Err(TranscribeError::InvalidModelName {
-            name: String::new(),
-            reason: "cannot resolve XDG data dir; set $XDG_DATA_HOME",
-        });
-    };
-    Ok(data_dir.join("zwhisper").join("models"))
+    resolve_models_dir_with(&RealModelDirProvider, "")
 }
 
 #[cfg(test)]
@@ -149,9 +175,18 @@ mod tests {
     /// Test `ModelDirProvider` returning a fixed tempdir path.
     struct MockModelDirProvider {
         dir: PathBuf,
+        env_models_dir: Option<String>,
     }
 
     impl ModelDirProvider for MockModelDirProvider {
+        fn env_var(&self, name: &str) -> Option<String> {
+            if name == MODELS_DIR_ENV {
+                self.env_models_dir.clone()
+            } else {
+                None
+            }
+        }
+
         fn data_local_dir(&self) -> Option<PathBuf> {
             Some(self.dir.clone())
         }
@@ -162,6 +197,10 @@ mod tests {
     struct NoneProvider;
 
     impl ModelDirProvider for NoneProvider {
+        fn env_var(&self, _name: &str) -> Option<String> {
+            None
+        }
+
         fn data_local_dir(&self) -> Option<PathBuf> {
             None
         }
@@ -178,6 +217,7 @@ mod tests {
         }
         let provider = MockModelDirProvider {
             dir: tmp.path().to_path_buf(),
+            env_models_dir: None,
         };
         (tmp, provider)
     }
@@ -322,5 +362,28 @@ mod tests {
             }
             other => panic!("expected InvalidModelName, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn env_models_dir_overrides_zwhisper_data_dir() {
+        let (tmp, mut provider) = make_provider(&[]);
+        let shared_dir = tmp.path().join("shared-models");
+        fs::create_dir_all(&shared_dir).unwrap();
+        fs::write(shared_dir.join("ggml-small.bin"), b"").unwrap();
+        provider.env_models_dir = Some(shared_dir.display().to_string());
+
+        let resolved = resolve_with(&provider, "small").unwrap();
+
+        assert_eq!(resolved, shared_dir.join("ggml-small.bin"));
+    }
+
+    #[test]
+    fn env_models_dir_must_be_absolute() {
+        let (_tmp, mut provider) = make_provider(&[]);
+        provider.env_models_dir = Some("relative/models".to_owned());
+
+        let err = resolve_with(&provider, "small").unwrap_err();
+
+        assert!(matches!(err, TranscribeError::InvalidModelDir { .. }));
     }
 }

@@ -71,7 +71,7 @@ pub struct Recording {
     pub max_duration_minutes: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Transcription {
     pub backend: Backend,
     pub model: String,
@@ -86,6 +86,176 @@ pub struct Transcription {
     /// whisper-cpp profiles (the field is `Option`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deepgram: Option<DeepgramSettings>,
+
+    /// Per-whisper.cpp tuning. Omitted block keeps upstream defaults
+    /// except for zwhisper-owned arguments (`--model`, `--language`,
+    /// `--output-*`, and the input audio path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whisper_cpp: Option<WhisperCppSettings>,
+}
+
+/// whisper.cpp-specific knobs read from `[transcription.whisper_cpp]`.
+/// All fields are optional; absent values let `whisper-cli` keep its
+/// own defaults.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WhisperCppSettings {
+    pub threads: Option<u32>,
+    pub processors: Option<u32>,
+    pub offset_ms: Option<u64>,
+    pub offset_n: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub max_context: Option<i32>,
+    pub max_len: Option<u32>,
+    pub split_on_word: bool,
+    pub best_of: Option<u32>,
+    pub beam_size: Option<u32>,
+    pub audio_ctx: Option<u32>,
+    pub word_threshold: Option<f32>,
+    pub entropy_threshold: Option<f32>,
+    pub logprob_threshold: Option<f32>,
+    pub no_speech_threshold: Option<f32>,
+    pub temperature: Option<f32>,
+    pub temperature_inc: Option<f32>,
+    pub translate: bool,
+    pub diarize: bool,
+    pub tinydiarize: bool,
+    pub no_fallback: bool,
+    pub no_prints: bool,
+    pub print_special: bool,
+    pub print_colors: bool,
+    pub print_confidence: bool,
+    pub print_progress: bool,
+    pub no_timestamps: bool,
+    pub prompt: Option<String>,
+    pub carry_initial_prompt: bool,
+    pub openvino_device: Option<String>,
+    pub dtw: Option<String>,
+    pub log_score: bool,
+    pub no_gpu: bool,
+    pub device: Option<u32>,
+    pub flash_attn: Option<bool>,
+    pub suppress_nst: bool,
+    pub suppress_regex: Option<String>,
+    pub grammar: Option<String>,
+    pub grammar_rule: Option<String>,
+    pub grammar_penalty: Option<f32>,
+    pub vad: bool,
+    pub vad_model: Option<String>,
+    pub vad_threshold: Option<f32>,
+    pub vad_min_speech_duration_ms: Option<u64>,
+    pub vad_min_silence_duration_ms: Option<u64>,
+    pub vad_max_speech_duration_s: Option<f32>,
+    pub vad_speech_pad_ms: Option<u64>,
+    pub vad_samples_overlap: Option<f32>,
+    pub extra_args: Vec<String>,
+}
+
+impl WhisperCppSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("word_threshold", self.word_threshold),
+            ("entropy_threshold", self.entropy_threshold),
+            ("logprob_threshold", self.logprob_threshold),
+            ("no_speech_threshold", self.no_speech_threshold),
+            ("temperature", self.temperature),
+            ("temperature_inc", self.temperature_inc),
+            ("grammar_penalty", self.grammar_penalty),
+            ("vad_threshold", self.vad_threshold),
+            ("vad_max_speech_duration_s", self.vad_max_speech_duration_s),
+            ("vad_samples_overlap", self.vad_samples_overlap),
+        ] {
+            if let Some(v) = value {
+                if !v.is_finite() {
+                    return Err(format!("transcription.whisper_cpp.{name} must be finite"));
+                }
+            }
+        }
+
+        if let Some(v) = self.temperature {
+            if !(0.0..=1.0).contains(&v) {
+                return Err("transcription.whisper_cpp.temperature must be between 0 and 1".into());
+            }
+        }
+        if let Some(v) = self.temperature_inc {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(
+                    "transcription.whisper_cpp.temperature_inc must be between 0 and 1".into(),
+                );
+            }
+        }
+        if let Some(v) = self.vad_threshold {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(
+                    "transcription.whisper_cpp.vad_threshold must be between 0 and 1".into(),
+                );
+            }
+        }
+        if let Some(v) = self.vad_samples_overlap {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(
+                    "transcription.whisper_cpp.vad_samples_overlap must be between 0 and 1".into(),
+                );
+            }
+        }
+        for value in [self.threads, self.processors, self.best_of, self.beam_size]
+            .into_iter()
+            .flatten()
+        {
+            if value == 0 {
+                return Err(
+                    "transcription.whisper_cpp thread/search counts must be greater than zero"
+                        .into(),
+                );
+            }
+        }
+
+        validate_extra_args(&self.extra_args)
+    }
+}
+
+fn validate_extra_args(args: &[String]) -> Result<(), String> {
+    for arg in args {
+        if arg.is_empty() {
+            return Err("transcription.whisper_cpp.extra_args must not contain empty args".into());
+        }
+        if arg.chars().any(|ch| ch == '\0' || ch.is_control()) {
+            return Err(
+                "transcription.whisper_cpp.extra_args must not contain control characters".into(),
+            );
+        }
+        if !arg.starts_with('-') || arg == "--" {
+            return Err(
+                "transcription.whisper_cpp.extra_args must contain only option flags".into(),
+            );
+        }
+        let option = arg.split_once('=').map_or(arg.as_str(), |(flag, _)| flag);
+        if is_reserved_whisper_cpp_arg(option) {
+            return Err(format!(
+                "transcription.whisper_cpp.extra_args must not override zwhisper-owned arg {option:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_reserved_whisper_cpp_arg(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-h" | "--help"
+            | "-m"
+            | "--model"
+            | "-l"
+            | "--language"
+            | "-f"
+            | "--file"
+            | "-otxt"
+            | "--output-txt"
+            | "-oj"
+            | "--output-json"
+            | "-of"
+            | "--output-file"
+    ) || arg.starts_with("--output-")
 }
 
 /// Deepgram-specific knobs read from `[transcription.deepgram]`. All
@@ -161,7 +331,7 @@ pub struct Hotkey {
     pub toggle: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {
     pub schema_version: u32,
     pub name: String,
@@ -280,6 +450,17 @@ impl Profile {
             }
         }
 
+        if matches!(self.transcription.backend, Backend::WhisperCpp) {
+            if let Some(settings) = &self.transcription.whisper_cpp {
+                settings
+                    .validate()
+                    .map_err(|message| ProfileError::Validation {
+                        profile: self.name.clone(),
+                        message,
+                    })?;
+            }
+        }
+
         for out in &self.outputs {
             if let OutputDest::File { path } = out {
                 preflight_path_template(path).map_err(|message| ProfileError::Validation {
@@ -376,6 +557,7 @@ mod tests {
                 language: "auto".into(),
                 auto: true,
                 deepgram: None,
+                whisper_cpp: None,
             },
             outputs: vec![OutputDest::File {
                 path: "~/Recordings/zwhisper/{profile}/{timestamp}.flac".into(),
@@ -504,6 +686,69 @@ mod tests {
         assert!(matches!(p.transcription.backend, Backend::WhisperCpp));
         assert!(p.transcription.deepgram.is_none());
         p.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_whisper_cpp_settings() {
+        let mut p = ok_profile();
+        p.transcription.whisper_cpp = Some(WhisperCppSettings {
+            threads: Some(16),
+            processors: Some(1),
+            no_gpu: true,
+            flash_attn: Some(false),
+            vad: true,
+            vad_model: Some("/models/silero.bin".to_owned()),
+            extra_args: vec!["--zen5-special".to_owned()],
+            ..Default::default()
+        });
+
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_whisper_cpp_reserved_extra_args() {
+        let mut p = ok_profile();
+        p.transcription.whisper_cpp = Some(WhisperCppSettings {
+            extra_args: vec!["--output-file".to_owned(), "/tmp/elsewhere".to_owned()],
+            ..Default::default()
+        });
+
+        let err = p.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--output-file"), "{msg}");
+    }
+
+    #[test]
+    fn validate_rejects_whisper_cpp_positional_extra_args() {
+        let mut p = ok_profile();
+        p.transcription.whisper_cpp = Some(WhisperCppSettings {
+            extra_args: vec!["/tmp/other-input.wav".to_owned()],
+            ..Default::default()
+        });
+
+        let err = p.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("option flags"), "{msg}");
+    }
+
+    #[test]
+    fn whisper_cpp_settings_round_trip_via_toml() {
+        let settings = WhisperCppSettings {
+            threads: Some(16),
+            duration_ms: Some(30_000),
+            temperature: Some(0.2),
+            prompt: Some("technical Czech dictation".to_owned()),
+            no_gpu: true,
+            vad: true,
+            vad_threshold: Some(0.55),
+            extra_args: vec!["--zen5-special".to_owned()],
+            ..Default::default()
+        };
+
+        let toml = toml_edit::ser::to_string(&settings).unwrap();
+        let parsed: WhisperCppSettings = toml_edit::de::from_str(&toml).unwrap();
+
+        assert_eq!(settings, parsed);
     }
 
     #[test]

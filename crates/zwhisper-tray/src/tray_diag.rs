@@ -104,11 +104,21 @@ pub fn diagnose(err: &Error) -> Diagnostic {
         _ => Diagnostic {
             category: Category::Unknown,
             summary: "tray registration failed for an unrecognized reason",
-            next_steps: &[
-                "report the error verbatim at https://github.com/zajca/zwhisper/issues",
-            ],
+            next_steps: &["report the error verbatim at https://github.com/zajca/zwhisper/issues"],
         },
     }
+}
+
+/// Whether registration should be retried instead of treated as a
+/// fatal startup error.
+///
+/// Missing watcher/host is common on tiling WM startup because the
+/// tray host is an external process. D-Bus failures and unknown
+/// upstream errors stay fatal so the process does not spin on
+/// misconfiguration that cannot be fixed by starting a panel later.
+#[must_use]
+pub fn registration_failure_is_retryable(category: Category) -> bool {
+    matches!(category, Category::NoWatcher | Category::NoHost)
 }
 
 #[cfg(test)]
@@ -181,7 +191,9 @@ mod tests {
         for diag in [
             diagnose(&Error::WontShow),
             diagnose(&Error::Dbus(zbus::Error::Address("x".into()))),
-            diagnose(&Error::Watcher(zbus::fdo::Error::ServiceUnknown("x".into()))),
+            diagnose(&Error::Watcher(zbus::fdo::Error::ServiceUnknown(
+                "x".into(),
+            ))),
         ] {
             assert!(
                 !diag.next_steps.is_empty(),
@@ -192,5 +204,13 @@ mod tests {
                 assert!(!step.is_empty(), "empty step in {:?}", diag.category);
             }
         }
+    }
+
+    #[test]
+    fn only_missing_watcher_or_host_is_retryable() {
+        assert!(registration_failure_is_retryable(Category::NoWatcher));
+        assert!(registration_failure_is_retryable(Category::NoHost));
+        assert!(!registration_failure_is_retryable(Category::Dbus));
+        assert!(!registration_failure_is_retryable(Category::Unknown));
     }
 }

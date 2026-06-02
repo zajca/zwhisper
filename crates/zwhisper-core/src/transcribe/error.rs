@@ -18,9 +18,9 @@ pub enum TranscribeError {
     BackendUnavailable { searched: Vec<PathBuf> },
 
     #[error(
-        "model `{name}` not found at {}; download `ggml-{name}.bin` into \
-         ~/.local/share/zwhisper/models/ (e.g. \
-         `curl -L -o {} \
+        "model `{name}` not found at {}; place `ggml-{name}.bin` there \
+         or set ZWHISPER_MODELS_DIR to the shared whisper.cpp model directory \
+         (e.g. `curl -L -o {} \
          https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin`)",
         expected.display(),
         expected.display()
@@ -29,6 +29,19 @@ pub enum TranscribeError {
 
     #[error("invalid model name `{name}`: {reason}")]
     InvalidModelName { name: String, reason: &'static str },
+
+    #[error("invalid model directory `{path}` from {env_var}: {reason}")]
+    InvalidModelDir {
+        env_var: &'static str,
+        path: PathBuf,
+        reason: &'static str,
+    },
+
+    #[error("invalid whisper.cpp option `{option}`: {reason}")]
+    InvalidBackendOption {
+        option: String,
+        reason: &'static str,
+    },
 
     #[error("failed to open audio file {}: {source}", path.display())]
     InputAudio {
