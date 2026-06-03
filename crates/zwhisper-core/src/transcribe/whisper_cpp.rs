@@ -27,9 +27,13 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, error, info, warn};
 
+use super::audio_source::AudioSource;
+use super::discovery;
 use super::error::TranscribeError;
-use super::{Capabilities, TranscribeOpts, Transcriber, TranscriptArtifacts};
-use super::{discovery, models};
+use super::model::ModelArtifact;
+use super::{
+    AudioInputKind, BackendCapabilities, TranscribeOpts, Transcriber, TranscriptArtifacts,
+};
 use crate::profile::schema::WhisperCppSettings;
 
 const STEM: &str = "transcript";
@@ -98,21 +102,15 @@ pub(crate) struct WhisperCppLocal {
     /// Optional override for the binary path. When `None`, the
     /// runner falls back to [`super::discovery::locate_whisper_cli`].
     locator_override: Option<PathBuf>,
-    /// Optional override for the model path. When `None`, the
-    /// runner falls back to [`super::models::resolve_model`]. Test
-    /// seam only — production never sets this.
-    #[cfg(test)]
-    model_path_override: Option<PathBuf>,
     runner: Box<dyn Runner>,
 }
 
 impl std::fmt::Debug for WhisperCppLocal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut d = f.debug_struct("WhisperCppLocal");
-        d.field("locator_override", &self.locator_override);
-        #[cfg(test)]
-        d.field("model_path_override", &self.model_path_override);
-        d.field("runner", &"<dyn Runner>").finish()
+        f.debug_struct("WhisperCppLocal")
+            .field("locator_override", &self.locator_override)
+            .field("runner", &"<dyn Runner>")
+            .finish()
     }
 }
 
@@ -122,25 +120,21 @@ impl WhisperCppLocal {
     pub(crate) fn new() -> Self {
         Self {
             locator_override: None,
-            #[cfg(test)]
-            model_path_override: None,
             runner: Box::new(SystemRunner),
         }
     }
 
-    /// Test constructor — injects a mock runner plus binary +
-    /// model path overrides. The locator/model paths may point at
-    /// non-existent files; tests that don't need real artefacts
-    /// use arbitrary `PathBuf`s.
+    /// Test constructor — injects a mock runner plus a binary path
+    /// override. The model path is no longer resolved by the backend
+    /// (the coordinator resolves it and passes a [`ModelArtifact`]);
+    /// tests pass `ModelArtifact::File(..)` directly to `transcribe`.
     #[cfg(test)]
     pub(crate) fn with_runner_and_locator(
         runner: Box<dyn Runner>,
         locator_override: PathBuf,
-        model_path_override: PathBuf,
     ) -> Self {
         Self {
             locator_override: Some(locator_override),
-            model_path_override: Some(model_path_override),
             runner,
         }
     }
@@ -152,18 +146,6 @@ impl WhisperCppLocal {
         }
         discovery::locate_whisper_cli()
     }
-
-    /// Resolve the model path: test override > production
-    /// resolver. Production callers always go through
-    /// [`models::resolve_model`].
-    #[allow(clippy::unused_self)] // `self` carries the test-only override branch.
-    fn resolve_model_path(&self, name: &str) -> Result<PathBuf, TranscribeError> {
-        #[cfg(test)]
-        if let Some(p) = &self.model_path_override {
-            return Ok(p.clone());
-        }
-        models::resolve_model(name)
-    }
 }
 
 #[async_trait]
@@ -172,25 +154,38 @@ impl Transcriber for WhisperCppLocal {
         "whisper-cpp"
     }
 
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            streaming: false,
-            true_diarization: false,
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            // whisper.cpp shells out to `whisper-cli`, which reads the
+            // encoded file directly.
+            preferred_input: AudioInputKind::EncodedFile,
+            accepted_inputs: vec![AudioInputKind::EncodedFile],
+            // Single-file ggml weights only.
+            accepted_model_kinds: vec![super::ModelKindTag::SingleFile],
+            supports_streaming: false,
+            supports_true_diarization: false,
             // Empty list = auto-only at the trait level. We do not
-            // enumerate whisper.cpp's 99 supported languages for
-            // M1 — `--language auto` covers the common path and
-            // M2 profiles will own per-language wiring.
+            // enumerate whisper.cpp's 99 supported languages —
+            // `--language auto` covers the common path and profiles
+            // own per-language wiring.
             languages: vec!["auto"],
         }
     }
 
     #[allow(clippy::too_many_lines)] // Linear pipeline; splitting hurts readability.
-    async fn transcribe_file(
+    async fn transcribe(
         &self,
-        audio: &Path,
+        audio: &AudioSource,
+        model: &ModelArtifact,
         opts: &TranscribeOpts,
     ) -> Result<TranscriptArtifacts, TranscribeError> {
         let started_at = Instant::now();
+
+        // whisper.cpp is a file backend: it consumes the persisted
+        // artifact, never the PCM views. The coordinator already checked
+        // the model kind; defend against a non-file artifact anyway.
+        let audio = audio.artifact_path();
+        let whisper_settings = opts.whisper_cpp_settings();
 
         // 1. Resolve the audio path to an absolute, canonical form
         //    for the subprocess invocation. `current_dir(tempdir)`
@@ -238,16 +233,27 @@ impl Transcriber for WhisperCppLocal {
                 return Err(e);
             }
         };
-        let model_path = match self.resolve_model_path(&opts.model) {
-            Ok(p) => p,
-            Err(e) => {
-                let status = match &e {
-                    TranscribeError::ModelNotFound { .. } => "err:model-not-found",
-                    TranscribeError::InvalidModelName { .. } => "err:invalid-model-name",
-                    _ => "err:model",
+        let model_path = match model {
+            ModelArtifact::File(p) => p.clone(),
+            ModelArtifact::Directory(_) | ModelArtifact::Remote { .. } => {
+                let kind = match model {
+                    ModelArtifact::Directory(_) => "directory-bundle",
+                    _ => "remote",
                 };
-                write_backtest_log(audio, opts, status, started_at.elapsed(), None, None).await;
-                return Err(e);
+                let err = TranscribeError::UnsupportedModelKind {
+                    backend: "whisper-cpp",
+                    kind,
+                };
+                write_backtest_log(
+                    audio,
+                    opts,
+                    "err:model-kind",
+                    started_at.elapsed(),
+                    None,
+                    None,
+                )
+                .await;
+                return Err(err);
             }
         };
 
@@ -274,7 +280,7 @@ impl Transcriber for WhisperCppLocal {
             .arg("--language")
             .arg(&opts.language);
 
-        if let Err(message) = opts.whisper_cpp.validate() {
+        if let Err(message) = whisper_settings.validate() {
             let err = TranscribeError::InvalidBackendOption {
                 option: message,
                 reason: "invalid whisper.cpp settings",
@@ -290,7 +296,7 @@ impl Transcriber for WhisperCppLocal {
             .await;
             return Err(err);
         }
-        append_whisper_cpp_args(&mut cmd, &opts.whisper_cpp);
+        append_whisper_cpp_args(&mut cmd, &whisper_settings);
 
         cmd.arg("--output-txt")
             .arg("--output-json")
@@ -849,7 +855,7 @@ async fn write_backtest_log(
         audio: audio.display().to_string(),
         model: &opts.model,
         language: &opts.language,
-        backend: &opts.backend,
+        backend: opts.backend.as_str(),
         status,
         duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
         txt_path: txt_path.map(|p| p.display().to_string()),
@@ -1028,11 +1034,27 @@ mod tests {
 
     fn opts(model: &str) -> TranscribeOpts {
         TranscribeOpts {
-            backend: "whisper-cpp".into(),
+            backend: crate::profile::schema::Backend::WhisperCpp,
             model: model.into(),
             language: "auto".into(),
             ..Default::default()
         }
+    }
+
+    /// Build an `AudioSource` for a file path. whisper.cpp ignores the
+    /// PCM views and reads the artifact path, so `DecodeFromArtifact`
+    /// availability is fine.
+    fn audio_src(path: &Path) -> AudioSource {
+        AudioSource::from_encoded_file(
+            path,
+            crate::transcribe::AudioCodec::Flac,
+            16_000,
+            chrono::Utc::now(),
+        )
+    }
+
+    fn file_model(path: &Path) -> ModelArtifact {
+        ModelArtifact::File(path.to_path_buf())
     }
 
     // ---- Tests ----
@@ -1050,11 +1072,10 @@ mod tests {
         let backend = WhisperCppLocal::with_runner_and_locator(
             Box::new(runner),
             PathBuf::from("/usr/bin/whisper-cli"),
-            model_path,
         );
 
         let artifacts = backend
-            .transcribe_file(&audio, &opts("small"))
+            .transcribe(&audio_src(&audio), &file_model(&model_path), &opts("small"))
             .await
             .unwrap();
 
@@ -1093,11 +1114,10 @@ mod tests {
         let backend = WhisperCppLocal::with_runner_and_locator(
             Box::new(runner),
             PathBuf::from("/usr/bin/whisper-cli"),
-            model_path,
         );
 
         let err = backend
-            .transcribe_file(&audio, &opts("small"))
+            .transcribe(&audio_src(&audio), &file_model(&model_path), &opts("small"))
             .await
             .unwrap_err();
         match err {
@@ -1123,11 +1143,10 @@ mod tests {
         let backend = WhisperCppLocal::with_runner_and_locator(
             Box::new(runner),
             PathBuf::from("/usr/bin/whisper-cli"),
-            model_path,
         );
 
         let err = backend
-            .transcribe_file(&audio, &opts("small"))
+            .transcribe(&audio_src(&audio), &file_model(&model_path), &opts("small"))
             .await
             .unwrap_err();
         match err {
@@ -1156,11 +1175,10 @@ mod tests {
         let backend = WhisperCppLocal::with_runner_and_locator(
             Box::new(runner),
             PathBuf::from("/usr/bin/whisper-cli"),
-            model_path,
         );
 
         let err = backend
-            .transcribe_file(&audio, &opts("small"))
+            .transcribe(&audio_src(&audio), &file_model(&model_path), &opts("small"))
             .await
             .unwrap_err();
         match err {
@@ -1185,11 +1203,14 @@ mod tests {
         let backend = WhisperCppLocal::with_runner_and_locator(
             Box::new(runner),
             PathBuf::from("/usr/bin/whisper-cli"),
-            model_path,
         );
 
         let err = backend
-            .transcribe_file(&missing, &opts("small"))
+            .transcribe(
+                &audio_src(&missing),
+                &file_model(&model_path),
+                &opts("small"),
+            )
             .await
             .unwrap_err();
         match err {
@@ -1213,11 +1234,10 @@ mod tests {
         let backend = WhisperCppLocal::with_runner_and_locator(
             Box::new(runner),
             PathBuf::from("/usr/bin/whisper-cli"),
-            model_path,
         );
 
         let artifacts = backend
-            .transcribe_file(&audio, &opts("small"))
+            .transcribe(&audio_src(&audio), &file_model(&model_path), &opts("small"))
             .await
             .unwrap();
         assert_eq!(artifacts.audio_duration, Duration::ZERO);
@@ -1238,10 +1258,9 @@ mod tests {
         let backend = WhisperCppLocal::with_runner_and_locator(
             Box::new(runner),
             PathBuf::from("/usr/bin/whisper-cli"),
-            model_path,
         );
         let mut opts = opts("small");
-        opts.whisper_cpp = WhisperCppSettings {
+        opts.settings.whisper_cpp = Some(WhisperCppSettings {
             threads: Some(16),
             processors: Some(1),
             no_gpu: true,
@@ -1250,9 +1269,12 @@ mod tests {
             vad_model: Some("/models/silero.bin".into()),
             extra_args: vec!["--zen5-special".into()],
             ..Default::default()
-        };
+        });
 
-        backend.transcribe_file(&audio, &opts).await.unwrap();
+        backend
+            .transcribe(&audio_src(&audio), &file_model(&model_path), &opts)
+            .await
+            .unwrap();
 
         let args = observed.lock().unwrap().clone();
         assert!(args.contains(&"--threads".to_owned()), "{args:?}");
@@ -1278,9 +1300,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_backend_via_facade_returns_backend_unknown() {
+    async fn assemblyai_backend_via_facade_is_unsupported() {
+        // The facade now routes through the coordinator; AssemblyAI is
+        // a known `Backend` variant with no implementation yet, so it
+        // surfaces a typed `BackendUnsupported` rather than the old
+        // string-based `BackendUnknown`.
         let opts = TranscribeOpts {
-            backend: "vaporware".into(),
+            backend: crate::profile::schema::Backend::AssemblyAi,
             model: "small".into(),
             language: "auto".into(),
             ..Default::default()
@@ -1289,11 +1315,8 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            TranscribeError::BackendUnknown { name, supported } => {
-                assert_eq!(name, "vaporware");
-                assert_eq!(supported, vec!["whisper-cpp", "deepgram"]);
-            }
-            other => panic!("expected BackendUnknown, got {other:?}"),
+            TranscribeError::BackendUnsupported { backend } => assert_eq!(backend, "assemblyai"),
+            other => panic!("expected BackendUnsupported, got {other:?}"),
         }
     }
 

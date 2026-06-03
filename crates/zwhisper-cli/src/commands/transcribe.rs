@@ -12,7 +12,7 @@ use color_eyre::eyre::eyre;
 use tracing::info;
 use zwhisper_core::profile;
 use zwhisper_core::profile::schema::{Backend, DeepgramSettings};
-use zwhisper_core::transcribe::{self, BackendConfig, TranscribeOpts};
+use zwhisper_core::transcribe::{self, BackendSettings, TranscribeOpts};
 
 use crate::cli::TranscribeArgs;
 
@@ -26,18 +26,6 @@ pub(crate) fn run(args: &TranscribeArgs) -> color_eyre::Result<()> {
 async fn run_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
     let opts = if let Some(name) = &args.profile {
         let profile = profile::load(name).map_err(|e| eyre!("{e}"))?;
-        let backend_config = match profile.transcription.backend {
-            Backend::Deepgram => {
-                BackendConfig::Deepgram(profile.transcription.deepgram.clone().unwrap_or_default())
-            }
-            Backend::WhisperCpp => BackendConfig::WhisperCpp,
-            other => {
-                return Err(eyre!(
-                    "backend `{}` is not supported in this build",
-                    other.as_str()
-                ));
-            }
-        };
         // Pick the model from the most-specific block: when the
         // profile carries a `[transcription.deepgram]` table, its
         // `model` overrides the generic `[transcription].model`.
@@ -45,43 +33,54 @@ async fn run_async(args: &TranscribeArgs) -> color_eyre::Result<()> {
         // ignored when both fields disagreed (user feedback #2,
         // 2026-05-02).
         let model = match (
-            &profile.transcription.backend,
+            profile.transcription.backend,
             &profile.transcription.deepgram,
         ) {
             (Backend::Deepgram, Some(dg)) => dg.model.clone(),
             _ => profile.transcription.model.clone(),
         };
         TranscribeOpts {
-            backend: profile.transcription.backend.as_str().to_owned(),
+            backend: profile.transcription.backend,
             model,
             language: profile.transcription.language.clone(),
-            whisper_cpp: profile
-                .transcription
-                .whisper_cpp
-                .clone()
-                .unwrap_or_default(),
-            backend_config,
+            // Side map of per-backend typed settings; the coordinator
+            // reads the entry matching the selected backend.
+            settings: BackendSettings {
+                whisper_cpp: profile.transcription.whisper_cpp.clone(),
+                deepgram: profile.transcription.deepgram.clone(),
+            },
         }
     } else {
-        // CLI flags route through the legacy string only — adding
-        // a `--deepgram-settings` family of flags is out of M5
-        // scope (cloud-only flow goes via profiles).
-        let backend_config = match args.backend.as_str() {
-            "deepgram" => BackendConfig::Deepgram(DeepgramSettings::default()),
-            _ => BackendConfig::WhisperCpp,
+        // CLI flags route through the canonical backend enum. Cloud
+        // tuning beyond defaults still goes via profiles.
+        let backend = if args.backend.is_empty() {
+            Backend::WhisperCpp
+        } else {
+            Backend::from_id(&args.backend).ok_or_else(|| {
+                eyre!(
+                    "unknown backend `{}` (supported: whisper-cpp, deepgram, parakeet)",
+                    args.backend
+                )
+            })?
+        };
+        let settings = match backend {
+            Backend::Deepgram => BackendSettings {
+                deepgram: Some(DeepgramSettings::default()),
+                ..Default::default()
+            },
+            _ => BackendSettings::default(),
         };
         TranscribeOpts {
-            backend: args.backend.clone(),
+            backend,
             model: args.model.clone(),
             language: args.language.clone(),
-            whisper_cpp: Default::default(),
-            backend_config,
+            settings,
         }
     };
 
     info!(
         input = %args.input.display(),
-        backend = %opts.backend,
+        backend = %opts.backend.as_str(),
         model = %opts.model,
         language = %opts.language,
         "transcribe requested",

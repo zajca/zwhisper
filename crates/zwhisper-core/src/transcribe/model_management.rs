@@ -319,9 +319,29 @@ impl ModelDownloader {
         let part_path = partial_dir.join(format!("{file_name}{PART_SUFFIX}"));
         let meta_path = partial_dir.join(format!("{file_name}{META_SUFFIX}"));
 
+        // RFC Phase 3: the download client is HTTPS-only at the client
+        // level (not just the `base_url` string check), and a 3xx
+        // redirect to a non-HTTPS URL is refused rather than silently
+        // followed — otherwise a redirect downgrades TLS for the rest of
+        // the transfer (CWE-757). HuggingFace `/resolve/main` 302-
+        // redirects to an HTTPS CDN, so HTTPS→HTTPS hops still follow.
+        let redirect = reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() > 10 {
+                return attempt.error(std::io::Error::other("too many redirects"));
+            }
+            if attempt.url().scheme() != "https" {
+                return attempt.error(std::io::Error::other(
+                    "refusing to follow a non-HTTPS redirect (TLS downgrade)",
+                ));
+            }
+            attempt.follow()
+        });
         let client = Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
+            .https_only(true)
+            .redirect(redirect)
+            .use_rustls_tls()
             .build()
             .map_err(|e| ModelManagementError::Download(format!("http client build: {e}")))?;
 
@@ -707,7 +727,7 @@ fn retry_after_secs(headers: &HeaderMap) -> u64 {
         .unwrap_or(0)
 }
 
-fn hex_lower(digest: &[u8]) -> String {
+pub(crate) fn hex_lower(digest: &[u8]) -> String {
     let mut s = String::with_capacity(digest.len() * 2);
     for b in digest {
         s.push_str(&format!("{b:02x}"));

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
+use gstreamer_app as gst_app;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
@@ -26,12 +27,14 @@ use super::watchdog::{self, Classification};
 
 const EOS_TIMEOUT_SECS: u64 = 5;
 const BUS_POLL_TIMEOUT_MS: u64 = 100;
-/// Sample rate of the encoded mono stream, locked in by the
-/// pipeline caps `audio/x-raw,rate=16000,channels=1` (see
-/// `pipeline.rs`). Mirrored here as a typed constant so the
-/// `samples_written` ↔ wall-clock cross-check uses one source of
-/// truth instead of a magic literal.
+/// Default native capture rate when a caller does not specify one. The
+/// FLAC `samples_written` ↔ wall-clock cross-check uses the *actual*
+/// configured rate ([`RecordOptions::sample_rate`]); this is only the
+/// default for [`RecordOptions::default`].
 const OUTPUT_SAMPLE_RATE_HZ: u32 = 16_000;
+/// Default cap on the in-memory live-PCM buffer (16 kHz mono f32 =
+/// 64 KiB/s, so 64 MiB ≈ 17 min before falling back to artifact decode).
+const DEFAULT_MAX_PCM_BYTES: u64 = 64 * 1024 * 1024;
 /// Hard cap on the number of bus warnings the recorder retains. Past
 /// this, additional warnings are still logged through `tracing` but
 /// not stored in `RecordingReport.warnings`. Without the cap a
@@ -60,6 +63,21 @@ pub struct RecordOptions {
     /// Default is `false` — the safer behaviour. CLI sites that still
     /// want the legacy Ctrl+C race must opt in explicitly.
     pub install_ctrl_c: bool,
+    /// Native FLAC capture rate (RFC Phase 4). The durable artifact is
+    /// written at this rate for full fidelity; the ASR fan-out branch
+    /// normalizes to [`Self::asr_sample_rate`]. Defaults to 16 kHz.
+    pub sample_rate: u32,
+    /// ASR-normalized rate of the live PCM fan-out branch.
+    pub asr_sample_rate: u32,
+    /// When true, a `tee` adds an ASR `appsink` branch that captures
+    /// live 16 kHz mono `f32` PCM for an in-process backend (Parakeet).
+    /// The FLAC branch is unaffected; on capture failure the session
+    /// falls back to decode-from-artifact.
+    pub capture_pcm: bool,
+    /// Cap on the in-memory live-PCM buffer. Past it, live PCM is
+    /// dropped (the session falls back to decode-from-artifact), so RSS
+    /// stays bounded for long recordings.
+    pub max_pcm_bytes: u64,
 }
 
 impl Default for RecordOptions {
@@ -69,6 +87,10 @@ impl Default for RecordOptions {
             monitor: String::new(),
             output: PathBuf::new(),
             install_ctrl_c: false,
+            sample_rate: OUTPUT_SAMPLE_RATE_HZ,
+            asr_sample_rate: OUTPUT_SAMPLE_RATE_HZ,
+            capture_pcm: false,
+            max_pcm_bytes: DEFAULT_MAX_PCM_BYTES,
         }
     }
 }
@@ -89,6 +111,16 @@ pub struct RecordingReport {
     pub underruns: u32,
     pub warnings: Vec<String>,
     pub audio_path: PathBuf,
+    /// Live ASR PCM captured during recording (mono `f32` at the ASR
+    /// rate), when PCM capture was enabled and stayed within budget.
+    /// `None` means the consumer must decode from the FLAC artifact —
+    /// either capture was disabled, the buffer exceeded its budget, or
+    /// the ASR sink produced nothing. The FLAC artifact is unaffected
+    /// either way.
+    pub pcm: Option<std::sync::Arc<[f32]>>,
+    /// Sample rate of [`Self::pcm`] (the ASR rate). Meaningful only when
+    /// `pcm` is `Some`.
+    pub pcm_sample_rate: u32,
 }
 
 /// Reasons the caller wants the recorder to stop. Translated to a
@@ -135,6 +167,61 @@ pub struct Recorder {
     session_id: SessionId,
     output_path: PathBuf,
     started_at: Instant,
+    /// Native FLAC rate, used for the `samples_written` ↔ wall-clock
+    /// cross-check (the FLAC is at this rate, not the ASR rate).
+    sample_rate: u32,
+    /// ASR rate of the live PCM fan-out (when enabled).
+    asr_sample_rate: u32,
+    /// Shared live-PCM accumulator filled by the ASR `appsink`
+    /// callbacks. `None` when PCM capture is disabled.
+    pcm_capture: Option<Arc<Mutex<PcmCapture>>>,
+}
+
+/// Bounded accumulator for the ASR fan-out's live mono `f32` PCM. The
+/// `appsink` streaming-thread callback appends here; once the budget is
+/// exceeded the buffer is cleared and `dropped` latches true, so the
+/// session falls back to decode-from-artifact and RSS stays bounded.
+#[derive(Debug)]
+struct PcmCapture {
+    samples: Vec<f32>,
+    max_bytes: u64,
+    dropped: bool,
+}
+
+impl PcmCapture {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            samples: Vec::new(),
+            max_bytes,
+            dropped: false,
+        }
+    }
+
+    /// Append decoded f32 samples, latching `dropped` and freeing the
+    /// buffer if the budget would be exceeded.
+    fn push(&mut self, more: &[f32]) {
+        if self.dropped {
+            return;
+        }
+        let projected =
+            (self.samples.len() + more.len()) as u64 * std::mem::size_of::<f32>() as u64;
+        if projected > self.max_bytes {
+            self.dropped = true;
+            self.samples = Vec::new();
+            return;
+        }
+        self.samples.extend_from_slice(more);
+    }
+
+    /// Take the captured PCM, or `None` if it was dropped/empty.
+    fn take(&mut self) -> Option<Arc<[f32]>> {
+        if self.dropped || self.samples.is_empty() {
+            return None;
+        }
+        Some(Arc::from(
+            std::mem::take(&mut self.samples).into_boxed_slice(),
+        ))
+    }
 }
 
 impl Recorder {
@@ -158,9 +245,24 @@ impl Recorder {
         debug!(%session_id, mic_node = %selection.mic_node,
                monitor_node = %selection.monitor_node, "resolved devices");
 
-        let (pipeline, output_token) = pipeline::build(&selection, &opts.output)?;
+        let params = pipeline::PipelineParams {
+            native_rate_hz: opts.sample_rate,
+            asr_rate_hz: opts.asr_sample_rate,
+            capture_pcm: opts.capture_pcm,
+        };
+        let (pipeline, output_token, asr_sink) = pipeline::build(&selection, &opts.output, params)?;
 
-        match Self::finish_start(opts, session_id, pipeline) {
+        // Wire the optional ASR appsink into a bounded capture buffer.
+        // The FLAC branch is independent, so a failure here never
+        // affects the durable artifact — the session just falls back to
+        // decode-from-artifact.
+        let pcm_capture = asr_sink.map(|sink| {
+            let capture = Arc::new(Mutex::new(PcmCapture::new(opts.max_pcm_bytes)));
+            wire_asr_sink(&sink, Arc::clone(&capture));
+            capture
+        });
+
+        match Self::finish_start(opts, session_id, pipeline, pcm_capture) {
             Ok(recorder) => Ok(recorder),
             Err(e) => {
                 output_token.cleanup_on_failure();
@@ -173,6 +275,7 @@ impl Recorder {
         opts: RecordOptions,
         session_id: SessionId,
         pipeline: gst::Pipeline,
+        pcm_capture: Option<Arc<Mutex<PcmCapture>>>,
     ) -> Result<Self, RecordingError> {
         let bus = pipeline.bus().ok_or(RecordingError::PipelineFailed {
             stage: "pipeline_bus".into(),
@@ -222,6 +325,9 @@ impl Recorder {
             underruns,
             warnings,
             session_id,
+            sample_rate: opts.sample_rate,
+            asr_sample_rate: opts.asr_sample_rate,
+            pcm_capture,
             output_path: opts.output,
             started_at: Instant::now(),
         })
@@ -371,11 +477,28 @@ impl Recorder {
                 // wall-clock duration (DoD #3). Without this gate,
                 // a structurally valid header claiming 0 samples on
                 // a multi-minute recording would still return Ok.
-                if let Err(e) =
-                    verify_samples_match_duration(samples_written, duration, &self.output_path)
-                {
+                if let Err(e) = verify_samples_match_duration(
+                    samples_written,
+                    duration,
+                    self.sample_rate,
+                    &self.output_path,
+                ) {
                     *self.state.lock().expect("poisoned recorder state") = RecorderState::Failed;
                     return Err(e);
+                }
+                // Take the live ASR PCM if capture stayed within budget.
+                // `None` (disabled / over budget / empty) means the
+                // consumer decodes from the FLAC artifact instead.
+                let pcm = self
+                    .pcm_capture
+                    .as_ref()
+                    .and_then(|cap| cap.lock().ok().and_then(|mut c| c.take()));
+                if let Some(samples) = &pcm {
+                    debug!(
+                        session_id = %self.session_id,
+                        pcm_frames = samples.len(),
+                        "captured live ASR PCM",
+                    );
                 }
                 *self.state.lock().expect("poisoned recorder state") = RecorderState::Idle;
                 Ok(RecordingReport {
@@ -385,6 +508,8 @@ impl Recorder {
                     underruns,
                     warnings,
                     audio_path: self.output_path.clone(),
+                    pcm,
+                    pcm_sample_rate: self.asr_sample_rate,
                 })
             }
         }
@@ -435,6 +560,38 @@ struct BusThreadCtx {
     shutdown: Arc<AtomicBool>,
     underruns: Arc<AtomicU32>,
     warnings: Arc<Mutex<Vec<String>>>,
+}
+
+/// Attach a `new-sample` callback to the ASR `appsink` that decodes
+/// each `F32LE` mono buffer into the bounded [`PcmCapture`]. Runs on a
+/// GStreamer streaming thread; it is panic-free (a poisoned lock or a
+/// failed pull is swallowed — the durable FLAC is on a separate `tee`
+/// branch and is never affected).
+fn wire_asr_sink(sink: &gst_app::AppSink, capture: Arc<Mutex<PcmCapture>>) {
+    sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let Ok(sample) = sink.pull_sample() else {
+                    return Err(gst::FlowError::Eos);
+                };
+                let Some(buffer) = sample.buffer() else {
+                    return Ok(gst::FlowSuccess::Ok);
+                };
+                let Ok(map) = buffer.map_readable() else {
+                    return Ok(gst::FlowSuccess::Ok);
+                };
+                let bytes = map.as_slice();
+                let mut samples = Vec::with_capacity(bytes.len() / 4);
+                for chunk in bytes.chunks_exact(4) {
+                    samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+                if let Ok(mut cap) = capture.lock() {
+                    cap.push(&samples);
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
 }
 
 fn spawn_bus_thread(ctx: BusThreadCtx) -> JoinHandle<()> {
@@ -570,40 +727,39 @@ fn read_flac_total_samples(path: &std::path::Path) -> Result<u64, RecordingError
     Ok(hi | lo)
 }
 
-/// Maximum allowed drift between the FLAC's declared sample count
-/// and the wall-clock duration × 16 kHz, expressed in samples.
-/// `DoD` #3 says "± one buffer"; one second is generous — flacenc's
-/// default block size is ~4608 samples (~290 ms) and the 60-min
-/// soak observed only an 8-sample drift, so 16 000 samples is
-/// several orders of magnitude looser than the worst observed
-/// value while still catching duplicated/dropped buffers and
-/// truncated streams.
-const SAMPLE_COUNT_TOLERANCE: u64 = OUTPUT_SAMPLE_RATE_HZ as u64;
-
-/// Verify that the FLAC STREAMINFO sample count is within
-/// `SAMPLE_COUNT_TOLERANCE` of `wall_duration × 16 kHz`. Closes
-/// `DoD` #3 ("declared length matches wall-clock duration ± one
-/// buffer, no truncation"): without this check, `Recorder::stop`
-/// would return success even when the encoder produced a header
-/// claiming zero samples for a multi-minute recording.
+/// Verify that the FLAC STREAMINFO sample count is within one second of
+/// samples of `wall_duration × rate_hz`. The FLAC is written at the
+/// native capture rate (RFC Phase 4), so the cross-check uses that rate,
+/// not a hardcoded 16 kHz. Closes `DoD` #3 ("declared length matches
+/// wall-clock duration ± one buffer, no truncation"): without this
+/// check, `Recorder::stop` would return success even when the encoder
+/// produced a header claiming zero samples for a multi-minute recording.
+///
+/// The tolerance is one second of samples (`rate_hz`) — flacenc's
+/// default block size is ~4608 samples (~290 ms at 16 kHz), and the
+/// 60-min soak observed only an 8-sample drift, so this is several
+/// orders of magnitude looser than the worst observed value while still
+/// catching duplicated/dropped buffers and truncated streams.
 fn verify_samples_match_duration(
     samples_written: u64,
     wall_duration: Duration,
+    rate_hz: u32,
     path: &std::path::Path,
 ) -> Result<(), RecordingError> {
-    let expected_f = wall_duration.as_secs_f64() * f64::from(OUTPUT_SAMPLE_RATE_HZ);
+    let tolerance = u64::from(rate_hz);
+    let expected_f = wall_duration.as_secs_f64() * f64::from(rate_hz);
     // Cast saturates on out-of-range f64s, which is the right
     // behaviour for a sanity check (we only care about magnitude).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let expected = expected_f.max(0.0) as u64;
-    let lo = expected.saturating_sub(SAMPLE_COUNT_TOLERANCE);
-    let hi = expected.saturating_add(SAMPLE_COUNT_TOLERANCE);
+    let lo = expected.saturating_sub(tolerance);
+    let hi = expected.saturating_add(tolerance);
     if (lo..=hi).contains(&samples_written) {
         return Ok(());
     }
     Err(RecordingError::EncoderFailed(format!(
         "FLAC sample count {samples_written} for `{}` is outside expected range \
-         [{lo}, {hi}] (wall-clock {:.3}s, expected ≈ {expected} samples ± {SAMPLE_COUNT_TOLERANCE})",
+         [{lo}, {hi}] (wall-clock {:.3}s @ {rate_hz} Hz, expected ≈ {expected} samples ± {tolerance})",
         path.display(),
         wall_duration.as_secs_f64()
     )))
@@ -764,6 +920,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pcm_capture_accumulates_within_budget() {
+        let mut cap = PcmCapture::new(1024); // 256 f32s
+        cap.push(&[0.1; 100]);
+        cap.push(&[0.2; 100]);
+        assert!(!cap.dropped);
+        let taken = cap.take().expect("within budget");
+        assert_eq!(taken.len(), 200);
+        // take() drains.
+        assert!(cap.take().is_none());
+    }
+
+    #[test]
+    fn pcm_capture_drops_and_frees_past_budget() {
+        let mut cap = PcmCapture::new(16); // only 4 f32s fit
+        cap.push(&[0.0; 2]); // 8 bytes, ok
+        assert!(!cap.dropped);
+        cap.push(&[0.0; 10]); // would exceed 16 bytes → drop + free
+        assert!(cap.dropped, "must latch dropped past budget");
+        assert!(cap.samples.is_empty(), "buffer freed to bound RSS");
+        // Once dropped, further pushes are no-ops and take() yields None
+        // (consumer falls back to decode-from-artifact).
+        cap.push(&[0.0; 1]);
+        assert!(cap.take().is_none());
+    }
+
+    #[test]
     fn stop_reason_running_is_not_an_error() {
         let r = StopReason::Running;
         assert!(!r.is_error());
@@ -881,15 +1063,16 @@ mod tests {
     fn verify_samples_match_duration_accepts_within_tolerance() {
         let path = std::path::Path::new("/tmp/synthetic.flac");
         // 60 s × 16 000 = 960 000; tolerance is 16 000.
-        verify_samples_match_duration(960_000, Duration::from_secs(60), path).unwrap();
-        verify_samples_match_duration(944_000, Duration::from_secs(60), path).unwrap();
-        verify_samples_match_duration(976_000, Duration::from_secs(60), path).unwrap();
+        verify_samples_match_duration(960_000, Duration::from_secs(60), 16_000, path).unwrap();
+        verify_samples_match_duration(944_000, Duration::from_secs(60), 16_000, path).unwrap();
+        verify_samples_match_duration(976_000, Duration::from_secs(60), 16_000, path).unwrap();
     }
 
     #[test]
     fn verify_samples_match_duration_rejects_zero_samples_for_long_recording() {
         let path = std::path::Path::new("/tmp/synthetic.flac");
-        let err = verify_samples_match_duration(0, Duration::from_secs(60), path).unwrap_err();
+        let err =
+            verify_samples_match_duration(0, Duration::from_secs(60), 16_000, path).unwrap_err();
         assert!(matches!(err, RecordingError::EncoderFailed(_)));
     }
 
@@ -897,8 +1080,8 @@ mod tests {
     fn verify_samples_match_duration_rejects_overshoot() {
         let path = std::path::Path::new("/tmp/synthetic.flac");
         // 60 s expected = 960 000; +50 000 overshoots tolerance.
-        let err =
-            verify_samples_match_duration(1_010_000, Duration::from_secs(60), path).unwrap_err();
+        let err = verify_samples_match_duration(1_010_000, Duration::from_secs(60), 16_000, path)
+            .unwrap_err();
         assert!(matches!(err, RecordingError::EncoderFailed(_)));
     }
 
@@ -907,8 +1090,8 @@ mod tests {
         // For sub-second recordings the tolerance dominates expected,
         // so the lower bound is 0 — only catches gross errors.
         let path = std::path::Path::new("/tmp/synthetic.flac");
-        verify_samples_match_duration(0, Duration::from_millis(100), path).unwrap();
-        verify_samples_match_duration(1_600, Duration::from_millis(100), path).unwrap();
+        verify_samples_match_duration(0, Duration::from_millis(100), 16_000, path).unwrap();
+        verify_samples_match_duration(1_600, Duration::from_millis(100), 16_000, path).unwrap();
     }
 
     #[test]
@@ -916,6 +1099,6 @@ mod tests {
         // Regression: the 60-min soak measured 57_600_008 samples
         // for ~3600 s wall-clock; this must continue to pass.
         let path = std::path::Path::new("/tmp/synthetic.flac");
-        verify_samples_match_duration(57_600_008, Duration::from_secs(3600), path).unwrap();
+        verify_samples_match_duration(57_600_008, Duration::from_secs(3600), 16_000, path).unwrap();
     }
 }

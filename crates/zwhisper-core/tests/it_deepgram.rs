@@ -38,7 +38,7 @@ fn settings() -> DeepgramSettings {
 
 fn opts(language: &str) -> zwhisper_core::transcribe::TranscribeOpts {
     zwhisper_core::transcribe::TranscribeOpts {
-        backend: "deepgram".to_owned(),
+        backend: zwhisper_core::profile::schema::Backend::Deepgram,
         model: "nova-3".to_owned(),
         language: language.to_owned(),
         ..Default::default()

@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use super::error::{ProfileError, SUPPORTED_BACKENDS_M5};
 
+/// Native capture sample rates the pipeline can record. The FLAC
+/// artifact is written at this rate (full fidelity); the ASR branch
+/// always normalizes to 16 kHz mono regardless.
+pub const SUPPORTED_SAMPLE_RATES: &[u32] = &[16_000, 44_100, 48_000];
+
 /// `IDEA.md` § 6 sources mode. `MonoMix` is the only mode the engine
 /// honours in M2; `StereoSplit` deserializes cleanly so v1 files that
 /// declare it parse, but the engine returns `UnsupportedMode` before
@@ -33,6 +38,8 @@ pub enum Backend {
     WhisperCpp,
     #[serde(rename = "deepgram")]
     Deepgram,
+    #[serde(rename = "parakeet")]
+    Parakeet,
     #[serde(rename = "assemblyai")]
     AssemblyAi,
     #[serde(rename = "openai")]
@@ -44,8 +51,22 @@ impl Backend {
         match self {
             Self::WhisperCpp => "whisper-cpp",
             Self::Deepgram => "deepgram",
+            Self::Parakeet => "parakeet",
             Self::AssemblyAi => "assemblyai",
             Self::OpenAi => "openai",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]. Returns `None` for an unknown id so
+    /// callers surface a typed error instead of guessing a default.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "whisper-cpp" => Some(Self::WhisperCpp),
+            "deepgram" => Some(Self::Deepgram),
+            "parakeet" => Some(Self::Parakeet),
+            "assemblyai" => Some(Self::AssemblyAi),
+            "openai" => Some(Self::OpenAi),
+            _ => None,
         }
     }
 }
@@ -355,20 +376,17 @@ impl Profile {
     /// Runtime invariants beyond what serde already enforces. Called
     /// after a successful deserialize / migration.
     pub fn validate(&self) -> Result<(), ProfileError> {
-        // M2 ships the M0 mono 16 kHz pipeline only — accepting
-        // 44.1/48 kHz at the schema level while the recorder
-        // hardcodes 16 kHz would silently lie about what was
-        // captured. 44.1/48 kHz land in M3 alongside the pipeline
-        // rate parameterisation. Until then we reject with a typed
-        // error pointing at the right knob.
-        if self.recording.sample_rate != 16_000 {
+        // The capture pipeline records the FLAC artifact at the native
+        // rate (RFC: full-fidelity FLAC) and derives a 16 kHz mono ASR
+        // branch from it. The accepted native rates are the common
+        // capture rates; other values are rejected so the profile never
+        // claims a rate the pipeline cannot honour.
+        if !SUPPORTED_SAMPLE_RATES.contains(&self.recording.sample_rate) {
             return Err(ProfileError::Validation {
                 profile: self.name.clone(),
                 message: format!(
-                    "sample_rate {} not supported in this build \
-                     (M2 ships 16000 only; 44100/48000 land in M3 \
-                     alongside the pipeline rate parameterisation)",
-                    self.recording.sample_rate
+                    "sample_rate {} not supported; allowed native capture rates: {:?}",
+                    self.recording.sample_rate, SUPPORTED_SAMPLE_RATES
                 ),
             });
         }
@@ -591,18 +609,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_44100_and_48000_in_m2() {
-        // M2 only honours 16 kHz. Accepting higher rates at the
-        // schema level while the engine hardcodes 16 kHz silently
-        // lies about the captured audio — the M2 review's Medium
-        // finding. 44.1/48 kHz land in M3.
-        for rate in [44_100, 48_000, 22_050] {
+    fn validate_accepts_native_capture_rates() {
+        // RFC: the FLAC artifact is recorded at the native rate
+        // (44.1/48 kHz) for full fidelity; the ASR branch normalizes to
+        // 16 kHz. All three are valid.
+        for rate in [16_000, 44_100, 48_000] {
+            let mut p = ok_profile();
+            p.recording.sample_rate = rate;
+            assert!(p.validate().is_ok(), "{rate} should be accepted");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_sample_rate() {
+        for rate in [22_050, 8_000, 96_000, 12_345] {
             let mut p = ok_profile();
             p.recording.sample_rate = rate;
             let err = p.validate().unwrap_err();
             assert!(matches!(err, ProfileError::Validation { .. }), "{rate}");
-            let msg = err.to_string();
-            assert!(msg.contains("M2 ships 16000 only"), "{msg}");
+            assert!(err.to_string().contains("sample_rate"), "{rate}");
         }
     }
 

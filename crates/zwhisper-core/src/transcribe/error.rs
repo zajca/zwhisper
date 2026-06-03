@@ -205,6 +205,79 @@ pub enum TranscribeError {
         #[source]
         source: io::Error,
     },
+
+    // ----- RFC model boundary (registry + resolution) -----
+    /// A [`crate::transcribe::model::ModelSpec`] failed registry-load
+    /// validation: the name allow-list rejected a path-deriving field
+    /// (`dir_name` / `expected_files` / `relative_path`), a URL was not
+    /// HTTPS, or the kind/source pairing was incompatible. Caught before
+    /// any resolution or install can act on a hostile spec (CWE-22).
+    #[error("invalid model spec `{id}`: {reason}")]
+    InvalidModelSpec { id: String, reason: String },
+
+    /// A directory-bundle model is not installed, or is present but
+    /// missing required files. Both are the same actionable problem.
+    #[error(
+        "model bundle `{id}` is not fully installed at {} (missing: {missing:?}); \
+         install it with `zwhisper model install {id}`",
+        dir.display()
+    )]
+    ModelBundleIncomplete {
+        id: String,
+        dir: PathBuf,
+        missing: Vec<String>,
+    },
+
+    /// Failed to resolve the models directory itself.
+    #[error("could not resolve models directory: {0}")]
+    ModelResolution(String),
+
+    /// The resolved model artifact's kind is not accepted by the
+    /// selected backend.
+    #[error("backend `{backend}` does not accept model kind `{kind}`")]
+    UnsupportedModelKind {
+        backend: &'static str,
+        kind: &'static str,
+    },
+
+    /// The backend's expected ASR sample rate disagrees with the
+    /// normalized PCM rate. The coordinator refuses to hand a backend
+    /// PCM at the wrong rate (RFC: Cross-axis reconciliation).
+    #[error(
+        "ASR sample-rate mismatch: model expects {expected} Hz but normalized PCM is {actual} Hz"
+    )]
+    AsrRateMismatch { expected: u32, actual: u32 },
+
+    /// No accepted audio representation could be produced for the
+    /// backend from the given [`crate::transcribe::AudioSource`].
+    #[error("no accepted audio input for backend (prefers `{backend_preferred}`): {reason}")]
+    UnsupportedAudioInput {
+        backend_preferred: &'static str,
+        reason: &'static str,
+    },
+
+    /// The selected backend exists as a [`crate::profile::schema::Backend`]
+    /// variant but its inference engine was not compiled into this
+    /// build. The message names the Cargo feature that enables it.
+    #[error("backend `{backend}` is not compiled in; rebuild with `--features {feature}`")]
+    BackendNotCompiled {
+        backend: &'static str,
+        feature: &'static str,
+    },
+
+    /// The selected backend is a known [`crate::profile::schema::Backend`]
+    /// variant that has no implementation yet (AssemblyAI / OpenAI).
+    #[error("backend `{backend}` is not supported in this build")]
+    BackendUnsupported { backend: String },
+
+    /// A runtime PCM source (decode-from-artifact, temp-backed, etc.)
+    /// failed while a PCM-preferring backend was pulling samples.
+    #[error("PCM source error: {0}")]
+    PcmSource(String),
+
+    /// Decoding the persisted artifact into normalized PCM failed.
+    #[error("failed to decode audio {}: {reason}", path.display())]
+    AudioDecode { path: PathBuf, reason: String },
 }
 
 /// Truncate a stderr/stdout payload for embedding in `Display`

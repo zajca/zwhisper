@@ -38,9 +38,13 @@ use tracing::{debug, info, warn};
 use crate::profile::schema::DeepgramSettings;
 use crate::secrets::{ResolveSource, SecretString, SecretsError, resolve_api_key};
 
+use super::audio_source::AudioSource;
 use super::error::TranscribeError;
+use super::model::ModelArtifact;
 use super::speakers::SpeakerSegment;
-use super::{Capabilities, TranscribeOpts, Transcriber, TranscriptArtifacts};
+use super::{
+    AudioInputKind, BackendCapabilities, TranscribeOpts, Transcriber, TranscriptArtifacts,
+};
 
 const BACKEND_ID: &str = "deepgram";
 const DEFAULT_BASE_URL: &str = "https://api.deepgram.com";
@@ -359,19 +363,39 @@ impl Transcriber for DeepgramBatch {
         BACKEND_ID
     }
 
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            streaming: false,
-            true_diarization: self.settings.diarize,
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            // Deepgram batch uploads the encoded FLAC body directly.
+            preferred_input: AudioInputKind::EncodedFile,
+            accepted_inputs: vec![AudioInputKind::EncodedFile],
+            // The model lives behind the provider API — no local artifact.
+            accepted_model_kinds: vec![super::ModelKindTag::Remote],
+            supports_streaming: false,
+            supports_true_diarization: self.settings.diarize,
             languages: vec!["auto"],
         }
     }
 
-    async fn transcribe_file(
+    async fn transcribe(
         &self,
-        audio: &Path,
+        audio: &AudioSource,
+        model: &ModelArtifact,
         opts: &TranscribeOpts,
     ) -> Result<TranscriptArtifacts, TranscribeError> {
+        // Deepgram is a remote backend; the coordinator already checked
+        // the kind, but defend against a non-remote artifact. The model
+        // id itself is read from `opts.model` (with the per-profile
+        // settings fallback) inside `build_url`.
+        if !matches!(model, ModelArtifact::Remote { .. }) {
+            return Err(TranscribeError::UnsupportedModelKind {
+                backend: BACKEND_ID,
+                kind: match model {
+                    ModelArtifact::File(_) => "single-file",
+                    ModelArtifact::Directory(_) => "directory-bundle",
+                    ModelArtifact::Remote { .. } => "remote",
+                },
+            });
+        }
         let (key, source) =
             resolve_api_key(BACKEND_ID).map_err(|source| TranscribeError::BackendKeyMissing {
                 backend: BACKEND_ID,
@@ -383,7 +407,8 @@ impl Transcriber for DeepgramBatch {
             source = %source_label(&source),
             "API key resolved",
         );
-        self.do_transcribe_with_key(audio, opts, key).await
+        self.do_transcribe_with_key(audio.artifact_path(), opts, key)
+            .await
     }
 }
 
@@ -880,7 +905,7 @@ mod tests {
     fn build_url_includes_model_and_diarize() {
         let backend = DeepgramBatch::new(settings());
         let opts = TranscribeOpts {
-            backend: BACKEND_ID.to_owned(),
+            backend: crate::profile::schema::Backend::Deepgram,
             model: "nova-3".to_owned(),
             language: "en".to_owned(),
             ..Default::default()
@@ -901,7 +926,7 @@ mod tests {
         // The previous build silently used `settings.model` always.
         let backend = DeepgramBatch::new(settings());
         let opts = TranscribeOpts {
-            backend: BACKEND_ID.to_owned(),
+            backend: crate::profile::schema::Backend::Deepgram,
             model: "nova-3-general".to_owned(),
             language: "en".to_owned(),
             ..Default::default()
@@ -918,7 +943,7 @@ mod tests {
     fn empty_opts_model_falls_back_to_settings() {
         let backend = DeepgramBatch::new(settings());
         let opts = TranscribeOpts {
-            backend: BACKEND_ID.to_owned(),
+            backend: crate::profile::schema::Backend::Deepgram,
             model: String::new(),
             language: "en".to_owned(),
             ..Default::default()
@@ -937,7 +962,7 @@ mod tests {
         s.language_detection = true;
         let backend = DeepgramBatch::new(s);
         let opts = TranscribeOpts {
-            backend: BACKEND_ID.to_owned(),
+            backend: crate::profile::schema::Backend::Deepgram,
             model: "nova-3".to_owned(),
             language: "en".to_owned(),
             ..Default::default()
@@ -954,7 +979,7 @@ mod tests {
     fn build_url_emits_detect_language_for_auto() {
         let backend = DeepgramBatch::new(settings());
         let opts = TranscribeOpts {
-            backend: BACKEND_ID.to_owned(),
+            backend: crate::profile::schema::Backend::Deepgram,
             model: "nova-3".to_owned(),
             language: "auto".to_owned(),
             ..Default::default()
@@ -974,7 +999,7 @@ mod tests {
         s.diarize = false;
         let backend = DeepgramBatch::new(s);
         let opts = TranscribeOpts {
-            backend: BACKEND_ID.to_owned(),
+            backend: crate::profile::schema::Backend::Deepgram,
             model: "nova-3".to_owned(),
             language: "en".to_owned(),
             ..Default::default()
@@ -989,7 +1014,7 @@ mod tests {
         s.tier = Some("enhanced".to_owned());
         let backend = DeepgramBatch::new(s);
         let opts = TranscribeOpts {
-            backend: BACKEND_ID.to_owned(),
+            backend: crate::profile::schema::Backend::Deepgram,
             model: "nova-3".to_owned(),
             language: "en".to_owned(),
             ..Default::default()
@@ -1001,7 +1026,7 @@ mod tests {
     #[test]
     fn rejects_non_https_non_loopback_base_url() {
         let opts = TranscribeOpts {
-            backend: BACKEND_ID.to_owned(),
+            backend: crate::profile::schema::Backend::Deepgram,
             model: "nova-3".to_owned(),
             language: "en".to_owned(),
             ..Default::default()
@@ -1218,10 +1243,10 @@ mod tests {
         let mut s = settings();
         s.diarize = false;
         let backend = DeepgramBatch::new(s);
-        assert!(!backend.capabilities().true_diarization);
+        assert!(!backend.capabilities().supports_true_diarization);
         let backend2 = DeepgramBatch::new(settings());
-        assert!(backend2.capabilities().true_diarization);
-        assert!(!backend2.capabilities().streaming);
+        assert!(backend2.capabilities().supports_true_diarization);
+        assert!(!backend2.capabilities().supports_streaming);
     }
 
     /// Touch the resolver path with a config that injects an empty

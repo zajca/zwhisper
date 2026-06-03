@@ -46,6 +46,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 
 # Audio (M0)
 gstreamer = "0.23"
+# appsink for the RFC Phase 4 ASR fan-out branch (live 16 kHz mono f32
+# PCM pulled off a `tee` while the FLAC branch records natively).
+gstreamer-app = "0.23"
 tokio = { version = "1", features = ["signal", "rt", "macros", "time", "sync", "process", "io-util", "fs"] }
 uuid = { version = "1", features = ["v4"] }
 
@@ -79,6 +82,29 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio-util = { version = "0.7", features = ["io"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 sha2 = "0.10"
+
+# FLAC -> normalized PCM decode (RFC Phase 2). Pure-Rust so it works in
+# the CLI transcribe-only build (no GStreamer): `symphonia` decodes FLAC
+# to f32, `rubato` resamples to the ASR rate. `symphonia` default
+# features are off so only the FLAC decoder + demuxer are pulled, not
+# every codec; `rubato` default `fft_resampler` feature is off (we use
+# the async sinc resampler for arbitrary ratios).
+symphonia = { version = "0.5", default-features = false, features = ["flac"] }
+rubato = { version = "0.15", default-features = false }
+
+# Archive-based directory-bundle model download (RFC Phase 3). zip is
+# lean (deflate only — no aes/bzip2/lzma/zstd default surface); tar +
+# flate2 (pure-Rust miniz_oxide) cover tar.gz. xz2/bzip2 are avoided
+# deliberately (they bind C libraries).
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+
+# In-process Parakeet ASR (RFC Phase 5), behind the default-OFF
+# `parakeet` feature. `onnx` pulls ONNX Runtime via `ort`; its
+# `download-binaries` default fetches the native runtime at build time
+# (network + sizeable binary), which is why the feature is opt-in.
+transcribe-rs = { version = "0.3.11", default-features = false, features = ["onnx"] }
 
 # Hotkey toggle (M6) — global hotkey via XDG GlobalShortcuts portal.
 # `default-features = true` keeps the tokio executor (matches

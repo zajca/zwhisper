@@ -184,11 +184,27 @@ impl RecorderInterface {
             warn!(error = %e, "failed to emit StateChanged starting");
         }
 
+        // Live PCM fan-out (RFC Phase 4) is only worth its cost for an
+        // in-process PCM backend; Parakeet is the only one. Other
+        // backends read the encoded FLAC, so we skip capture and they
+        // (or a retry) decode from the artifact if ever needed.
+        let capture_pcm = profile.transcription.auto
+            && matches!(
+                profile.transcription.backend,
+                zwhisper_core::profile::schema::Backend::Parakeet
+            );
+        let audio_cfg = zwhisper_core::transcribe::config::AudioConfig::default();
         let opts = RecordOptions {
             mic: profile.sources.mic.clone(),
             monitor: profile.sources.system_output.clone(),
             output: output.clone(),
             install_ctrl_c: false, // Daemon owns SIGINT/SIGTERM (C2).
+            // Record the FLAC at the profile's native rate (full
+            // fidelity); the ASR fan-out normalizes to the ASR rate.
+            sample_rate: profile.recording.sample_rate,
+            asr_sample_rate: audio_cfg.asr_sample_rate_hz,
+            capture_pcm,
+            max_pcm_bytes: audio_cfg.max_in_memory_pcm_bytes,
         };
 
         let recorder = match Recorder::start(opts) {
@@ -239,19 +255,11 @@ impl RecorderInterface {
         let iface_ref: InterfaceRef<RecorderInterface> =
             conn.object_server().interface(OBJECT_PATH).await?;
 
-        let backend_config = match profile.transcription.backend {
-            zwhisper_core::profile::schema::Backend::Deepgram => {
-                zwhisper_core::transcribe::BackendConfig::Deepgram(
-                    profile.transcription.deepgram.clone().unwrap_or_default(),
-                )
-            }
-            _ => zwhisper_core::transcribe::BackendConfig::WhisperCpp,
-        };
         // Backend-specific [transcription.<backend>].model wins over
         // the generic [transcription].model — same precedence as
         // CLI's profile path (user feedback #2, 2026-05-02).
         let transcribe_model = match (
-            &profile.transcription.backend,
+            profile.transcription.backend,
             &profile.transcription.deepgram,
         ) {
             (zwhisper_core::profile::schema::Backend::Deepgram, Some(dg)) => dg.model.clone(),
@@ -263,15 +271,15 @@ impl RecorderInterface {
             session_id,
             audio_path: output,
             transcribe_auto: profile.transcription.auto,
-            transcribe_backend: profile.transcription.backend.as_str().to_owned(),
+            transcribe_backend: profile.transcription.backend,
             transcribe_model,
             transcribe_language: profile.transcription.language.clone(),
-            transcribe_whisper_cpp: profile
-                .transcription
-                .whisper_cpp
-                .clone()
-                .unwrap_or_default(),
-            transcribe_backend_config: backend_config,
+            // Side map of per-backend typed settings keyed by backend
+            // (RFC: Backend Enum Convergence).
+            transcribe_settings: zwhisper_core::transcribe::BackendSettings {
+                whisper_cpp: profile.transcription.whisper_cpp.clone(),
+                deepgram: profile.transcription.deepgram.clone(),
+            },
         };
 
         spawn_lifecycle(recorder, hooks);

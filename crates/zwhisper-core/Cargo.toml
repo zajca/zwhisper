@@ -17,6 +17,8 @@ path = "src/lib.rs"
 [dependencies]
 # audio (gstreamer feature)
 gstreamer = { workspace = true, optional = true }
+# appsink for the Phase 4 ASR fan-out branch.
+gstreamer-app = { workspace = true, optional = true }
 # logging + base
 tracing = { workspace = true }
 thiserror = { workspace = true }
@@ -43,6 +45,20 @@ reqwest = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+# FLAC -> normalized PCM decode (RFC Phase 2). Pure-Rust; pulled by the
+# `transcribe` feature so the artifact-decode `PcmChunkSource` is always
+# available (and tested) wherever transcription is compiled.
+symphonia = { workspace = true, optional = true }
+rubato = { workspace = true, optional = true }
+# Directory-bundle model download (RFC Phase 3). Pure-Rust archive
+# extraction with strict security guards (lexical zip-slip rejection,
+# symlink/hardlink rejection, decompression-bomb caps).
+zip = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
+# In-process Parakeet engine (RFC Phase 5), behind the `parakeet`
+# feature only.
+transcribe-rs = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true, optional = true }
@@ -50,7 +66,7 @@ libc = { workspace = true, optional = true }
 [features]
 default = ["audio", "profile", "transcribe"]
 profile = []
-audio = ["dep:gstreamer", "dep:tokio", "dep:libc"]
+audio = ["dep:gstreamer", "dep:gstreamer-app", "dep:tokio", "dep:libc"]
 # `transcribe` pulls libc for the unix-only EXDEV cross-device probe
 # in `whisper_cpp::is_cross_device` — the daemon previously got it
 # transitively through `audio`, but Phase 4 split CLI (transcribe-only)
@@ -68,7 +84,20 @@ transcribe = [
     "dep:tokio-util",
     "dep:zeroize",
     "dep:sha2",
+    "dep:symphonia",
+    "dep:rubato",
+    "dep:zip",
+    "dep:tar",
+    "dep:flate2",
 ]
+# `parakeet` compiles the in-process Parakeet backend (transcribe-rs +
+# ONNX Runtime via `ort`). Default-OFF: `ort`'s `download-binaries`
+# fetches a sizeable native runtime at build time, so the normal build
+# and CI stay lean. The Parakeet `ModelSpec` (download / verify /
+# status) already works without this feature; only inference needs it,
+# and the "backend not compiled" error surfaces at transcribe time when
+# the feature is off. Phase 5 wires `dep:transcribe-rs` into this list.
+parakeet = ["transcribe", "dep:transcribe-rs"]
 # `test-utils` exposes the test-only escape hatches on the Deepgram
 # backend (`with_base_url`, `transcribe_file_with_key`) that would
 # otherwise be unreachable from external integration tests. Production

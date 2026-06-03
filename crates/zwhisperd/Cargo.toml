@@ -36,6 +36,12 @@ uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[features]
+# Compile the in-process Parakeet backend into the daemon so
+# `auto = true` parakeet profiles transcribe after recording. Default-
+# OFF for the same reason as the CLI (pulls ONNX Runtime at build time).
+parakeet = ["zwhisper-core/parakeet"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 which = { workspace = true }

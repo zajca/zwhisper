@@ -54,6 +54,15 @@ reqwest = { workspace = true }
 # `z-with-tokio` zbus backend so this lives on our runtime.
 notify-rust = { workspace = true }
 
+[features]
+# Compile the in-process Parakeet backend into the CLI. Default-OFF:
+# enabling it pulls ONNX Runtime via `ort` (network + sizeable binary
+# at build time). Build with `cargo build -p zwhisper-cli --features
+# parakeet` to transcribe with `backend = "parakeet"`. Without it, a
+# parakeet profile still records and downloads its model; only
+# `transcribe` surfaces a typed "backend not compiled" error.
+parakeet = ["zwhisper-core/parakeet"]
+
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }

@@ -40,9 +40,13 @@ use std::sync::Arc;
 
 use tracing::{error, info, warn};
 use zbus::object_server::InterfaceRef;
-use zwhisper_core::audio::recorder::Recorder;
+use zwhisper_core::audio::recorder::{Recorder, RecordingReport};
 use zwhisper_core::audio::state::{SessionId, StopReason};
-use zwhisper_core::transcribe::{TranscribeOpts, transcribe_file};
+use zwhisper_core::transcribe::config::DEFAULT_ASR_SAMPLE_RATE_HZ;
+use zwhisper_core::transcribe::{
+    AudioArtifact, AudioCodec, AudioMetadata, AudioSource, PcmAvailability, TranscribeOpts,
+    transcribe_source,
+};
 
 use crate::last_session::{self, LastSession};
 use crate::recorder_service::{RecorderInterface, RecorderInterfaceSignals};
@@ -56,14 +60,12 @@ pub(crate) struct LifecycleHooks {
     pub(crate) session_id: SessionId,
     pub(crate) audio_path: PathBuf,
     pub(crate) transcribe_auto: bool,
-    pub(crate) transcribe_backend: String,
+    /// Canonical backend identity (RFC: Backend Enum Convergence).
+    pub(crate) transcribe_backend: zwhisper_core::profile::schema::Backend,
     pub(crate) transcribe_model: String,
     pub(crate) transcribe_language: String,
-    pub(crate) transcribe_whisper_cpp: zwhisper_core::profile::schema::WhisperCppSettings,
-    /// M5 — typed routing for cloud backends. Default
-    /// [`zwhisper_core::transcribe::BackendConfig::WhisperCpp`] keeps
-    /// the legacy whisper-cpp flow intact.
-    pub(crate) transcribe_backend_config: zwhisper_core::transcribe::BackendConfig,
+    /// Side map of per-backend typed settings, keyed by backend.
+    pub(crate) transcribe_settings: zwhisper_core::transcribe::BackendSettings,
 }
 
 /// Spawn the lifecycle task. Returns immediately; the spawned task
@@ -175,20 +177,24 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
 
             if hooks.transcribe_auto {
                 let opts = TranscribeOpts {
-                    backend: hooks.transcribe_backend.clone(),
+                    backend: hooks.transcribe_backend,
                     model: hooks.transcribe_model.clone(),
                     language: hooks.transcribe_language.clone(),
-                    whisper_cpp: hooks.transcribe_whisper_cpp.clone(),
-                    backend_config: hooks.transcribe_backend_config.clone(),
+                    settings: hooks.transcribe_settings.clone(),
                 };
-                match transcribe_file(&report.audio_path, &opts).await {
+                // Build the AudioSource: hand the backend the live ASR
+                // PCM when the recorder captured it (Parakeet path);
+                // otherwise the coordinator decodes from the FLAC
+                // artifact. The durable FLAC is always present either way.
+                let audio_source = build_audio_source(&report);
+                match transcribe_source(&audio_source, &opts).await {
                     Ok(art) => {
                         let bytes = std::fs::metadata(&art.txt_path).map_or(0, |m| m.len());
                         info!(
                             session_id = %session_id_str,
                             transcript_path = %art.txt_path.display(),
                             bytes,
-                            backend = %hooks.transcribe_backend,
+                            backend = %hooks.transcribe_backend.as_str(),
                             "transcript complete (daemon)",
                         );
 
@@ -199,7 +205,7 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                             &session_id_str,
                             &report.audio_path,
                             &art.txt_path,
-                            &hooks.transcribe_backend,
+                            hooks.transcribe_backend.as_str(),
                         )
                         .await;
 
@@ -208,7 +214,7 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                             &session_id_str,
                             &art.txt_path.display().to_string(),
                             bytes,
-                            &hooks.transcribe_backend,
+                            hooks.transcribe_backend.as_str(),
                         )
                         .await;
                         emit_terminal_state(&hooks.iface_ref, "idle", &session_id_str).await;
@@ -248,6 +254,34 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
             hooks.sessions.release();
             emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
         }
+    }
+}
+
+/// Build an [`AudioSource`] for the post-recording transcribe step.
+/// When the recorder captured live ASR PCM (Parakeet path) it is handed
+/// to the backend directly as an in-memory view; otherwise the source
+/// is artifact-backed and the coordinator decodes PCM from the FLAC on
+/// demand. The durable FLAC artifact is the source of truth in both
+/// cases.
+fn build_audio_source(report: &RecordingReport) -> AudioSource {
+    let codec = AudioCodec::from_path(&report.audio_path).unwrap_or(AudioCodec::Flac);
+    match &report.pcm {
+        Some(pcm) => AudioSource {
+            artifact: AudioArtifact::unprobed(report.audio_path.clone(), codec),
+            pcm: PcmAvailability::InMemory(Arc::clone(pcm)),
+            metadata: AudioMetadata {
+                normalized_sample_rate_hz: report.pcm_sample_rate,
+                normalized_channels: 1,
+                frames: pcm.len() as u64,
+                captured_at: chrono::Utc::now(),
+            },
+        },
+        None => AudioSource::from_encoded_file(
+            &report.audio_path,
+            codec,
+            DEFAULT_ASR_SAMPLE_RATE_HZ,
+            chrono::Utc::now(),
+        ),
     }
 }
 
