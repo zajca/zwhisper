@@ -81,7 +81,7 @@ signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 tokio-util = { version = "0.7", features = ["io"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
 
 # FLAC -> normalized PCM decode (RFC Phase 2). Pure-Rust so it works in
 # the CLI transcribe-only build (no GStreamer): `symphonia` decodes FLAC
