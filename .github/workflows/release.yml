@@ -1,0 +1,131 @@
+name: Release
+
+# Tag-triggered release. Pushing a `vX.Y.Z` tag builds the packaged
+# product (daemon + CLI) in two flavours — the lean default and the
+# `--features parakeet` build that bundles the ONNX Runtime — packages
+# each as a tarball with SHA-256 sidecars, and publishes a GitHub
+# Release whose notes are the matching `CHANGELOG.md` section.
+#
+# See docs/RELEASE.md for the full maintainer procedure.
+
+on:
+  push:
+    tags: ['v*']
+
+# Need write access to create the release and upload assets.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The packaged product is the daemon + CLI only (matches
+  # docs/RELEASE.md step 3); the retired tray/settings GUIs are not
+  # part of the release gate.
+  RELEASE_TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  build:
+    name: build (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Lean default: whisper.cpp + Deepgram backends only.
+          - variant: default
+            features: ''
+            suffix: ''
+          # Parakeet build: pulls ONNX Runtime via `ort` at build time,
+          # adds the in-process Parakeet backend.
+          - variant: parakeet
+            features: parakeet
+            suffix: -parakeet
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        uses: ./.github/actions/install-build-deps
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.variant }}
+
+      - name: Build daemon + CLI (release)
+        run: |
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --release --locked \
+              -p zwhisper-cli -p zwhisperd \
+              --features "${{ matrix.features }}"
+          else
+            cargo build --release --locked \
+              -p zwhisper-cli -p zwhisperd
+          fi
+
+      - name: Package tarball
+        id: package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="zwhisper-${version}-${RELEASE_TARGET}${{ matrix.suffix }}"
+          staging="dist/${name}"
+          mkdir -p "${staging}"
+          cp target/release/zwhisper "${staging}/"
+          cp target/release/zwhisperd "${staging}/"
+          cp LICENSE README.md CHANGELOG.md "${staging}/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          ( cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          echo "tarball=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.variant }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Extract changelog section for this tag
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="${version}" '
+            $0 ~ "^## \\[" ver "\\]" { flag = 1; next }
+            flag && /^## \[/ { exit }
+            flag { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::No CHANGELOG.md section found for ${version}" >&2
+            exit 1
+          fi
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256

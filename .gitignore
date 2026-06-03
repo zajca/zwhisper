@@ -3,6 +3,10 @@
 **/*.rs.bk
 *.pdb
 
+# Release staging (release.yml + local `dist/` builds of the packaged
+# daemon + CLI tarballs). Reproducible from a tag; never committed.
+/dist/
+
 # Cargo local config
 .cargo/config.local.toml
 

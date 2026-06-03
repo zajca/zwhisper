@@ -7,6 +7,55 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-03
+
+Backend-agnostic audio + model boundaries (RFC: audio-source-model) and a
+new in-process Parakeet backend.
+
+### Added
+
+- **AudioSource boundary.** A backend-agnostic audio representation
+  (`AudioSource` + `AudioArtifact` + `PcmAvailability` + `AudioMetadata`)
+  with a pull-based `PcmChunkSource` trait. Decouples how audio is captured
+  and persisted from how a backend consumes it (encoded file vs. in-memory
+  PCM vs. decode-from-artifact).
+- **ModelSpec registry.** A unified model boundary (`ModelKind` /
+  `ModelArtifact` / `ModelSource` / `ModelSpec` / `ModelStatus` /
+  `ModelRegistry`) covering single-file, directory-bundle, and remote
+  models. Registry-load validation enforces a name allow-list (CWE-22) and
+  HTTPS-only sources before any resolution or install can act on a spec.
+- **Parakeet backend (opt-in).** In-process `parakeet-tdt-0.6b-v3`
+  transcription via `transcribe-rs` + ONNX Runtime, behind the default-OFF
+  `parakeet` Cargo feature in `zwhisper-cli` and `zwhisperd`. Release ships
+  both a lean default build and a separate `-parakeet` build.
+- **FLAC decode + resample.** `symphonia` FLAC decode → mono downmix →
+  `rubato` resample to the backend's ASR sample rate, exposed as an
+  `ArtifactDecodeSource` PCM source.
+- **Hardened model bundle installer.** Multi-file and archive
+  (`zip` / `tar.gz`) model installs with lexical zip-slip protection,
+  symlink/hardlink rejection, decompression-bomb caps, HTTPS-only client
+  with non-HTTPS-redirect rejection, verify-before-extract, and atomic
+  same-filesystem install.
+- **Live PCM fan-out.** Native-rate capture with a GStreamer `tee` +
+  `appsink` ASR branch producing 16 kHz mono `f32` PCM in parallel with the
+  FLAC recording branch, with safe fallback to decode-from-artifact.
+- **Release workflow.** Tag-triggered `release.yml` builds the default and
+  `parakeet` flavours, packages tarballs with SHA-256 sidecars, and
+  publishes the matching `CHANGELOG.md` section as the release notes.
+
+### Changed
+
+- Backend configuration converged from a `BackendConfig` enum to a
+  `BackendSettings` side-map keyed by `profile::schema::Backend`; added
+  `Backend::Parakeet` and `Backend::from_id`.
+- `Transcriber` trait reworked around
+  `transcribe(&AudioSource, &ModelArtifact, &TranscribeOpts)`; a
+  coordinator resolves audio + model and reconciles the ASR sample rate
+  across both axes.
+- `Profile::validate` relaxed from 16 kHz-only to `{16k, 44.1k, 48k}`
+  capture rates.
+- Workspace `version` bumped from `0.1.0` to `0.2.0`.
+
 ## [0.1.0] - 2026-05-03
 
 First packageable release. Closes M0–M8.
@@ -71,5 +120,6 @@ secrets editor in the settings GUI, hard RAM-cap enforcement,
 auto-update mechanism, localisation, telemetry, vendored cargo
 tarball. See `docs/M8-plan.md` § "Out of scope" for the full list.
 
-[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/zajca/zwhisper/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/zajca/zwhisper/releases/tag/v0.1.0

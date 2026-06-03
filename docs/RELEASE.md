@@ -116,10 +116,23 @@ manual verification gate
 Verify with `pacman -Q zwhisper` (reports `X.Y.Z-1`) and the
 MV-1..MV-10 matrix.
 
-## 9. Publish the GitHub release notes
+## 9. Publish the GitHub release (automated)
 
-Copy the new `CHANGELOG.md` section into the GitHub release UI for
-the `vX.Y.Z` tag.
+Pushing the `vX.Y.Z` tag (step 6) triggers
+`.github/workflows/release.yml`, which:
+
+1. Builds the packaged daemon + CLI in two flavours — the lean
+   `default` build (whisper.cpp + Deepgram) and the `parakeet` build
+   (`--features parakeet`, bundles ONNX Runtime).
+2. Packages each as
+   `zwhisper-X.Y.Z-x86_64-unknown-linux-gnu[-parakeet].tar.gz` with a
+   `.sha256` sidecar.
+3. Extracts the `## [X.Y.Z]` section from `CHANGELOG.md` as the release
+   notes and publishes the GitHub Release with the tarballs attached.
+
+Verify with `gh release view vX.Y.Z` (notes present, four assets:
+two tarballs + two `.sha256`). No manual copy-paste into the release
+UI is needed — the workflow is the source of truth.
 
 ---
 
