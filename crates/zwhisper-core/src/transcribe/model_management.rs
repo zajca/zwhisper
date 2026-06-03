@@ -647,7 +647,9 @@ pub fn verify_model(model_name: &str) -> Result<ModelVerification, ModelManageme
         .len();
 
     let mut hasher = Sha256::new();
-    let mut buf = [0_u8; 1024 * 1024];
+    // Heap-allocated 1 MiB read buffer — a stack array this large risks
+    // overflow and trips `clippy::large_stack_arrays`.
+    let mut buf = vec![0_u8; 1024 * 1024];
     loop {
         let n = file.read(&mut buf).map_err(|e| {
             ModelManagementError::Path(format!("failed to read {}: {e}", path.display()))

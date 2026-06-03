@@ -1,11 +1,11 @@
 //! `zwhisper model …` — manage local models across every backend.
 //!
 //! Registry-driven (RFC: Model Source Model). The embedded
-//! [`ModelRegistry`] enumerates single-file (whisper.cpp), directory-
+//! `ModelRegistry` enumerates single-file (whisper.cpp), directory-
 //! bundle (Parakeet), and remote (Deepgram) models; this command lists
 //! their install status, resolves paths, and installs them — single
 //! files via the legacy whisper downloader, directory bundles via the
-//! hardened [`BundleInstaller`].
+//! hardened `BundleInstaller`.
 
 use color_eyre::eyre::{WrapErr, eyre};
 use tokio::sync::mpsc;

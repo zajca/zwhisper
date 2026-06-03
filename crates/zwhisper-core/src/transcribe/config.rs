@@ -80,7 +80,7 @@ impl AudioConfig {
     }
 
     /// Frame budget for a single in-memory buffer at the configured
-    /// rate (bytes / size_of::<f32>()).
+    /// rate (`bytes / size_of::<f32>()`).
     pub fn in_memory_max_frames(&self) -> u64 {
         self.max_in_memory_pcm_bytes / (std::mem::size_of::<f32>() as u64)
     }

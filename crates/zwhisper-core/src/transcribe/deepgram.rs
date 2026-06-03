@@ -13,7 +13,7 @@
 //! [`DeepgramBatch`] instance (M5-plan § C2). The daemon caches a
 //! single instance across sessions; the CLI builds a fresh one per
 //! invocation. No background tasks are spawned — the retry loop
-//! lives inline in [`DeepgramBatch::transcribe_file`].
+//! lives inline in `DeepgramBatch::transcribe_file`.
 //!
 //! ## Retry policy
 //!

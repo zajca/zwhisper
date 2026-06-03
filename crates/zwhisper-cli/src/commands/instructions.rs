@@ -2,6 +2,9 @@
 
 use crate::cli::InstructionsArgs;
 
+// Uniform `Result` signature across all command handlers so the
+// dispatcher can call them identically; this one never fails.
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn run(args: &InstructionsArgs) -> color_eyre::Result<()> {
     if args.agent {
         print_agent_instructions();
@@ -13,18 +16,18 @@ pub(crate) fn run(args: &InstructionsArgs) -> color_eyre::Result<()> {
 
 fn print_short_instructions() {
     println!(
-        r#"# zwhisper CLI
+        r"# zwhisper CLI
 
 Use `zwhisper status`, `zwhisper toggle`, and `zwhisper profile set <name>`
 for daily operation. Use `zwhisper instructions --agent` for a concise
 machine-oriented reference.
-"#
+"
     );
 }
 
 fn print_agent_instructions() {
     println!(
-        r#"# zwhisper Agent Instructions
+        r"# zwhisper Agent Instructions
 
 zwhisper is operated through two binaries:
 
@@ -56,7 +59,7 @@ Manual desktop integration:
 - For Waybar, use a custom module that executes `zwhisper status --waybar`.
 
 Do not edit shipped profiles directly. Clone them first, then edit the user copy.
-"#
+"
     );
 }
 

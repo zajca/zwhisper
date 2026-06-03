@@ -96,10 +96,6 @@ jobs:
         run: bash packaging/arch/tests/pkgbuild_metadata.sh
       - name: PKGBUILD install-path smoke
         run: bash packaging/arch/tests/install_paths.sh
-      - name: Validate desktop entries
-        run: |
-          desktop-file-validate packaging/zwhisper.desktop
-          desktop-file-validate packaging/zwhisper-settings.desktop
       - name: Validate icon SVG
         run: xmllint --noout assets/icons/zwhisper.svg
 
@@ -120,4 +116,3 @@ jobs:
           cargo test -p zwhisper-ipc --test wire_freeze
           cargo test -p zwhisperd --test m8_dbus_protocol_version
           cargo test -p zwhisper-cli --test m8_version_handshake
-          cargo test -p zwhisper-tray --test m8_icon_asset

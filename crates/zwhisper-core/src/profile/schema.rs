@@ -118,6 +118,11 @@ pub struct Transcription {
 /// whisper.cpp-specific knobs read from `[transcription.whisper_cpp]`.
 /// All fields are optional; absent values let `whisper-cli` keep its
 /// own defaults.
+// Each bool maps to a distinct `whisper-cli` boolean flag, so the count
+// mirrors the upstream CLI surface rather than indicating a state that
+// should be modelled as an enum. Grouping them would only obscure the
+// 1:1 flag mapping in `whisper_cpp::apply_settings`.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WhisperCppSettings {

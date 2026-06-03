@@ -479,7 +479,7 @@ fn append_whisper_cpp_args(cmd: &mut Command, settings: &WhisperCppSettings) {
         }
     }
 
-    fn arg_path_like(cmd: &mut Command, flag: &str, value: &Option<String>) {
+    fn arg_path_like(cmd: &mut Command, flag: &str, value: Option<&str>) {
         if let Some(value) = value {
             cmd.arg(flag).arg(value);
         }
@@ -534,12 +534,12 @@ fn append_whisper_cpp_args(cmd: &mut Command, settings: &WhisperCppSettings) {
     if settings.no_timestamps {
         cmd.arg("--no-timestamps");
     }
-    arg_path_like(cmd, "--prompt", &settings.prompt);
+    arg_path_like(cmd, "--prompt", settings.prompt.as_deref());
     if settings.carry_initial_prompt {
         cmd.arg("--carry-initial-prompt");
     }
-    arg_path_like(cmd, "--ov-e-device", &settings.openvino_device);
-    arg_path_like(cmd, "--dtw", &settings.dtw);
+    arg_path_like(cmd, "--ov-e-device", settings.openvino_device.as_deref());
+    arg_path_like(cmd, "--dtw", settings.dtw.as_deref());
     if settings.log_score {
         cmd.arg("--log-score");
     }
@@ -559,14 +559,14 @@ fn append_whisper_cpp_args(cmd: &mut Command, settings: &WhisperCppSettings) {
     if settings.suppress_nst {
         cmd.arg("--suppress-nst");
     }
-    arg_path_like(cmd, "--suppress-regex", &settings.suppress_regex);
-    arg_path_like(cmd, "--grammar", &settings.grammar);
-    arg_path_like(cmd, "--grammar-rule", &settings.grammar_rule);
+    arg_path_like(cmd, "--suppress-regex", settings.suppress_regex.as_deref());
+    arg_path_like(cmd, "--grammar", settings.grammar.as_deref());
+    arg_path_like(cmd, "--grammar-rule", settings.grammar_rule.as_deref());
     arg_value(cmd, "--grammar-penalty", settings.grammar_penalty);
     if settings.vad {
         cmd.arg("--vad");
     }
-    arg_path_like(cmd, "--vad-model", &settings.vad_model);
+    arg_path_like(cmd, "--vad-model", settings.vad_model.as_deref());
     arg_value(cmd, "--vad-threshold", settings.vad_threshold);
     arg_value(
         cmd,

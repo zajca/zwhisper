@@ -167,7 +167,6 @@ fn waybar_percentage(state: &str) -> u8 {
     match state {
         "recording" => 100,
         "starting" | "stopping" | "transcribing" => 50,
-        "failed" => 0,
         _ => 0,
     }
 }

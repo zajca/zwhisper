@@ -17,7 +17,7 @@
 //! - **No symlinks, no hardlinks (CWE-59).** Both link types are
 //!   rejected with equal strictness; the extractor never follows a link.
 //! - **Decompression-bomb defense — byte AND entry caps (CWE-409).**
-//!   A [`LimitedReader`] bounds cumulative decompressed bytes; per-entry
+//!   A `LimitedReader` bounds cumulative decompressed bytes; per-entry
 //!   size and a total entry count are bounded too.
 //! - **No executable bit propagation.** Files are written data-only.
 
@@ -221,7 +221,7 @@ pub fn extract_zip<R: Read + io::Seek>(
 }
 
 /// Extract a gzip-compressed TAR archive into `dest_dir` under the
-/// security guards. The gzip stream is bounded by a [`LimitedReader`]
+/// security guards. The gzip stream is bounded by a `LimitedReader`
 /// so a gzip bomb cannot inflate past the total cap.
 pub fn extract_tar_gz<R: Read>(
     reader: R,
