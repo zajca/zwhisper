@@ -6,12 +6,42 @@ transcription pipeline backed by local
 [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) or cloud
 backends (Deepgram).
 
-> **Status:** `0.1.0` (M8) — first packageable release. Milestones
-> M0–M8 are complete; the M8 manual verification gate
-> ([`docs/M8-verification.md`](./docs/M8-verification.md))
-> still needs to be exercised on a clean Arch box before tagging
-> `v0.1.0`. See [`CHANGELOG.md`](./CHANGELOG.md) and
+> **Status:** `0.2.x` — packaged release with the unified
+> AudioSource/ModelSpec model and an optional in-process Parakeet
+> backend. See [`CHANGELOG.md`](./CHANGELOG.md) and
 > [`IDEA.md`](./IDEA.md) for the full architecture and roadmap.
+
+## Quickstart (Arch Linux + Sway)
+
+The shortest path from nothing to "press a key, speak, paste the text".
+Each step links to its detailed section below.
+
+```sh
+# 1. Install the daemon + CLI (see "Install" for other distros / parakeet).
+git clone https://github.com/zajca/zwhisper && cd zwhisper/packaging/arch
+makepkg -si
+
+# 2. Start the user daemon.
+systemctl --user enable --now zwhisperd
+
+# 3. Install a transcription model.
+zwhisper model install large-v3-turbo-q5_0      # whisper.cpp, accurate
+# (fast local Parakeet: grab the -parakeet release tarball, see "Pre-built binary releases")
+
+# 4. Install the desktop integration: helper scripts + example profiles.
+cd ..            # back to the repo root
+contrib/install.sh
+
+# 5. Pick a profile and wire your compositor (the installer prints the steps).
+zwhisper profile set whisper-meeting
+```
+
+Add `include ~/path/to/zwhisper/contrib/sway/zwhisper.conf` to your Sway
+config and the `custom/zwhisper` module to Waybar (see
+[Desktop integration](#desktop-integration-sway--waybar)), reload Sway,
+then press **`Super+Ctrl+R`**, speak, and press it again — the transcript
+is in your clipboard. Empty result? Your mic gain is almost certainly too
+high; see [Microphone level](#microphone-level-empty-transcripts).
 
 ## Features
 
@@ -91,11 +121,19 @@ priorities.
 
 ### Pre-built binary releases
 
-Not yet published. The first GitHub Release (`v0.1.0`) will land
-after the M8 manual verification gate
-([`docs/M8-verification.md`](./docs/M8-verification.md))
-passes on a clean Arch box. Until then, build from source or use
-`makepkg`.
+Each tagged [GitHub Release](https://github.com/zajca/zwhisper/releases)
+ships two x86_64 tarballs:
+
+- `zwhisper-<ver>-x86_64-unknown-linux-gnu.tar.gz` — the lean default
+  build (whisper.cpp + Deepgram).
+- `zwhisper-<ver>-x86_64-unknown-linux-gnu-parakeet.tar.gz` — same plus
+  the in-process **Parakeet** backend (bundles ONNX Runtime).
+
+Each has a `.sha256` sidecar. Verify, extract, and install the two
+binaries (`zwhisper`, `zwhisperd`) onto your `PATH` plus the
+`systemd/` and `dbus/` units as in
+[Manual install](#manual-install-no-makepkg). The `-parakeet` tarball is
+the no-build way to get fast local transcription.
 
 ## Build from source
 
@@ -282,18 +320,19 @@ extra_args = ["--zen5-special"]
 
 ### Global hotkey
 
-Default chord: `Ctrl+Alt+R` (toggles recording on/off).
+The simplest path is a compositor-native key bind. The ready-made Sway
+bindings (dictate, cycle profile, status, meeting toggle) live in
+[`contrib/sway/zwhisper.conf`](./contrib/sway/zwhisper.conf) — see
+[Desktop integration](#desktop-integration-sway--waybar). For a single
+bare toggle on any compositor:
 
-- **Compositor-native bind:** bind a key to `zwhisper toggle`.
-  Example for Sway:
-  ```
-  bindsym Mod4+Shift+r exec /usr/bin/zwhisper toggle
-  ```
-- **Portal-backed bind:** `zwhisper hotkey probe` and
-  `zwhisper hotkey bind` are the intended CLI surface where the
-  desktop portal supports GlobalShortcuts.
+```
+bindsym Mod4+Shift+r exec zwhisper toggle
+```
 
-Probe the portal availability with `zwhisper hotkey probe`.
+A portal-backed binding (`zwhisper hotkey probe` / `bind`) is also
+available where the desktop portal supports GlobalShortcuts. Probe with
+`zwhisper hotkey probe`.
 
 ## Use
 
@@ -312,22 +351,73 @@ zwhisper backend health      # local whisper.cpp + cloud backend reachability
 
 Run `zwhisper --help` for the full command surface.
 
-### Waybar and manual integration
+## Desktop integration (Sway + Waybar)
 
-There is no packaged tray service in the CLI-only product. Panels and
-window managers should call the CLI directly. A minimal Waybar custom
-module can poll status and toggle recording on click:
+There is no tray service — panels and compositors call the CLI directly.
+The [`contrib/`](./contrib) directory ships ready-to-use helpers so you
+do not have to write the glue yourself:
 
-```json
+- **`zwhisper-dictate`** — push-to-dictate: record the mic, transcribe,
+  copy the text to the clipboard (mic-only, ideal for voice typing).
+- **`zwhisper-cycle-profile`** — switch the active profile and notify.
+- Sway key bindings, a Waybar module, optional CSS, and example profiles.
+
+### One-shot install
+
+```sh
+contrib/install.sh
+```
+
+This copies the helper scripts into `~/.local/bin`, installs the example
+profiles into `~/.config/zwhisper/profiles/` (without overwriting yours),
+checks dependencies, and prints the remaining wiring steps.
+
+### Sway
+
+Add this to `~/.config/sway/config` and run `swaymsg reload`:
+
+```
+include ~/path/to/zwhisper/contrib/sway/zwhisper.conf
+```
+
+That defines (edit `$zwhisper_mod` to taste):
+
+| Shortcut | Action |
+| --- | --- |
+| `Super+Ctrl+R` | Dictate: record → stop → transcript in clipboard |
+| `Super+Ctrl+P` | Cycle the active profile |
+| `Super+Ctrl+S` | Show daemon status in a notification |
+| `Super+Ctrl+T` | Toggle a daemon meeting recording (mic + system audio) |
+
+### Waybar
+
+`zwhisper status --waybar` emits Waybar-ready JSON (text, tooltip,
+state `class`, percentage). Add `"custom/zwhisper"` to a module list and
+merge the module from [`contrib/waybar/zwhisper.jsonc`](./contrib/waybar/zwhisper.jsonc):
+
+```jsonc
 "custom/zwhisper": {
-    "exec": "zwhisper status",
-    "on-click": "zwhisper toggle",
-    "interval": 2
+    "exec": "zwhisper status --waybar",
+    "return-type": "json",
+    "interval": 2,
+    "format": " {}",
+    "on-click": "~/.local/bin/zwhisper-dictate",
+    "on-click-right": "~/.local/bin/zwhisper-cycle-profile"
 }
 ```
 
-For KDE, GNOME, Sway, Hyprland, or other compositors, create a normal
-keyboard shortcut whose command is `/usr/bin/zwhisper toggle`.
+Append [`contrib/waybar/style.css`](./contrib/waybar/style.css) to your
+`style.css` to colour the module red while recording. See
+[`contrib/README.md`](./contrib/README.md) for the full reference.
+
+### Dictation vs. meeting recording
+
+- **Dictation** (`zwhisper-dictate`, `Super+Ctrl+R`) records **only the
+  microphone** and writes the transcript to the clipboard — system audio
+  is never captured, so it is safe for voice typing while audio plays.
+- **Meeting recording** (`zwhisper toggle`, `Super+Ctrl+T`) uses the
+  active profile, which captures a **mono mix of mic + system output**
+  and writes a FLAC + transcript to `~/Recordings`.
 
 ## Troubleshooting
 
@@ -389,6 +479,28 @@ pactl list short sources      # mic + monitor source names
 Check the active profile's `mic` and `monitor` fields; the daemon
 log will show the `pipewiresrc target-object=<name>` it resolved.
 
+### Microphone level (empty transcripts)
+
+If recordings succeed but the transcript is empty (or whisper.cpp returns
+filler like `[ Thank you.]`), the captured audio is usually **noise, not
+speech** — most often because the input gain is cranked so high the mic
+saturates. This is common with onboard codecs (e.g. Realtek ALC1220) whose
+mic input has an aggressive hardware boost.
+
+Diagnose and fix:
+
+```sh
+# Record a few seconds while you speak, then check the level:
+pw-record --target "$(pactl get-default-source)" /tmp/mic.wav   # Ctrl+C to stop
+ffmpeg -i /tmp/mic.wav -af volumedetect -f null - 2>&1 | grep volume
+```
+
+Healthy speech peaks around **-12 to -3 dB**. If even silence reads near
+**0 dB**, lower the input: open **pavucontrol → Input Devices** and drag
+the level down (often to ~25-30%) until idle sits quietly and speech
+peaks in range. Then re-test. `wpctl set-volume <source-id> 0.25` does the
+same from the CLI.
+
 ## Project layout
 
 Cargo workspace. The CLI-only product is the daemon, CLI, shared core
@@ -398,7 +510,7 @@ transition, but they are not part of the packaged product.
 
 ```
 zwhisper/
-├── Cargo.toml                       # workspace root, version 0.1.0
+├── Cargo.toml                       # workspace root
 ├── README.md
 ├── CHANGELOG.md
 ├── IDEA.md                          # architecture spec
@@ -413,6 +525,12 @@ zwhisper/
 ├── packaging/
 │   └── arch/                        # PKGBUILD, install hook, namcap allow-list
 ├── assets/icons/zwhisper.svg
+├── contrib/                         # desktop integration (Sway + Waybar)
+│   ├── bin/                         # zwhisper-dictate, zwhisper-cycle-profile
+│   ├── sway/zwhisper.conf           # key bindings
+│   ├── waybar/                      # module + optional style.css
+│   ├── profiles/                    # example user profiles
+│   └── install.sh                   # one-shot integration installer
 ├── scripts/
 │   ├── refresh-checksums.sh         # release tool: refresh ggml checksums
 │   ├── m0-soak.sh                   # M0 60-min soak harness

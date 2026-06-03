@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# zwhisper-cycle-profile — switch the active zwhisper profile to the
+# next one in `zwhisper profile list` order (wrapping around) and show
+# a notification. Bind it to a key or the Waybar module's right-click.
+#
+# Profile order is read live from `zwhisper profile list`, so any
+# profile you add later is picked up automatically — no hardcoded names.
+#
+# Dependencies: zwhisper, jq, libnotify (notify-send).
+set -euo pipefail
+
+mapfile -t profiles < <(zwhisper profile list 2>/dev/null | awk 'NR>2 && NF {print $1}')
+if [ "${#profiles[@]}" -eq 0 ]; then
+    notify-send -a zwhisper -t 2000 "No profiles found"
+    exit 1
+fi
+
+current="$(zwhisper status --json 2>/dev/null | jq -r '.active_profile // empty')"
+
+# Index of the current profile; -1 (so next == 0) when none is active
+# or the active one is not in the list.
+idx=-1
+for i in "${!profiles[@]}"; do
+    if [ "${profiles[$i]}" = "$current" ]; then
+        idx="$i"
+        break
+    fi
+done
+
+next="${profiles[$(((idx + 1) % ${#profiles[@]}))]}"
+zwhisper profile set "$next" >/dev/null
+
+# Append the backend to the notification when the profile has a user
+# override file. Embedded profiles (no file) just show the name.
+profile_file="${XDG_CONFIG_HOME:-$HOME/.config}/zwhisper/profiles/${next}.toml"
+backend=""
+if [ -f "$profile_file" ]; then
+    backend="$(awk -F'=' '/^[[:space:]]*backend[[:space:]]*=/ {gsub(/[" ]/, "", $2); print $2; exit}' "$profile_file")"
+fi
+notify-send -a zwhisper -t 2000 "Profile: ${next}${backend:+ (${backend})}"

@@ -1,0 +1,26 @@
+schema_version = 1
+name = "parakeet-fast"
+description = "Fast local transcription via the in-process Parakeet backend (parakeet-tdt-0.6b-v3, multilingual, CPU-only). Mic + system output mono mix, auto-transcribed on stop. Requires a zwhisper built with the `parakeet` feature and the model installed (`zwhisper model install parakeet-tdt-0.6b-v3`)."
+
+[sources]
+mic = "default"
+system_output = "default"
+mode = "mono_mix"
+
+[recording]
+codec = "flac"
+sample_rate = 16000
+max_duration_minutes = 120
+
+[transcription]
+backend = "parakeet"
+model = "parakeet-tdt-0.6b-v3"
+language = "auto"
+auto = true
+
+[[output]]
+type = "file"
+path = "~/Recordings/zwhisper/{profile}/{timestamp}.flac"
+
+[hotkey]
+toggle = ""

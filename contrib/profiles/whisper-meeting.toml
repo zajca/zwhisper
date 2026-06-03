@@ -1,0 +1,34 @@
+schema_version = 1
+name = "whisper-meeting"
+description = "High-accuracy meeting capture via whisper.cpp. Mic + system output mono mix (both sides of a call), auto-transcribed on stop. Slower than Parakeet but more accurate. Requires the model installed (`zwhisper model install large-v3-turbo-q5_0`) and `whisper-cli` on PATH."
+
+[sources]
+mic = "default"
+system_output = "default"
+mode = "mono_mix"
+
+[recording]
+codec = "flac"
+sample_rate = 16000
+max_duration_minutes = 180
+
+[transcription]
+backend = "whisper-cpp"
+model = "large-v3-turbo-q5_0"
+language = "auto"
+auto = true
+
+[transcription.whisper_cpp]
+threads = 12
+processors = 1
+no_gpu = true
+no_prints = true
+suppress_nst = true
+no_speech_threshold = 0.6
+
+[[output]]
+type = "file"
+path = "~/Recordings/zwhisper/{profile}/{timestamp}.flac"
+
+[hotkey]
+toggle = ""

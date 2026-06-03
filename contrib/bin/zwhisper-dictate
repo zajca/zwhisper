@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# zwhisper-dictate — push-to-dictate toggle for Wayland desktops.
+#
+# Press the bound key once to start recording from the default PipeWire
+# microphone; press it again to stop, transcribe, copy the text to the
+# Wayland clipboard (wl-copy) and show it in a notification. Paste with
+# Ctrl+V.
+#
+# Why this records the mic directly instead of `zwhisper toggle`:
+# zwhisper profiles capture a mono mix of the microphone AND the system
+# output monitor (so meetings catch both sides of a call). For dictation
+# you almost always want ONLY your voice, with no system audio mixed in.
+# This helper records the mic alone via `pw-record` and feeds it to
+# `zwhisper transcribe`, so dictation never picks up whatever is playing.
+# The daemon (`zwhisperd`) stays available for meeting/profile recording.
+#
+# Dependencies: pipewire (pw-record), wireplumber/pulse (pactl), ffmpeg,
+# wl-clipboard (wl-copy), libnotify (notify-send), and zwhisper itself.
+#
+# Configuration (environment variables, all optional):
+#   ZWHISPER_DICTATE_BACKEND   transcription backend (default: parakeet)
+#   ZWHISPER_DICTATE_MODEL     model id            (default: parakeet-tdt-0.6b-v3)
+#   ZWHISPER_DICTATE_LANGUAGE  language or "auto"  (default: auto)
+#   ZWHISPER_DICTATE_SOURCE    PipeWire source     (default: system default)
+#   ZWHISPER_DICTATE_MAX_SECONDS  safety auto-stop (default: 300)
+set -uo pipefail
+
+BACKEND="${ZWHISPER_DICTATE_BACKEND:-parakeet}"
+MODEL="${ZWHISPER_DICTATE_MODEL:-parakeet-tdt-0.6b-v3}"
+LANGUAGE="${ZWHISPER_DICTATE_LANGUAGE:-auto}"
+MAX_SECONDS="${ZWHISPER_DICTATE_MAX_SECONDS:-300}"
+
+RT="${XDG_RUNTIME_DIR:-/tmp}"
+PIDFILE="$RT/zwhisper-dictate.pid"
+WAV="$RT/zwhisper-dictate.wav"
+FLAC="$RT/zwhisper-dictate.flac"
+
+notify() { notify-send -a zwhisper -t "$1" "$2" "${3:-}"; }
+
+is_recording() {
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+}
+
+if is_recording; then
+    # --- STOP + transcribe ---
+    pid="$(cat "$PIDFILE")"
+    kill -INT "$pid" 2>/dev/null
+    for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    kill -KILL "$pid" 2>/dev/null || true
+    rm -f "$PIDFILE"
+
+    if [ ! -s "$WAV" ]; then
+        notify 3000 "Nothing recorded"
+        exit 0
+    fi
+
+    notify 1500 "Transcribing..."
+    ffmpeg -nostdin -hide_banner -loglevel error -y -i "$WAV" -ar 16000 -ac 1 -c:a flac "$FLAC" 2>/dev/null
+    zwhisper transcribe "$FLAC" --backend "$BACKEND" --model "$MODEL" --language "$LANGUAGE" >/dev/null 2>&1
+
+    text="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$FLAC.txt" 2>/dev/null)"
+    if [ -n "$text" ]; then
+        printf '%s' "$text" | wl-copy
+        notify 5000 "Copied to clipboard (Ctrl+V)" "$text"
+    else
+        notify 4000 "Empty transcript (silence?)"
+    fi
+else
+    # --- START ---
+    src="${ZWHISPER_DICTATE_SOURCE:-$(pactl get-default-source 2>/dev/null)}"
+    if [ -z "$src" ]; then
+        notify 3000 "No input source (is PipeWire running?)"
+        exit 1
+    fi
+    rm -f "$WAV" "$FLAC" "$FLAC.txt"
+    # nohup so the recorder survives this script exiting; $! is the
+    # pw-record PID because nohup execs into it (no extra fork).
+    nohup pw-record --target "$src" "$WAV" >/dev/null 2>&1 &
+    echo $! > "$PIDFILE"
+    # Safety: auto-stop a recording left running for too long.
+    ( sleep "$MAX_SECONDS"
+      [ -f "$PIDFILE" ] && kill -INT "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null ) >/dev/null 2>&1 &
+    notify 2000 "Recording... (press the same key to stop)"
+fi

@@ -1,0 +1,17 @@
+/* Optional zwhisper Waybar styling. Append to ~/.config/waybar/style.css.
+ * The module sets the CSS classes "zwhisper" plus the current state
+ * ("idle", "recording", "stopping", "transcribing"). */
+
+#custom-zwhisper {
+    padding: 0 8px;
+}
+
+#custom-zwhisper.recording {
+    color: #ffffff;
+    background-color: #cc241d; /* red while recording */
+}
+
+#custom-zwhisper.transcribing,
+#custom-zwhisper.stopping {
+    color: #fabd2f; /* amber while finishing up */
+}

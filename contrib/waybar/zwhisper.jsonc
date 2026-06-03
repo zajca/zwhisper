@@ -1,0 +1,21 @@
+// zwhisper Waybar module.
+//
+// 1. Add "custom/zwhisper" to one of your module lists, e.g.:
+//        "modules-right": ["custom/zwhisper", "pulseaudio", "clock", ...]
+// 2. Merge the object below into your ~/.config/waybar/config.
+// 3. Optionally append contrib/waybar/style.css to your style.css to
+//    colour the module red while recording.
+//
+// `zwhisper status --waybar` emits {text, tooltip, class, percentage}
+// JSON. `class` is ["zwhisper", <state>] (e.g. "zwhisper recording"),
+// so you can style .zwhisper.recording in CSS.
+{
+    "custom/zwhisper": {
+        "exec": "zwhisper status --waybar",
+        "return-type": "json",
+        "interval": 2,
+        "format": " {}",
+        "on-click": "~/.local/bin/zwhisper-dictate",
+        "on-click-right": "~/.local/bin/zwhisper-cycle-profile"
+    }
+}
