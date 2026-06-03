@@ -63,7 +63,7 @@ which = "6"
 libc = "0.2"
 
 # Profiles (M2)
-toml_edit = { version = "0.22", features = ["serde"] }
+toml_edit = { version = "0.25", features = ["serde"] }
 include_dir = "0.7"
 shellexpand = "3"
 
