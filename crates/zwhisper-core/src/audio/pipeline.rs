@@ -167,9 +167,20 @@ fn pipeline_description(
     params: PipelineParams,
 ) -> String {
     let native = params.native_rate_hz;
+    // Downmix each source to mono *before* the `audiomixer`. Feeding the
+    // mixer two stereo (multi-channel) inputs and downmixing to mono only
+    // at the mixer output measured ~22 dB quieter than the same mic
+    // captured mono — loud enough on a meeting-volume monitor but so far
+    // below the noise floor for a single quiet mic that whisper.cpp and
+    // Parakeet transcribed silence. Forcing `channels=1` on each pad
+    // mixes mono+mono and restores the mic to its true level (verified
+    // against a direct `pw-record` reference). The trailing mono caps on
+    // the mixer output stay as a belt-and-braces guarantee for flacenc.
     let sources = format!(
-        "pipewiresrc target-object=\"{escaped_mic}\" ! audioconvert ! audioresample ! mix. \
-         pipewiresrc target-object=\"{escaped_monitor}\" ! audioconvert ! audioresample ! mix. \
+        "pipewiresrc target-object=\"{escaped_mic}\" ! audioconvert ! audioresample ! \
+         audio/x-raw,channels=1 ! mix. \
+         pipewiresrc target-object=\"{escaped_monitor}\" ! audioconvert ! audioresample ! \
+         audio/x-raw,channels=1 ! mix. \
          audiomixer name=mix ! audioconvert ! audioresample ! \
          audio/x-raw,format=S16LE,rate={native},channels=1"
     );
@@ -252,6 +263,20 @@ mod tests {
         );
         assert!(!d.contains("tee"), "no tee without capture: {d}");
         assert!(!d.contains("appsink"), "{d}");
+    }
+
+    #[test]
+    fn each_source_is_downmixed_to_mono_before_the_mixer() {
+        // Regression: feeding the audiomixer stereo inputs and
+        // downmixing only at the output dropped the mic ~22 dB and
+        // made transcription fail. Both source branches must carry
+        // an explicit `channels=1` cap *before* the `mix.` link.
+        let d = pipeline_description("mic", "mon", "/out.flac", params(16_000, true));
+        assert_eq!(
+            d.matches("audio/x-raw,channels=1 ! mix.").count(),
+            2,
+            "both source pads must be mono before the mixer: {d}"
+        );
     }
 
     #[test]
