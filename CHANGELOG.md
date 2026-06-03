@@ -7,6 +7,27 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-03
+
+### Fixed
+
+- **mono_mix capture level.** The capture pipeline fed `audiomixer` two
+  multi-channel (stereo) sources and downmixed to mono only at the mixer
+  output. On a single quiet microphone this attenuated the mic by ~22 dB,
+  pushing speech below the noise floor so recordings transcribed as empty
+  (or as whisper.cpp filler like `[ Thank you.]`). Each source branch is
+  now downmixed to mono (`audio/x-raw,channels=1`) before the
+  `audiomixer`, restoring the mic to its captured level.
+
+### Added
+
+- **Desktop integration (`contrib/`).** Ready-to-use Wayland helpers:
+  `zwhisper-dictate` (push-to-dictate, mic-only, transcript → clipboard),
+  `zwhisper-cycle-profile`, Sway key bindings, a Waybar module + optional
+  CSS, example Parakeet/whisper.cpp profiles, and a one-shot `install.sh`.
+- **README quickstart + desktop integration guide**, plus a
+  microphone-level troubleshooting section for empty transcripts.
+
 ## [0.2.0] - 2026-06-03
 
 Backend-agnostic audio + model boundaries (RFC: audio-source-model) and a
@@ -120,6 +141,7 @@ secrets editor in the settings GUI, hard RAM-cap enforcement,
 auto-update mechanism, localisation, telemetry, vendored cargo
 tarball. See `docs/M8-plan.md` § "Out of scope" for the full list.
 
-[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/zajca/zwhisper/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/zajca/zwhisper/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/zajca/zwhisper/releases/tag/v0.1.0

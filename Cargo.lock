@@ -4368,7 +4368,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisper-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -4398,7 +4398,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisper-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4434,7 +4434,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisper-hotkey"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ashpd",
  "async-trait",
@@ -4455,7 +4455,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisper-ipc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -4466,7 +4466,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisperd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "color-eyre",
