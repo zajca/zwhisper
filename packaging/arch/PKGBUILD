@@ -8,7 +8,7 @@
 # - zwhisper           — CLI client (`zwhisper-cli` crate)
 
 pkgname=zwhisper
-pkgver=0.2.1
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Voice recorder daemon and CLI transcription frontend for Linux desktops"
 arch=('x86_64')
@@ -62,7 +62,7 @@ optdepends=(
 # docs/RELEASE.md). The `SKIP` placeholder here is a deliberate
 # starter value — CI gates the real release on a populated b2sum.
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-b2sums=('0e388ee58d8541ca2dcb702563799f0f5f07a4c5d785eba326e750eca1956bf12cf3ca944290b5b388bffd020b9625a30614169648638cb646abda7f00bfee1d')
+b2sums=('13844a5c74866e08b75e02704820af0c4c957b6a0976df0ea569ebe5f0fcf8eab885ca00ce0bda011b0b882344a19abf68501e7bc9e93baeca070c2bc4e15ac7')
 
 install="$pkgname.install"
 
