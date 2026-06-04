@@ -10,8 +10,8 @@
 //!   the file exclusively, fed via an mpsc channel (F2.2) — there is no
 //!   read-modify-write from multiple callers, so concurrent jobs can
 //!   never lose each other's updates;
-//! - startup recovery ([`writer::recover`]) marking `transcribing`
-//!   entries `interrupted` without auto-retry (F2.3);
+//! - startup recovery (in [`writer`]) marking `transcribing` entries
+//!   `interrupted` without auto-retry (F2.3);
 //! - the orphan-[`reap`] helper used by recovery.
 //!
 //! Writes are atomic (temp + fsync + rename, `0600`), mirroring
