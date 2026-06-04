@@ -7,6 +7,47 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-04
+
+Type-at-cursor delivery: transcripts can now be typed directly into the
+focused window on wlroots compositors, with a safe clipboard/notification
+fallback everywhere else.
+
+### Added
+
+- **`type_at_cursor` output (`docs/RFC-type-at-cursor.md`).** A fourth
+  `[[output]]` destination that types the transcript at the cursor via
+  `wtype` (the Wayland `virtual-keyboard-v1` protocol). Supported on
+  **wlroots only** (Sway/Hyprland); GNOME/Mutter and KDE/KWin lack the
+  protocol for these clients and degrade to clipboard + notification.
+  Keyboard-layout independent (`wtype` uploads its own keymap).
+- **Stricter intent guard for typing.** Auto-typing runs only for a
+  foreground job and only below an 8 KB ceiling (`TYPE_MAX_BYTES`); larger
+  or detached/auto transcripts notify-with-action instead of spraying
+  keystrokes into whatever window is focused.
+- **Safe fallback chain.** A missing `wtype`, an unsupported compositor, or
+  a `wtype` failure never loses the transcript: it is copied to the
+  clipboard and announced via a notification (the transcript is also always
+  on disk).
+- **`zwhisper output last --to type`.** One-shot manual replay of the last
+  transcript at the cursor, mirroring `--to clipboard` (size ceiling
+  applies; clipboard fallback on failure).
+- **`zwhisper audio setup` delivery choice.** The wizard now offers an
+  interactive transcript destination (file only / file + type-at-cursor /
+  file + clipboard) and writes the matching `[[output]]`; the dictation
+  preset defaults to type-at-cursor.
+- **`set_outputs` profile writer** that rewrites a profile's `[[output]]`
+  array-of-tables in place, preserving the rest of the document.
+- **Manual verification guide** `docs/RFC-type-at-cursor-verification.md`.
+
+### Changed
+
+- **`zwhisper instructions --agent`** now documents the delivery surface:
+  `output last --to clipboard|type|notify`, `deliver --listen`, and the
+  `[[output]]` destination types.
+- **Packaging:** `wtype` added to `optdepends` (soft dependency; absent →
+  clean clipboard/notification fallback).
+
 ## [0.4.1] - 2026-06-04
 
 Dependency and toolchain maintenance release. No user-facing behaviour
@@ -244,7 +285,8 @@ secrets editor in the settings GUI, hard RAM-cap enforcement,
 auto-update mechanism, localisation, telemetry, vendored cargo
 tarball. See `docs/M8-plan.md` § "Out of scope" for the full list.
 
-[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/zajca/zwhisper/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/zajca/zwhisper/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/zajca/zwhisper/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/zajca/zwhisper/compare/v0.2.1...v0.3.0
