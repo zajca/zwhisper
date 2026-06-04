@@ -1412,7 +1412,8 @@ fn prompt_preset() -> color_eyre::Result<Preset> {
 /// When the type-at-cursor option is on offer, an **advisory** note (never
 /// a block) flags its requirements: it needs the optional `wtype`
 /// dependency and a wlroots compositor (Sway/Hyprland). If the current
-/// session looks like a non-wlroots desktop, [`sink::desktop_hint`]
+/// session looks like a non-wlroots desktop,
+/// [`crate::commands::deliver::sink::desktop_hint`]
 /// surfaces a reason and we add that typing falls back to the clipboard
 /// there. The note is informational only — the choice is still offered.
 fn prompt_output_choice(preset: Preset) -> color_eyre::Result<OutputChoice> {
@@ -1422,7 +1423,11 @@ fn prompt_output_choice(preset: Preset) -> color_eyre::Result<OutputChoice> {
     let mark = |c: OutputChoice| if c == default { "*" } else { " " };
 
     println!("\nWhere should the transcript go?");
-    println!("{}1) {}", mark(OutputChoice::FileOnly), OutputChoice::FileOnly.label());
+    println!(
+        "{}1) {}",
+        mark(OutputChoice::FileOnly),
+        OutputChoice::FileOnly.label()
+    );
     println!(
         "{}2) {}",
         mark(OutputChoice::FileAndType),

@@ -402,7 +402,11 @@ pub fn set_outputs(name: &str, outputs: &[OutputDest]) -> Result<PathBuf, Profil
 /// path); tests drive this directly against a tempdir path to stay
 /// hermetic, mirroring [`update_sources_at`]. `name` is used only for
 /// error messages.
-fn set_outputs_at(name: &str, path: &Path, outputs: &[OutputDest]) -> Result<PathBuf, ProfileError> {
+fn set_outputs_at(
+    name: &str,
+    path: &Path,
+    outputs: &[OutputDest],
+) -> Result<PathBuf, ProfileError> {
     // 1. Read + parse, preserving the full document (comments included).
     let body = fs::read_to_string(path).map_err(|source| ProfileError::Io {
         path: path.to_owned(),
