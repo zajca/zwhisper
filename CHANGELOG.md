@@ -7,6 +7,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-04
+
 Thick-daemon role: transcription jobs, durable history, and session-bound
 transcript delivery (RFC: daemon-role, Phases 1–3).
 
@@ -213,7 +215,8 @@ secrets editor in the settings GUI, hard RAM-cap enforcement,
 auto-update mechanism, localisation, telemetry, vendored cargo
 tarball. See `docs/M8-plan.md` § "Out of scope" for the full list.
 
-[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/zajca/zwhisper/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/zajca/zwhisper/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/zajca/zwhisper/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/zajca/zwhisper/compare/v0.1.0...v0.2.0
