@@ -205,6 +205,9 @@ impl RecorderInterface {
             asr_sample_rate: audio_cfg.asr_sample_rate_hz,
             capture_pcm,
             max_pcm_bytes: audio_cfg.max_in_memory_pcm_bytes,
+            // zwhisper-owned SW trim (RFC-mic-setup Phase 3); `None`
+            // when the profile carries no `input_gain_db`.
+            input_gain_db: profile.sources.input_gain_db,
         };
 
         let recorder = match Recorder::start(opts) {

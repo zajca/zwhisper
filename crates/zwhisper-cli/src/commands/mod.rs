@@ -25,6 +25,8 @@
 //! code; record/status/profile dispatchers consult it before bailing
 //! to keep the table single-sourced.
 
+#[cfg(feature = "setup")]
+pub(crate) mod audio;
 pub(crate) mod backend;
 pub(crate) mod hotkey;
 pub(crate) mod instructions;

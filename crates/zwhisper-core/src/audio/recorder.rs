@@ -47,10 +47,11 @@ const MAX_WARNINGS: usize = 100;
 #[derive(Debug, Clone)]
 pub struct RecordOptions {
     pub mic: String,
-    /// Sink monitor node, or `"default"` for the `PipeWire` default.
-    /// Empty strings are rejected by `devices::resolve` with a
-    /// typed `InvalidArgument` — M2 ships mic + sink monitor mono
-    /// mix only, mic-only mode lands in M3.
+    /// Sink monitor node, or `"default"` for the `PipeWire` default
+    /// sink's `.monitor`. An **empty string** is mic-only
+    /// (RFC-mic-setup Phase 5): `devices::resolve` maps it to a `None`
+    /// monitor and the pipeline drops the `audiomixer`. The empty value
+    /// is honoured verbatim — never coerced to `"default"`.
     pub monitor: String,
     pub output: PathBuf,
     /// Whether [`record_blocking`] should install a `Ctrl+C` handler.
@@ -78,6 +79,12 @@ pub struct RecordOptions {
     /// dropped (the session falls back to decode-from-artifact), so RSS
     /// stays bounded for long recordings.
     pub max_pcm_bytes: u64,
+    /// Optional zwhisper-owned software input trim in decibels
+    /// (RFC-mic-setup Phase 3), sourced from `sources.input_gain_db`.
+    /// `None` (the default) means no trim. When set, the pipeline adds a
+    /// `volume` element on the mic branch (the dB value is converted to
+    /// a clamped linear factor); see [`pipeline::PipelineParams`].
+    pub input_gain_db: Option<f32>,
 }
 
 impl Default for RecordOptions {
@@ -91,6 +98,7 @@ impl Default for RecordOptions {
             asr_sample_rate: OUTPUT_SAMPLE_RATE_HZ,
             capture_pcm: false,
             max_pcm_bytes: DEFAULT_MAX_PCM_BYTES,
+            input_gain_db: None,
         }
     }
 }
@@ -243,12 +251,14 @@ impl Recorder {
         let selection = resolve(&WpctlCommandRunner, &opts.mic, &opts.monitor)
             .map_err(RecordingError::DeviceDiscovery)?;
         debug!(%session_id, mic_node = %selection.mic_node,
-               monitor_node = %selection.monitor_node, "resolved devices");
+               monitor_node = selection.monitor_node.as_deref().unwrap_or("(mic-only)"),
+               "resolved devices");
 
         let params = pipeline::PipelineParams {
             native_rate_hz: opts.sample_rate,
             asr_rate_hz: opts.asr_sample_rate,
             capture_pcm: opts.capture_pcm,
+            input_gain_db: opts.input_gain_db,
         };
         let (pipeline, output_token, asr_sink) = pipeline::build(&selection, &opts.output, params)?;
 

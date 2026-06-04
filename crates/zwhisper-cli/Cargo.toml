@@ -22,7 +22,7 @@ path = "src/main.rs"
 # kept local in M3 (no daemon RPC for transcribe-only yet); the
 # transcribe feature pulls `whisper-cli` discovery + tokio process,
 # not GStreamer — verified via `cargo tree -p zwhisper-cli`.
-zwhisper-core = { path = "../zwhisper-core", default-features = false, features = ["profile", "transcribe"] }
+zwhisper-core = { path = "../zwhisper-core", default-features = false, features = ["profile", "transcribe", "setup"] }
 zwhisper-ipc = { path = "../zwhisper-ipc" }
 # M6: shared toggle / portal / probe logic with the tray. Default
 # features include `portal` so `zwhisper hotkey {bind,unbind,probe}`
@@ -55,6 +55,22 @@ reqwest = { workspace = true }
 notify-rust = { workspace = true }
 
 [features]
+# Default-ON. `setup` compiles the `zwhisper audio {devices,meter,
+# calibrate}` command group (RFC-mic-setup, Phases 1+2). It only pulls
+# `zwhisper-core`'s GStreamer-free `setup` module (pw-dump/wpctl/pw-cat
+# shell-out + parsing), so the CLI stays a thin client. Build with
+# `--no-default-features` to drop the whole `audio` subcommand (used by
+# CI to prove the cfg-gating is airtight).
+default = ["setup"]
+
+# The guided microphone setup / calibration command group. Gates the
+# `commands::audio` module, the `AudioCmd` clap surface, and the
+# `Command::Audio` dispatch arm. Wires the CLI feature to
+# `zwhisper-core/setup`; the core dependency above also lists `setup`
+# unconditionally so the core module compiles regardless, and this
+# feature is the single switch that turns the CLI command on/off.
+setup = ["zwhisper-core/setup"]
+
 # Compile the in-process Parakeet backend into the CLI. Default-OFF:
 # enabling it pulls ONNX Runtime via `ort` (network + sizeable binary
 # at build time). Build with `cargo build -p zwhisper-cli --features

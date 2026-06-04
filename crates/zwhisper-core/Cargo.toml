@@ -67,6 +67,13 @@ libc = { workspace = true, optional = true }
 default = ["audio", "profile", "transcribe"]
 profile = []
 audio = ["dep:gstreamer", "dep:gstreamer-app", "dep:tokio", "dep:libc"]
+# `setup` compiles the guided microphone setup / calibration support
+# (RFC-mic-setup, Phase 0). It is deliberately GStreamer-free: the
+# analysis logic shells out to `pw-dump` / `wpctl` / `pw-cat` and parses
+# their output, so the thin CLI (which dropped the `audio`/`gstreamer`
+# feature) can depend on it. It pulls only `serde_json` (already an
+# optional dep) for the `pw-dump` JSON parse.
+setup = ["dep:serde_json"]
 # `transcribe` pulls libc for the unix-only EXDEV cross-device probe
 # in `whisper_cpp::is_cross_device` — the daemon previously got it
 # transitively through `audio`, but Phase 4 split CLI (transcribe-only)

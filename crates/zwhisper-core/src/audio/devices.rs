@@ -3,24 +3,22 @@ use std::process::Command;
 use tracing::debug;
 
 use super::error::DeviceError;
-
-/// Maximum length of a `PipeWire` node name we will accept. Real
-/// names observed on Arch are well under 100 chars; this just keeps
-/// us safe from runaway inputs.
-const MAX_NODE_NAME_LEN: usize = 256;
+use crate::node_name;
 
 /// Resolved `PipeWire` node names ready to feed into
 /// `pipewiresrc target-object=…`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeviceSelection {
     pub mic_node: String,
-    /// Required in M2: the engine ships mic + sink monitor mono mix
-    /// only. Empty `monitor_arg` is rejected by `resolve` with a
-    /// typed `InvalidArgument` rather than silently coerced to
-    /// "default" (the M2 review's High finding). Mic-only mode
-    /// (`Option<String>`) reappears in M3 alongside the pipeline
-    /// rate parameterisation.
-    pub monitor_node: String,
+    /// Resolved sink-monitor node, or `None` for **mic-only** capture
+    /// (RFC-mic-setup Phase 5): an empty `monitor_arg` yields `None`
+    /// here and the pipeline builds a single-source mic graph with no
+    /// `audiomixer`. The empty argument is honoured verbatim — never
+    /// coerced to `"default"` (the M2 review's High finding caught that
+    /// silent coercion capturing system audio against the user's
+    /// intent). `Some(name)` is a concrete monitor node (mic + sink
+    /// monitor mono mix).
+    pub monitor_node: Option<String>,
 }
 
 /// Indirection over `wpctl` and `pw-cli` so the resolver can be unit
@@ -152,20 +150,18 @@ pub(crate) fn resolve(
     };
 
     let monitor_node = if monitor_arg.is_empty() {
-        // Mic-only mode is not supported in M2 (the M2 review's
-        // High finding caught the previous silent "" → "default"
-        // coercion). Surface the limitation up-front.
-        return Err(DeviceError::InvalidArgument {
-            value: String::new(),
-            reason: "monitor must be \"default\" or a specific node \
-                     name; mic-only mode lands in M3 alongside the \
-                     pipeline rate parameterisation",
-        });
+        // Mic-only mode (RFC-mic-setup Phase 5): an empty monitor means
+        // "no system audio". Return `None` so the pipeline builds a
+        // single-source mic graph. Critically, the empty value is NOT
+        // coerced to "default" — the M2 review's High finding caught
+        // that silent coercion capturing system audio against the
+        // user's intent.
+        None
     } else if monitor_arg == "default" {
         let body = runner.inspect("@DEFAULT_AUDIO_SINK@")?;
         let sink_name = parse_node_name(&body, "@DEFAULT_AUDIO_SINK@")?;
         validate_node_name(&sink_name, &sink_name)?;
-        format!("{sink_name}.monitor")
+        Some(format!("{sink_name}.monitor"))
     } else {
         let candidate = validate_explicit(monitor_arg, "monitor")?;
         // Require the literal node name to appear in `pw-cli ls Node`.
@@ -176,12 +172,12 @@ pub(crate) fn resolve(
         // turning a fast-fail into a vague preroll-time
         // "target not found".
         ensure_node_exists(runner, &candidate, "monitor")?;
-        candidate
+        Some(candidate)
     };
 
     debug!(
         mic = %mic_node,
-        monitor = %monitor_node,
+        monitor = monitor_node.as_deref().unwrap_or("(mic-only)"),
         "resolved PipeWire nodes"
     );
 
@@ -258,37 +254,18 @@ fn validate_explicit(value: &str, kind: &'static str) -> Result<String, DeviceEr
     Ok(trimmed.to_owned())
 }
 
-/// Allow-list validation for `PipeWire` node names. The `gst-launch`
-/// DSL grammar (consumed by `gst::parse::launch`) treats `!`, `.`,
-/// `=`, `,`, `(`, `)` and quotes as syntactically meaningful.
-/// `PipeWire`
-/// node names in the wild are restricted to alphanumerics, dots,
-/// underscores, hyphens, and `:` (for media-class qualifiers). We
-/// accept exactly that set so a malicious or malformed name cannot
-/// inject elements into the pipeline string.
+/// Allow-list validation for `PipeWire` node names, delegated to the
+/// shared [`crate::node_name`] validator (the single source of truth
+/// reused by the GStreamer-free `setup` module). A rejection maps to a
+/// typed [`DeviceError::InvalidArgument`] carrying the *original*
+/// (untrimmed) value and the validator's stable reason string — the
+/// same messages this module produced before the extraction, so callers
+/// asserting on them are unaffected.
 fn validate_node_name(trimmed: &str, original: &str) -> Result<(), DeviceError> {
-    if trimmed.is_empty() {
-        return Err(DeviceError::InvalidArgument {
-            value: original.to_owned(),
-            reason: "empty value",
-        });
-    }
-    if trimmed.len() > MAX_NODE_NAME_LEN {
-        return Err(DeviceError::InvalidArgument {
-            value: original.to_owned(),
-            reason: "node name exceeds 256 characters",
-        });
-    }
-    if !trimmed
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
-    {
-        return Err(DeviceError::InvalidArgument {
-            value: original.to_owned(),
-            reason: "node names must match [A-Za-z0-9._:-]+",
-        });
-    }
-    Ok(())
+    node_name::validate_node_name(trimmed).map_err(|e| DeviceError::InvalidArgument {
+        value: original.to_owned(),
+        reason: e.reason(),
+    })
 }
 
 #[cfg(test)]
@@ -373,8 +350,8 @@ mod tests {
             "alsa_input.usb-Generic_PHL_34B1U5601-00.analog-stereo"
         );
         assert_eq!(
-            selection.monitor_node,
-            "alsa_output.usb-Generic_PHL_34B1U5601-00.analog-stereo.monitor"
+            selection.monitor_node.as_deref(),
+            Some("alsa_output.usb-Generic_PHL_34B1U5601-00.analog-stereo.monitor")
         );
     }
 
@@ -382,15 +359,19 @@ mod tests {
     fn explicit_arguments_pass_through_unchanged() {
         let selection = resolve(&happy_runner(), "my.mic.node", "my.sink.node.monitor").unwrap();
         assert_eq!(selection.mic_node, "my.mic.node");
-        assert_eq!(selection.monitor_node, "my.sink.node.monitor");
+        assert_eq!(
+            selection.monitor_node.as_deref(),
+            Some("my.sink.node.monitor")
+        );
     }
 
     #[test]
-    fn empty_monitor_arg_returns_typed_invalid_argument() {
-        // M2 ships mic + sink monitor only. Empty monitor must
-        // surface a typed error, not be silently coerced to
-        // "default" (which previously captured system audio against
-        // the user's intent).
+    fn empty_monitor_arg_yields_mic_only_selection() {
+        // RFC-mic-setup Phase 5: an empty monitor means mic-only —
+        // `monitor_node` is `None` and the sink is never inspected.
+        // The empty value must NOT be coerced to "default" (the M2
+        // review's High finding caught that silent coercion capturing
+        // system audio against the user's intent).
         let runner = MockRunner {
             source_body: Ok(SOURCE_FIXTURE.to_owned()),
             sink_body: Err(DeviceError::CommandFailed {
@@ -401,9 +382,15 @@ mod tests {
                 "alsa_input.usb-Generic_PHL_34B1U5601-00.analog-stereo".to_owned(),
             ]),
         };
-        let err = resolve(&runner, "default", "").unwrap_err();
-        assert!(matches!(err, DeviceError::InvalidArgument { .. }));
-        assert!(err.to_string().contains("mic-only mode lands in M3"));
+        let selection = resolve(&runner, "default", "").unwrap();
+        assert_eq!(
+            selection.mic_node,
+            "alsa_input.usb-Generic_PHL_34B1U5601-00.analog-stereo"
+        );
+        assert_eq!(
+            selection.monitor_node, None,
+            "empty monitor must resolve to mic-only (None), not \"default\""
+        );
     }
 
     #[test]
@@ -425,7 +412,7 @@ mod tests {
             selection.mic_node,
             "alsa_input.usb-Generic_PHL_34B1U5601-00.analog-stereo"
         );
-        assert_eq!(selection.monitor_node, "explicit.monitor");
+        assert_eq!(selection.monitor_node.as_deref(), Some("explicit.monitor"));
     }
 
     #[test]
@@ -544,7 +531,10 @@ mod tests {
             ]),
         };
         let selection = resolve(&runner, "default", "my.real.sink.monitor").unwrap();
-        assert_eq!(selection.monitor_node, "my.real.sink.monitor");
+        assert_eq!(
+            selection.monitor_node.as_deref(),
+            Some("my.real.sink.monitor")
+        );
     }
 
     #[test]

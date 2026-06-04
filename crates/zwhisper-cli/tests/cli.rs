@@ -181,3 +181,102 @@ fn record_requires_output_argument() {
         .failure()
         .stderr(predicate::str::contains("--output"));
 }
+
+// ===========================================================================
+// RFC-mic-setup — `audio {devices,meter,calibrate}` (Wave 2A).
+//
+// These exercise the clap surface only (`--help` parsing + subcommand
+// listing + flag visibility). They run on every host because they never
+// touch a live PipeWire — the actual pw-cat / wpctl behaviour is
+// hardware-verified by the parent, not here.
+// ===========================================================================
+
+#[cfg(feature = "setup")]
+#[test]
+fn audio_help_lists_subcommands() {
+    bin()
+        .args(["audio", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("devices"))
+        .stdout(predicate::str::contains("meter"))
+        .stdout(predicate::str::contains("calibrate"));
+}
+
+#[cfg(feature = "setup")]
+#[test]
+fn audio_is_listed_in_top_level_help() {
+    bin()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("audio"));
+}
+
+#[cfg(feature = "setup")]
+#[test]
+fn audio_devices_help_mentions_json_flag() {
+    bin()
+        .args(["audio", "devices", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[cfg(feature = "setup")]
+#[test]
+fn audio_meter_help_mentions_source_flag() {
+    bin()
+        .args(["audio", "meter", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--source"));
+}
+
+#[cfg(feature = "setup")]
+#[test]
+fn audio_calibrate_help_shows_all_flags() {
+    bin()
+        .args(["audio", "calibrate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--source"))
+        .stdout(predicate::str::contains("--profile"))
+        .stdout(predicate::str::contains("--target-peak-db"))
+        .stdout(predicate::str::contains("--seconds"))
+        .stdout(predicate::str::contains("--apply"))
+        .stdout(predicate::str::contains("--set-default"))
+        .stdout(predicate::str::contains("--max-volume"));
+}
+
+#[cfg(feature = "setup")]
+#[test]
+fn audio_help_lists_setup_subcommand() {
+    bin()
+        .args(["audio", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("setup"));
+}
+
+#[cfg(feature = "setup")]
+#[test]
+fn audio_setup_help_shows_optional_flags() {
+    bin()
+        .args(["audio", "setup", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--profile"))
+        .stdout(predicate::str::contains("--target-peak-db"))
+        .stdout(predicate::str::contains("--max-volume"));
+}
+
+#[cfg(feature = "setup")]
+#[test]
+fn audio_requires_a_subcommand() {
+    bin()
+        .arg("audio")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage"));
+}
