@@ -83,7 +83,7 @@ pub struct RecordOptions {
     /// (RFC-mic-setup Phase 3), sourced from `sources.input_gain_db`.
     /// `None` (the default) means no trim. When set, the pipeline adds a
     /// `volume` element on the mic branch (the dB value is converted to
-    /// a clamped linear factor); see [`pipeline::PipelineParams`].
+    /// a clamped linear factor); see `pipeline::PipelineParams`.
     pub input_gain_db: Option<f32>,
 }
 
