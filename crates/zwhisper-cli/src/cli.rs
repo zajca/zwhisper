@@ -233,6 +233,123 @@ pub(crate) enum ModelCmd {
     },
 }
 
+/// `zwhisper audio …` subcommands — guided microphone setup &
+/// calibration (RFC-mic-setup, Phases 1+2). Read-only enumeration and
+/// metering, plus a calibration flow that measures speech level,
+/// recommends a safe `PipeWire` volume, and (with `--apply`) sets it.
+///
+/// The whole group sits behind the default-on `setup` feature; building
+/// the CLI with `--no-default-features` drops it entirely. None of these
+/// commands need GStreamer or a running daemon — they shell out to
+/// `pw-dump` / `wpctl` / `pw-cat` via `zwhisper-core`'s `setup` module.
+#[cfg(feature = "setup")]
+#[derive(Debug, Subcommand)]
+pub(crate) enum AudioCmd {
+    /// Enumerate audio inputs and outputs (id, description, default
+    /// marker, monitor marker, volume%). Sources first, then sinks.
+    Devices {
+        /// Emit machine-readable JSON instead of the human table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Live VU meter from raw `pw-cat` PCM. Refreshes an ASCII bar with
+    /// peak/RMS dBFS and a clip indicator until Ctrl+C. Read-only.
+    Meter {
+        /// Device selector: `default`, a `node.name`, or a numeric id.
+        /// Defaults to the current default source.
+        #[arg(long)]
+        source: Option<String>,
+    },
+
+    /// Measure speech level, recommend a safe volume, and optionally
+    /// apply it / persist it to a profile. A dry run by default.
+    Calibrate(AudioCalibrateArgs),
+
+    /// Interactive wizard (RFC-mic-setup Phase 4): pick a mic, calibrate
+    /// it, choose a dictation/meeting preset, optionally make it the
+    /// default source, and write the choice into a user-override
+    /// profile. Composes the `devices` / `calibrate` building blocks and
+    /// always applies the calibrated volume after an explicit
+    /// confirmation. Needs a TTY and real hardware.
+    Setup(AudioSetupArgs),
+}
+
+/// Flags for `zwhisper audio setup`. Every flag is optional — the
+/// wizard prompts interactively for anything not supplied — so the
+/// surface mirrors [`AudioCalibrateArgs`] without inheriting its
+/// non-interactive switches (`--apply` / `--set-default` are decided in
+/// the wizard, not on the command line).
+#[cfg(feature = "setup")]
+#[derive(Debug, Args)]
+pub(crate) struct AudioSetupArgs {
+    /// User-override profile to write the chosen mic + preset into. When
+    /// omitted the wizard suggests a name (the preset) and prompts. A
+    /// shipped/embedded name is cloned to a user override automatically.
+    #[arg(long)]
+    pub(crate) profile: Option<String>,
+
+    /// Override the target speech peak in dBFS (default from
+    /// `SetupConfig`). `allow_hyphen_values` lets clap accept the
+    /// negative dBFS value (`--target-peak-db -6.0`) instead of
+    /// mistaking the leading `-` for a new flag.
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) target_peak_db: Option<f32>,
+
+    /// Override the saturation cap: the highest linear volume the
+    /// calibration loop will set (default from `SetupConfig`). Lower it
+    /// for saturation-prone hardware (e.g. an ALC1220) when the wizard
+    /// warns about a high noise floor.
+    #[arg(long)]
+    pub(crate) max_volume: Option<f32>,
+}
+
+/// Flags for `zwhisper audio calibrate`. Pulled into its own `Args`
+/// struct (mirroring `RecordArgs` / `TranscribeArgs`) so the long flag
+/// set stays readable and the parser truth-table can target it directly.
+#[cfg(feature = "setup")]
+#[derive(Debug, Args)]
+pub(crate) struct AudioCalibrateArgs {
+    /// Device selector: `default`, a `node.name`, or a numeric id.
+    /// Defaults to the current default source.
+    #[arg(long)]
+    pub(crate) source: Option<String>,
+
+    /// User-override profile to persist `sources.mic` (the selected
+    /// node) into. The profile must already be a user override — clone a
+    /// shipped/embedded profile first (`zwhisper profile clone`).
+    #[arg(long)]
+    pub(crate) profile: Option<String>,
+
+    /// Override the target speech peak in dBFS (default from
+    /// `SetupConfig`, mid of the RFC −9…−6 window). `allow_hyphen_values`
+    /// lets clap accept the negative dBFS value (`--target-peak-db -6.0`)
+    /// instead of mistaking the leading `-` for a new flag.
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) target_peak_db: Option<f32>,
+
+    /// Seconds of speech to capture per iteration (default from
+    /// `SetupConfig`).
+    #[arg(long)]
+    pub(crate) seconds: Option<f32>,
+
+    /// Actually set the recommended `PipeWire` volume (and iterate to
+    /// converge). Without this flag the command is a dry run that only
+    /// prints the recommendation.
+    #[arg(long)]
+    pub(crate) apply: bool,
+
+    /// Also make the calibrated device the system default source
+    /// (`wpctl set-default`). Global; gated behind this explicit flag.
+    #[arg(long)]
+    pub(crate) set_default: bool,
+
+    /// Override the saturation cap: the highest linear volume the
+    /// recommender / apply loop will set (default from `SetupConfig`).
+    #[arg(long)]
+    pub(crate) max_volume: Option<f32>,
+}
+
 /// Apply the runaway-recording safeguard (`max_duration_minutes` from
 /// IDEA.md § 1) against the user-supplied `--duration` value.
 ///
@@ -269,6 +386,8 @@ pub(crate) fn resolve_duration(duration_s: u64, max_minutes: u64) -> color_eyre:
 mod tests {
     use clap::Parser;
 
+    #[cfg(feature = "setup")]
+    use super::AudioCmd;
     use super::{
         HotkeyCmd, InstructionsArgs, ModelCmd, ProfileCmd, RecordArgs, StatusArgs, TranscribeArgs,
         resolve_duration,
@@ -296,6 +415,10 @@ mod tests {
         /// M6 — hotkey binding management.
         #[command(subcommand)]
         Hotkey(HotkeyCmd),
+        /// RFC-mic-setup — `audio {devices,meter,calibrate}`.
+        #[cfg(feature = "setup")]
+        #[command(subcommand)]
+        Audio(AudioCmd),
     }
 
     #[test]
@@ -574,6 +697,153 @@ mod tests {
         match cli.command {
             TestCommand::Instructions(args) => assert!(args.agent),
             other => panic!("expected instructions command, got {other:?}"),
+        }
+    }
+
+    // ============================================================
+    // RFC-mic-setup — `audio {devices,meter,calibrate}` parser
+    // truth-table. The parser surface is the regression net here; the
+    // runtime behaviour (pw-cat metering, calibration loop) lives in
+    // `commands::audio` and is hardware-verified separately.
+    // ============================================================
+
+    #[cfg(feature = "setup")]
+    #[test]
+    fn parses_audio_devices_plain_and_json() {
+        let plain = TestCli::try_parse_from(["zwhisper", "audio", "devices"])
+            .expect("parse should succeed");
+        match plain.command {
+            TestCommand::Audio(AudioCmd::Devices { json }) => assert!(!json),
+            other => panic!("expected Audio(Devices), got {other:?}"),
+        }
+
+        let json = TestCli::try_parse_from(["zwhisper", "audio", "devices", "--json"])
+            .expect("parse should succeed");
+        match json.command {
+            TestCommand::Audio(AudioCmd::Devices { json }) => assert!(json),
+            other => panic!("expected Audio(Devices {{ json: true }}), got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "setup")]
+    #[test]
+    fn parses_audio_meter_default_and_with_source() {
+        let bare =
+            TestCli::try_parse_from(["zwhisper", "audio", "meter"]).expect("parse should succeed");
+        match bare.command {
+            TestCommand::Audio(AudioCmd::Meter { source }) => assert!(source.is_none()),
+            other => panic!("expected Audio(Meter), got {other:?}"),
+        }
+
+        let with_source =
+            TestCli::try_parse_from(["zwhisper", "audio", "meter", "--source", "alsa_input.mic"])
+                .expect("parse should succeed");
+        match with_source.command {
+            TestCommand::Audio(AudioCmd::Meter { source }) => {
+                assert_eq!(source.as_deref(), Some("alsa_input.mic"));
+            }
+            other => panic!("expected Audio(Meter {{ source }}), got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "setup")]
+    #[test]
+    fn parses_audio_calibrate_dry_run_defaults() {
+        let cli = TestCli::try_parse_from(["zwhisper", "audio", "calibrate"])
+            .expect("parse should succeed");
+        match cli.command {
+            TestCommand::Audio(AudioCmd::Calibrate(args)) => {
+                assert!(args.source.is_none());
+                assert!(args.profile.is_none());
+                assert!(args.target_peak_db.is_none());
+                assert!(args.seconds.is_none());
+                assert!(!args.apply, "calibrate must default to a dry run");
+                assert!(!args.set_default, "set-default must default off");
+                assert!(args.max_volume.is_none());
+            }
+            other => panic!("expected Audio(Calibrate), got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "setup")]
+    #[test]
+    fn parses_audio_calibrate_full_flag_combo() {
+        let cli = TestCli::try_parse_from([
+            "zwhisper",
+            "audio",
+            "calibrate",
+            "--source",
+            "70",
+            "--profile",
+            "dictation",
+            "--target-peak-db",
+            "-6.0",
+            "--seconds",
+            "5",
+            "--apply",
+            "--set-default",
+            "--max-volume",
+            "0.3",
+        ])
+        .expect("parse should succeed");
+        match cli.command {
+            TestCommand::Audio(AudioCmd::Calibrate(args)) => {
+                assert_eq!(args.source.as_deref(), Some("70"));
+                assert_eq!(args.profile.as_deref(), Some("dictation"));
+                assert_eq!(args.target_peak_db, Some(-6.0));
+                assert_eq!(args.seconds, Some(5.0));
+                assert!(args.apply);
+                assert!(args.set_default);
+                assert_eq!(args.max_volume, Some(0.3));
+            }
+            other => panic!("expected Audio(Calibrate) full combo, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "setup")]
+    #[test]
+    fn audio_requires_a_subcommand() {
+        TestCli::try_parse_from(["zwhisper", "audio"])
+            .expect_err("clap must require an audio subcommand");
+    }
+
+    #[cfg(feature = "setup")]
+    #[test]
+    fn parses_audio_setup_no_args() {
+        let cli =
+            TestCli::try_parse_from(["zwhisper", "audio", "setup"]).expect("parse should succeed");
+        match cli.command {
+            TestCommand::Audio(AudioCmd::Setup(args)) => {
+                assert!(args.profile.is_none(), "profile must be optional");
+                assert!(args.target_peak_db.is_none());
+                assert!(args.max_volume.is_none());
+            }
+            other => panic!("expected Audio(Setup), got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "setup")]
+    #[test]
+    fn parses_audio_setup_full_flag_combo() {
+        let cli = TestCli::try_parse_from([
+            "zwhisper",
+            "audio",
+            "setup",
+            "--profile",
+            "dictation",
+            "--target-peak-db",
+            "-6.0",
+            "--max-volume",
+            "0.3",
+        ])
+        .expect("parse should succeed");
+        match cli.command {
+            TestCommand::Audio(AudioCmd::Setup(args)) => {
+                assert_eq!(args.profile.as_deref(), Some("dictation"));
+                assert_eq!(args.target_peak_db, Some(-6.0));
+                assert_eq!(args.max_volume, Some(0.3));
+            }
+            other => panic!("expected Audio(Setup) full combo, got {other:?}"),
         }
     }
 }

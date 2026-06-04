@@ -16,3 +16,25 @@ pub mod profile;
 pub mod secrets;
 #[cfg(feature = "transcribe")]
 pub mod transcribe;
+
+/// Single source of truth for dB↔linear gain conversion and the input
+/// gain range. Shared by the profile schema (range validation), the
+/// profile writer (`input_gain_db` bounds), the audio pipeline clamp,
+/// and the `setup` calibration math, so they cannot drift apart.
+#[cfg(any(feature = "audio", feature = "setup", feature = "profile"))]
+pub(crate) mod gain;
+
+/// Single source of truth for `PipeWire` node-name validation. The
+/// GStreamer device resolver (`audio`), the `setup` calibration layer,
+/// and the `profile` comment-preserving `[sources]` writer all validate
+/// node names against the same allow-list, so the rules live here rather
+/// than being duplicated per feature.
+#[cfg(any(feature = "audio", feature = "setup", feature = "profile"))]
+pub(crate) mod node_name;
+
+/// Guided microphone setup & calibration (RFC-mic-setup, Phase 0).
+/// GStreamer-free: parses `pw-dump` / `wpctl` / `pw-cat` output behind a
+/// mockable [`setup::PipewireControl`] trait so the analysis is fully
+/// unit-testable without a running `PipeWire` daemon.
+#[cfg(feature = "setup")]
+pub mod setup;

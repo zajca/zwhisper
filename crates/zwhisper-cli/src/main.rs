@@ -27,6 +27,8 @@ mod cli;
 mod commands;
 mod profile_commands;
 
+#[cfg(feature = "setup")]
+use crate::cli::AudioCmd;
 use crate::cli::{
     BackendCmd, HotkeyCmd, InstructionsArgs, ModelCmd, ProfileCmd, RecordArgs, StatusArgs,
     TranscribeArgs,
@@ -84,6 +86,14 @@ enum Command {
     /// (xdg-desktop-portal `GlobalShortcuts`). Bypasses the tray.
     #[command(subcommand)]
     Hotkey(HotkeyCmd),
+
+    /// RFC-mic-setup — guided microphone setup & calibration:
+    /// `audio devices` (enumerate), `audio meter` (live VU), and
+    /// `audio calibrate` (measure + recommend/apply a safe level).
+    /// Shells out to `pw-dump` / `wpctl` / `pw-cat`; no daemon needed.
+    #[cfg(feature = "setup")]
+    #[command(subcommand)]
+    Audio(AudioCmd),
 }
 
 fn main() -> color_eyre::Result<()> {
@@ -102,6 +112,8 @@ fn main() -> color_eyre::Result<()> {
         Command::Instructions(args) => commands::instructions::run(args),
         Command::Toggle => commands::toggle::run(),
         Command::Hotkey(cmd) => commands::hotkey::run(cmd),
+        #[cfg(feature = "setup")]
+        Command::Audio(cmd) => commands::audio::run(cmd),
     }
 }
 

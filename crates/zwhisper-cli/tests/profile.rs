@@ -222,11 +222,13 @@ fn migration_chain_writes_backup_then_loads() {
 }
 
 #[test]
-fn empty_system_output_rejected_at_validate_time() {
-    // Regression for the M2 review's High finding: empty
-    // `system_output` previously got coerced to "default" and
-    // silently captured system audio. M2 rejects the empty value
-    // at validate time — mic-only mode lands in M3.
+fn mic_only_empty_system_output_is_accepted_without_coercion() {
+    // RFC-mic-setup Phase 5 lifts the old hard rejection: an empty
+    // `system_output` now means mic-only capture and validates cleanly.
+    // The M2 review's anti-coercion guard still holds — the empty value
+    // is preserved verbatim and must NEVER be silently coerced to
+    // "default" (which would capture system audio against the profile's
+    // mic-only intent).
     let home = TempDir::new().unwrap();
 
     let user_dir = home.path().join("zwhisper/profiles");
@@ -263,8 +265,12 @@ toggle = ""
     bin(home.path())
         .args(["profile", "show", "mic-only-attempt"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("mic-only mode"));
+        .success()
+        // Mic-only is accepted, and `profile show` re-serializes the
+        // resolved profile with the empty value intact — proof there is
+        // no silent `"" -> "default"` coercion (the M2 review's High
+        // finding).
+        .stdout(predicate::str::contains("system_output = \"\""));
 }
 
 #[test]

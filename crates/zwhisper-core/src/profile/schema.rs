@@ -71,16 +71,31 @@ impl Backend {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sources {
     /// Mic source node name, or `"default"` for the `PipeWire` default.
     pub mic: String,
-    /// Sink monitor node name. Required and non-empty in M2 — empty
-    /// (mic-only) mode is rejected by `Profile::validate` until the
-    /// pipeline branch lands in M3.
+    /// Sink monitor node name, or `"default"` for the `PipeWire`
+    /// default sink's `.monitor`. An empty string is the canonical
+    /// **mic-only** marker (RFC-mic-setup Phase 5): the capture pipeline
+    /// then builds a single-source mic graph with no `audiomixer`. The
+    /// empty value is honoured verbatim — never coerced to `"default"`
+    /// (the M2 review's High-severity surprise).
     #[serde(default)]
     pub system_output: String,
     pub mode: Mode,
+    /// Optional zwhisper-owned software input trim, in decibels
+    /// (RFC-mic-setup). The daemon pipeline applies it as a GStreamer
+    /// `volume` element on the mic branch (converted from dB via the
+    /// crate-shared `gain::db_to_linear`) *after* `pipewiresrc`, so it
+    /// survives whatever other apps later do to the PipeWire device
+    /// volume. `None` (the default) means no trim and round-trips
+    /// byte-for-byte — `skip_serializing_if` keeps existing profiles
+    /// untouched. Validated finite and within the shared
+    /// `gain::MIN_INPUT_GAIN_DB`..=`gain::MAX_INPUT_GAIN_DB` range by
+    /// [`Profile::validate`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_gain_db: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,22 +435,40 @@ impl Profile {
             });
         }
 
-        if self.sources.system_output.is_empty() {
-            // M2 review caught this as a High-severity surprise:
-            // empty `system_output` previously got coerced to
-            // "default" and silently captured system audio against
-            // the profile's intent. M2 rejects the empty value
-            // outright — mic-only pipeline lands in M3 alongside
-            // the rate parameterisation. Until then, point users at
-            // the explicit "default" they almost certainly want.
-            return Err(ProfileError::Validation {
-                profile: self.name.clone(),
-                message: "sources.system_output = \"\" (mic-only mode) is not supported \
-                          in this build (M3+); set `system_output = \"default\"` to \
-                          capture the sink monitor, or pick a specific node"
-                    .into(),
-            });
+        if let Some(gain_db) = self.sources.input_gain_db {
+            // RFC-mic-setup: the SW trim is human-readable dB. Reject a
+            // NaN/inf (a malformed file or a bad write) before it can
+            // reach `db_to_linear` in the pipeline, and keep it inside
+            // the shared `gain` range so the schema, the writer, and the
+            // pipeline clamp all agree on the bounds.
+            if !gain_db.is_finite() {
+                return Err(ProfileError::Validation {
+                    profile: self.name.clone(),
+                    message: "sources.input_gain_db must be finite".into(),
+                });
+            }
+            if !(crate::gain::MIN_INPUT_GAIN_DB..=crate::gain::MAX_INPUT_GAIN_DB).contains(&gain_db)
+            {
+                return Err(ProfileError::Validation {
+                    profile: self.name.clone(),
+                    message: format!(
+                        "sources.input_gain_db {gain_db} out of range \
+                         [{}, {}] dB",
+                        crate::gain::MIN_INPUT_GAIN_DB,
+                        crate::gain::MAX_INPUT_GAIN_DB
+                    ),
+                });
+            }
         }
+
+        // An empty `system_output` is the canonical mic-only marker
+        // (RFC-mic-setup Phase 5): the capture pipeline builds a
+        // single-source mic graph with no `audiomixer`. It is *not*
+        // coerced to "default" anywhere — the M2 review flagged that
+        // silent coercion (which captured system audio against the
+        // profile's intent) as a High-severity surprise, so the empty
+        // value flows through verbatim and the resolver/pipeline honour
+        // it as mic-only. `StereoSplit` stays rejected below.
 
         if matches!(self.sources.mode, Mode::StereoSplit) {
             return Err(ProfileError::UnsupportedMode {
@@ -568,6 +601,7 @@ mod tests {
                 mic: "default".into(),
                 system_output: "default".into(),
                 mode: Mode::MonoMix,
+                input_gain_db: None,
             },
             recording: Recording {
                 codec: Codec::Flac,
@@ -595,6 +629,78 @@ mod tests {
     }
 
     #[test]
+    fn validate_accepts_in_range_input_gain_db() {
+        for db in [
+            crate::gain::MIN_INPUT_GAIN_DB,
+            -6.0,
+            -2.0,
+            0.0,
+            6.0,
+            crate::gain::MAX_INPUT_GAIN_DB,
+        ] {
+            let mut p = ok_profile();
+            p.sources.input_gain_db = Some(db);
+            assert!(p.validate().is_ok(), "{db} dB should be accepted");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_nan_input_gain_db() {
+        let mut p = ok_profile();
+        p.sources.input_gain_db = Some(f32::NAN);
+        let err = p.validate().unwrap_err();
+        assert!(matches!(err, ProfileError::Validation { .. }));
+        assert!(err.to_string().contains("input_gain_db"), "{err}");
+        assert!(err.to_string().contains("finite"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_input_gain_db() {
+        for db in [
+            crate::gain::MIN_INPUT_GAIN_DB - 0.1,
+            crate::gain::MAX_INPUT_GAIN_DB + 0.1,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -100.0,
+            100.0,
+        ] {
+            let mut p = ok_profile();
+            p.sources.input_gain_db = Some(db);
+            let err = p.validate().unwrap_err();
+            assert!(matches!(err, ProfileError::Validation { .. }), "{db}");
+            assert!(err.to_string().contains("input_gain_db"), "{db}: {err}");
+        }
+    }
+
+    #[test]
+    fn input_gain_db_absent_round_trips_without_the_key() {
+        // The whole point of `skip_serializing_if`: a profile with no
+        // SW trim must serialize without an `input_gain_db` key so
+        // existing files are byte-for-byte unchanged, and must
+        // deserialize back to `None`.
+        let p = ok_profile();
+        assert!(p.sources.input_gain_db.is_none());
+        let toml = toml_edit::ser::to_string(&p.sources).unwrap();
+        assert!(
+            !toml.contains("input_gain_db"),
+            "absent gain must not emit a key: {toml}"
+        );
+        let parsed: Sources = toml_edit::de::from_str(&toml).unwrap();
+        assert_eq!(parsed, p.sources);
+        assert!(parsed.input_gain_db.is_none());
+    }
+
+    #[test]
+    fn input_gain_db_present_round_trips_through_toml() {
+        let mut sources = ok_profile().sources;
+        sources.input_gain_db = Some(-2.5);
+        let toml = toml_edit::ser::to_string(&sources).unwrap();
+        assert!(toml.contains("input_gain_db"), "{toml}");
+        let parsed: Sources = toml_edit::de::from_str(&toml).unwrap();
+        assert_eq!(parsed, sources);
+    }
+
+    #[test]
     fn validate_rejects_bad_sample_rate() {
         let mut p = ok_profile();
         p.recording.sample_rate = 12_345;
@@ -604,13 +710,19 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_empty_system_output_with_mic_only_message() {
+    fn validate_accepts_mic_only_empty_system_output() {
+        // RFC-mic-setup Phase 5: an empty `system_output` is the
+        // canonical mic-only marker and must validate. The value is
+        // honoured verbatim (the resolver/pipeline build a single-source
+        // mic graph) and must NOT be coerced to "default" — the M2
+        // review flagged that silent coercion as a High-severity bug.
         let mut p = ok_profile();
         p.sources.system_output.clear();
-        let err = p.validate().unwrap_err();
-        let msg = err.to_string();
-        assert!(matches!(err, ProfileError::Validation { .. }));
-        assert!(msg.contains("mic-only"), "{msg}");
+        p.validate().unwrap();
+        assert_eq!(
+            p.sources.system_output, "",
+            "mic-only system_output must stay empty, never coerced to \"default\""
+        );
     }
 
     #[test]
