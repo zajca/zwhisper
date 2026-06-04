@@ -7,6 +7,39 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-04
+
+Guided microphone setup & calibration (RFC: mic-setup).
+
+### Added
+
+- **`zwhisper audio` command group.** `devices` (enumerate inputs/outputs,
+  `--json`), `meter` (live VU meter from `pw-cat` raw PCM with peak/RMS
+  dBFS and a clip indicator), `calibrate` (measure noise floor + speech,
+  recommend/apply a safe PipeWire volume with saturation protection,
+  optional `--set-default` and profile write; dry-run by default), and
+  `setup` (interactive wizard tying it together with dictation/meeting
+  presets). CLI-side and daemon-free.
+- **Core `setup` module + Cargo feature.** A GStreamer-free `setup` feature
+  exposing a mockable `PipewireControl` trait (`pw-dump` / `wpctl` parsing,
+  dBFS analysis, the iterative calibration algorithm) — fully unit-tested
+  with no hardware. Shared `node_name` validation and `gain` (dB↔linear)
+  helpers as single sources of truth.
+- **Software input gain.** New optional `sources.input_gain_db` profile
+  field applied as a GStreamer `volume` element on the mic branch (layered
+  on top of the PipeWire-native device volume), with a comment-preserving
+  single-table profile writer.
+- **Mic-only capture mode.** Profiles may set `system_output = ""` for a
+  mic-only (no system audio) capture — the dictation use case — via a
+  no-`audiomixer` single-source pipeline branch.
+
+### Changed
+
+- `Profile::validate` now accepts an empty `sources.system_output` as
+  mic-only instead of rejecting it; the empty value is preserved verbatim
+  and never silently coerced to the sink monitor.
+- Workspace `version` bumped from `0.2.1` to `0.3.0`.
+
 ## [0.2.1] - 2026-06-03
 
 ### Fixed
@@ -141,7 +174,8 @@ secrets editor in the settings GUI, hard RAM-cap enforcement,
 auto-update mechanism, localisation, telemetry, vendored cargo
 tarball. See `docs/M8-plan.md` § "Out of scope" for the full list.
 
-[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/zajca/zwhisper/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/zajca/zwhisper/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/zajca/zwhisper/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/zajca/zwhisper/releases/tag/v0.1.0
