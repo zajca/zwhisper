@@ -28,7 +28,7 @@ color-eyre = { workspace = true }
 thiserror = { workspace = true }
 futures-util = { workspace = true }
 signal-hook-tokio = { workspace = true }
-signal-hook = "0.3"
+signal-hook = "0.4"
 gstreamer = { workspace = true }
 dirs = { workspace = true }
 chrono = { workspace = true }

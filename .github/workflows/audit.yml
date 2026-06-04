@@ -30,15 +30,10 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          # Match the ignore list in `deny.toml` so both advisory
-          # checks stay aligned. RUSTSEC-2024-0436 is `paste`
-          # (unmaintained, transient via gstreamer 0.23 — no safe
-          # upgrade available; revisit once gstreamer-rs migrates).
-          ignore: RUSTSEC-2024-0436
 
   cargo-deny:
     name: cargo deny
@@ -48,7 +43,7 @@ jobs:
       matrix:
         check: [advisories, bans, licenses, sources]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check ${{ matrix.check }}

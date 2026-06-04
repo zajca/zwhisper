@@ -13,9 +13,9 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.92"
 authors = ["Martin Zajic <martin.zajic@keboola.com>"]
 license = "MIT"
 repository = "https://github.com/zajca/zwhisper"
@@ -30,7 +30,7 @@ publish = false
 
 [workspace.dependencies]
 # CLI
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 
 # Logging
 tracing = "0.1"
@@ -45,43 +45,46 @@ color-eyre = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Audio (M0)
-gstreamer = "0.23"
+gstreamer = "0.25"
 # appsink for the RFC Phase 4 ASR fan-out branch (live 16 kHz mono f32
 # PCM pulled off a `tee` while the FLAC branch records natively).
-gstreamer-app = "0.23"
+gstreamer-app = "0.25"
 tokio = { version = "1", features = ["signal", "rt", "macros", "time", "sync", "process", "io-util", "fs"] }
 uuid = { version = "1", features = ["v4"] }
 
 # Paths (XDG)
-dirs = "5"
+dirs = "6"
 
 # Async traits + serde + tool discovery (M1)
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-which = "6"
+which = "8"
 libc = "0.2"
 
 # Profiles (M2)
-toml_edit = { version = "0.22", features = ["serde"] }
+toml_edit = { version = "0.25", features = ["serde"] }
 include_dir = "0.7"
 shellexpand = "3"
 
 # IPC / D-Bus (M3)
-zbus = { version = "5.15", default-features = false, features = ["tokio"] }
-zvariant = "5.7"
+zbus = { version = "5.16", default-features = false, features = ["tokio"] }
+zvariant = "5.12"
 futures-util = "0.3"
-signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+signal-hook-tokio = { version = "0.4", features = ["futures-v0_3"] }
 
 # Cloud transcription HTTP (M5)
 # `default-features = false` keeps reqwest out of `native-tls` / OpenSSL
-# linkage; `rustls-tls` is pure-Rust and matches `zwhisper` portability.
+# linkage. reqwest 0.13 renamed the old `rustls-tls` feature to `rustls`
+# (rustls + aws-lc-rs provider + `rustls-platform-verifier`, which trusts
+# the OS CA store instead of the dropped bundled `webpki-roots`). This
+# still avoids OpenSSL and matches `zwhisper` portability on Linux.
 # `stream` enables `Body::wrap_stream` for FLAC upload without buffering
 # the full file in RAM (M5-plan DoD #17).
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 tokio-util = { version = "0.7", features = ["io"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
 
 # FLAC -> normalized PCM decode (RFC Phase 2). Pure-Rust so it works in
 # the CLI transcribe-only build (no GStreamer): `symphonia` decodes FLAC
@@ -89,14 +92,14 @@ sha2 = "0.10"
 # features are off so only the FLAC decoder + demuxer are pulled, not
 # every codec; `rubato` default `fft_resampler` feature is off (we use
 # the async sinc resampler for arbitrary ratios).
-symphonia = { version = "0.5", default-features = false, features = ["flac"] }
-rubato = { version = "0.15", default-features = false }
+symphonia = { version = "0.6", default-features = false, features = ["flac"] }
+rubato = { version = "3", default-features = false }
 
 # Archive-based directory-bundle model download (RFC Phase 3). zip is
 # lean (deflate only — no aes/bzip2/lzma/zstd default surface); tar +
 # flate2 (pure-Rust miniz_oxide) cover tar.gz. xz2/bzip2 are avoided
 # deliberately (they bind C libraries).
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 
@@ -108,14 +111,13 @@ transcribe-rs = { version = "0.3.11", default-features = false, features = ["onn
 
 # Hotkey toggle (M6) — global hotkey via XDG GlobalShortcuts portal.
 # `default-features = true` keeps the tokio executor (matches
-# `zbus.features = ["tokio"]`); MSRV 1.92 is satisfied (workspace
-# `rust-version = "1.88"` is the minimum (raised from 1.85 to pull in
-# `time >= 0.3.47` for the RFC-2822 stack-exhaustion fix from
-# RUSTSEC-2026-0009); toolchain is stable >=1.92.
+# `zbus.features = ["tokio"]`). The workspace `rust-version = "1.92"` is
+# the MSRV, raised from 1.88 because `gstreamer`/`gstreamer-app` 0.25 and
+# `ashpd` 0.13 both require Rust 1.92; the toolchain is stable >=1.92.
 ashpd = { version = "0.13", default-features = true, features = ["global_shortcuts"] }
 # Pure deserializer for `hotkey.toml` (M6) — `toml_edit` is overkill
 # for read-only config and pulls extra surface area.
-toml = "0.8"
+toml = "1"
 notify-rust = { version = "4.11", default-features = false, features = ["z-with-tokio"] }
 # RFC-daemon-role Feature 3: the session-bound `zwhisper deliver`
 # consumer injects transcripts into the Wayland clipboard. `arboard`
@@ -173,6 +175,7 @@ cast_possible_truncation = "allow" # u64 → u32 frame indices
 too_many_lines = "allow"           # async event-loop bodies span >100 lines deliberately
 uninlined_format_args = "allow"    # mixed style across older crates; format_args! in macros
 unchecked_time_subtraction = "allow" # `Instant::now() - started_at` in already-monotonic paths
+duration_suboptimal_units = "allow" # fires widely once MSRV >= 1.92 enables `from_mins`/`from_hours`; `from_secs(3600)` keeps the link to sample-count math explicit in tests
 redundant_closure_for_method_calls = "allow" # `.map(|e| e.to_string())` reads better than `.map(ToString::to_string)`
 items_after_statements = "allow"   # const ITEM blocks after the doc-comment they belong to
 unused_async = "allow"             # async-cargo helpers conform to a trait or zbus signature

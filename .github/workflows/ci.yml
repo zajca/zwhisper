@@ -20,7 +20,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -31,7 +31,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build deps
         uses: ./.github/actions/install-build-deps
       - name: Install Rust toolchain
@@ -46,7 +46,7 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build deps
         uses: ./.github/actions/install-build-deps
       - name: Install Rust toolchain
@@ -59,7 +59,7 @@ jobs:
     name: build (release)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build deps
         uses: ./.github/actions/install-build-deps
       - name: Install Rust toolchain
@@ -74,7 +74,7 @@ jobs:
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build deps
         uses: ./.github/actions/install-build-deps
       - name: Install Rust toolchain
@@ -87,7 +87,7 @@ jobs:
     name: packaging shell tests (M8)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install desktop-file-utils + libxml2-utils
         run: |
           sudo apt-get update -qq
@@ -103,7 +103,7 @@ jobs:
     name: version handshake (M8)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build deps
         uses: ./.github/actions/install-build-deps
       - name: Install Rust toolchain

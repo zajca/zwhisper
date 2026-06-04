@@ -29,16 +29,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
 };
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
+use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 use super::audio_source::{PcmChunkSource, PcmFormat, PcmSourceError};
 use super::error::TranscribeError;
@@ -86,74 +87,76 @@ pub fn decode_flac_normalized(
     let mut hint = Hint::new();
     hint.with_extension("flac");
 
-    let probed = symphonia::default::get_probe()
-        .format(
+    // symphonia 0.6: `probe()` returns the `FormatReader` directly and
+    // takes the options by value.
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| decode_err(format!("probe: {e}")))?;
-    let mut format = probed.format;
 
+    // The default audio track falls back to the first track with a known
+    // codec, matching the old "first decodable track" selection.
     let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .default_track(TrackType::Audio)
         .ok_or_else(|| decode_err("no decodable audio track".to_owned()))?;
     let track_id = track.id;
-    let params = track.codec_params.clone();
+    let native_frames = track.num_frames;
+    // Clone the audio params so the `&format` borrow is released before
+    // the decode loop borrows `format` mutably.
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|c| c.audio())
+        .ok_or_else(|| decode_err("track is missing audio codec parameters".to_owned()))?
+        .clone();
     let native_rate = params
         .sample_rate
         .ok_or_else(|| decode_err("FLAC header is missing the sample rate".to_owned()))?;
     let channels = params
         .channels
+        .as_ref()
         .ok_or_else(|| decode_err("FLAC header is missing the channel layout".to_owned()))?
         .count();
     if channels == 0 {
         return Err(decode_err("FLAC header declares zero channels".to_owned()));
     }
     let native_channels = u16::try_from(channels).unwrap_or(u16::MAX);
-    let native_frames = params.n_frames;
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&params, &DecoderOptions::default())
+        .make_audio_decoder(&params, &AudioDecoderOptions::default())
         .map_err(|e| decode_err(format!("decoder build: {e}")))?;
 
     // Decode every packet into one interleaved f32 buffer, immediately
-    // folding to mono so the peak buffer is mono-sized.
+    // folding to mono so the peak buffer is mono-sized. `scratch` is a
+    // reused interleaved staging buffer, resized to each packet's frame
+    // count before the copy.
     let mut mono_native: Vec<f32> = Vec::with_capacity(
         native_frames
             .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(0),
     );
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+    let mut scratch: Vec<f32> = Vec::new();
 
     loop {
         let packet = match format.next_packet() {
-            Ok(p) => p,
-            // Clean EOF surfaces as an UnexpectedEof IoError.
-            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                break;
-            }
-            // Track list changed mid-stream (rare for plain FLAC).
-            Err(SymphoniaError::ResetRequired) => break,
+            Ok(Some(p)) => p,
+            // symphonia 0.6: clean EOF is `Ok(None)`; a mid-stream
+            // track-list reset (rare for plain FLAC) also ends decoding.
+            Ok(None) | Err(SymphoniaError::ResetRequired) => break,
             Err(e) => return Err(decode_err(format!("next_packet: {e}"))),
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                if sample_buf.is_none() {
-                    let spec = *decoded.spec();
-                    let duration = decoded.capacity() as u64;
-                    sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
-                }
-                if let Some(sb) = sample_buf.as_mut() {
-                    sb.copy_interleaved_ref(decoded);
-                    fold_interleaved_to_mono(sb.samples(), channels, &mut mono_native);
-                }
+                scratch.resize(decoded.samples_interleaved(), 0.0);
+                decoded.copy_to_slice_interleaved(&mut scratch);
+                fold_interleaved_to_mono(&scratch, channels, &mut mono_native);
             }
             // Recoverable per-packet errors: skip and keep going (the
             // loop continues on its own).
@@ -210,40 +213,33 @@ fn resample_mono(mono: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>,
         interpolation: SincInterpolationType::Cubic,
         window: WindowFunction::BlackmanHarris2,
     };
-    let mut resampler = SincFixedIn::<f32>::new(ratio, 1.0, params, RESAMPLE_CHUNK, 1)
-        .map_err(|e| format!("resampler construction: {e}"))?;
+    let mut resampler =
+        Async::<f32>::new_sinc(ratio, 1.0, &params, RESAMPLE_CHUNK, 1, FixedAsync::Input)
+            .map_err(|e| format!("resampler construction: {e}"))?;
 
+    // rubato 3.0: `process_all_into_buffer` runs the whole clip in one
+    // call — it drops the resampler's group delay from the front, feeds
+    // the final partial chunk, and pumps silence to flush the tail,
+    // writing `ceil(ratio * input_len)` frames into the output buffer.
+    let out_capacity = resampler.process_all_needed_output_len(mono.len());
+    let mut out = vec![0.0_f32; out_capacity];
+
+    // Mono == single interleaved channel, so a flat slice adapter works.
+    let input = InterleavedSlice::new(mono, 1, mono.len())
+        .map_err(|e| format!("resample input adapter: {e}"))?;
+    let mut output = InterleavedSlice::new_mut(&mut out, 1, out_capacity)
+        .map_err(|e| format!("resample output adapter: {e}"))?;
+
+    let (_in_frames, out_frames) = resampler
+        .process_all_into_buffer(&input, &mut output, mono.len(), None)
+        .map_err(|e| format!("resample process: {e}"))?;
+    out.truncate(out_frames);
+
+    // Clamp to the analytically-expected (floored) frame count so the
+    // result stays deterministic and matches the pre-rubato-3.0 output
+    // length (`ceil` above can yield one extra frame).
     let expected_out =
         ((mono.len() as u128 * u128::from(to_rate)) / u128::from(from_rate)) as usize;
-    let delay = resampler.output_delay();
-    let mut out: Vec<f32> = Vec::with_capacity(expected_out + delay + RESAMPLE_CHUNK);
-
-    // Feed fixed-size input chunks; pad the final short chunk with
-    // silence, then flush the resampler's internal delay.
-    let mut pos = 0;
-    while pos < mono.len() {
-        let end = (pos + RESAMPLE_CHUNK).min(mono.len());
-        let mut chunk: Vec<f32> = mono[pos..end].to_vec();
-        if chunk.len() < RESAMPLE_CHUNK {
-            chunk.resize(RESAMPLE_CHUNK, 0.0);
-        }
-        let res = resampler
-            .process(&[chunk], None)
-            .map_err(|e| format!("resample process: {e}"))?;
-        out.extend_from_slice(&res[0]);
-        pos = end;
-    }
-    // Flush delayed frames buffered inside the resampler.
-    let flushed = resampler
-        .process_partial::<Vec<f32>>(None, None)
-        .map_err(|e| format!("resample flush: {e}"))?;
-    out.extend_from_slice(&flushed[0]);
-
-    // Drop the group delay from the front, then clamp to the expected
-    // length to discard the zero-pad/flush tail.
-    if delay <= out.len() {
-        out.drain(..delay);
-    }
     out.truncate(expected_out);
     Ok(out)
 }

@@ -7,6 +7,35 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-04
+
+Dependency and toolchain maintenance release. No user-facing behaviour
+changes; the FLAC decode/resample path was rewritten against the new
+`symphonia` 0.6 / `rubato` 3.0 APIs with output kept bit-for-bit
+deterministic.
+
+### Changed
+
+- **Workspace dependencies refreshed to latest.** Major bumps:
+  `gstreamer`/`gstreamer-app` 0.23 → 0.25, `reqwest` 0.12 → 0.13
+  (the `rustls-tls` feature became `rustls`: rustls + aws-lc-rs provider
+  + `rustls-platform-verifier`, replacing the dropped bundled
+  `webpki-roots`), `symphonia` 0.5 → 0.6, `rubato` 0.15 → 3.0,
+  `zip` 2.2 → 8, `toml` 0.8 → 1, `toml_edit` 0.22 → 0.25, `sha2`
+  0.10 → 0.11, `which` 6 → 8, `dirs` 5 → 6, `signal-hook(-tokio)`
+  0.3 → 0.4, `clap` 4.5 → 4.6, plus `zbus`/`zvariant` and the usual
+  semver-compatible lockfile updates.
+- **MSRV raised 1.88 → 1.92**, required by `gstreamer` 0.25 and
+  `ashpd` 0.13.
+- **CI actions updated**: `actions/checkout` v4 → v6,
+  `actions/upload-artifact` v4 → v7, `actions/download-artifact`
+  v4 → v8, `softprops/action-gh-release` v2 → v3.
+
+### Removed
+
+- Dropped the `RUSTSEC-2024-0436` (`paste`) advisory ignore from
+  `deny.toml` / `audit.yml` — `gstreamer` 0.25 no longer pulls `paste`.
+
 ## [0.4.0] - 2026-06-04
 
 Thick-daemon role: transcription jobs, durable history, and session-bound
@@ -215,7 +244,8 @@ secrets editor in the settings GUI, hard RAM-cap enforcement,
 auto-update mechanism, localisation, telemetry, vendored cargo
 tarball. See `docs/M8-plan.md` § "Out of scope" for the full list.
 
-[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/zajca/zwhisper/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/zajca/zwhisper/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/zajca/zwhisper/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/zajca/zwhisper/compare/v0.2.0...v0.2.1
