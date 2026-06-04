@@ -35,6 +35,10 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# RFC-daemon-role F2.3: liveness probe + process-group reap of an
+# orphaned whisper-cli subprocess during startup recovery. Confined to
+# `history::reap` behind a scoped `#[allow(unsafe_code)]`.
+libc = { workspace = true }
 
 [features]
 # Compile the in-process Parakeet backend into the daemon so

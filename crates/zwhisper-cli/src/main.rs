@@ -30,8 +30,8 @@ mod profile_commands;
 #[cfg(feature = "setup")]
 use crate::cli::AudioCmd;
 use crate::cli::{
-    BackendCmd, HotkeyCmd, InstructionsArgs, ModelCmd, ProfileCmd, RecordArgs, StatusArgs,
-    TranscribeArgs,
+    BackendCmd, DeliverArgs, HistoryArgs, HotkeyCmd, InstructionsArgs, JobsCmd, ModelCmd,
+    OutputCmd, ProfileCmd, RecordArgs, StatusArgs, TranscribeArgs,
 };
 
 #[derive(Debug, Parser)]
@@ -72,6 +72,35 @@ enum Command {
     #[command(subcommand)]
     Backend(BackendCmd),
 
+    /// RFC-daemon-role — inspect or cancel daemon transcription jobs.
+    /// Bare `jobs` lists queued/running jobs.
+    Jobs {
+        #[command(subcommand)]
+        command: Option<JobsCmd>,
+    },
+
+    /// RFC-daemon-role — durable session history. Bare `history` lists
+    /// recent sessions; `history forget <id>` drops one.
+    History(HistoryArgs),
+
+    /// RFC-daemon-role — re-transcribe a past session from its FLAC
+    /// (available after the audio-model RFC lands; prints a hint until
+    /// then).
+    Retry {
+        /// Session id (UUID) from `zwhisper history`.
+        id: String,
+    },
+
+    /// RFC-daemon-role — one-shot manual delivery of the last
+    /// transcript (`output last --to clipboard|notify`). The documented
+    /// fallback for a missed best-effort delivery.
+    #[command(subcommand)]
+    Output(OutputCmd),
+
+    /// RFC-daemon-role — the session-bound delivery consumer
+    /// (`deliver --listen`), normally run via the systemd user unit.
+    Deliver(DeliverArgs),
+
     /// Print runtime status from the daemon.
     Status(StatusArgs),
 
@@ -108,6 +137,11 @@ fn main() -> color_eyre::Result<()> {
         Command::Profile(cmd) => commands::profile::run(cmd),
         Command::Model(cmd) => commands::model::run(cmd),
         Command::Backend(cmd) => commands::backend::run(cmd),
+        Command::Jobs { command } => commands::jobs::run(command.as_ref()),
+        Command::History(args) => commands::history::run(args),
+        Command::Retry { id } => commands::history::run_retry(id),
+        Command::Output(cmd) => commands::output::run(cmd),
+        Command::Deliver(args) => commands::deliver::run(args),
         Command::Status(args) => commands::status::run(args),
         Command::Instructions(args) => commands::instructions::run(args),
         Command::Toggle => commands::toggle::run(),

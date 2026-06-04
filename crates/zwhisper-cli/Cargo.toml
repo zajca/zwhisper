@@ -53,6 +53,10 @@ reqwest = { workspace = true }
 # when the daemon is unreachable. Workspace dep already wires the
 # `z-with-tokio` zbus backend so this lives on our runtime.
 notify-rust = { workspace = true }
+# RFC-daemon-role Feature 3: `zwhisper deliver --listen` injects
+# transcripts into the clipboard (intent-gated, F3.3) and `zwhisper
+# output last --to clipboard` is the manual fallback.
+arboard = { workspace = true }
 
 [features]
 # Default-ON. `setup` compiles the `zwhisper audio {devices,meter,

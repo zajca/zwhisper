@@ -97,6 +97,12 @@ pub(crate) struct RecordArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("transcribe-routing")
+        .required(false)
+        .multiple(false)
+        .args(["queue", "detach"])
+))]
 pub(crate) struct TranscribeArgs {
     /// Input audio file.
     pub(crate) input: PathBuf,
@@ -117,6 +123,19 @@ pub(crate) struct TranscribeArgs {
     /// Source language (ISO 639-1, e.g. `cs`, `en`).
     #[arg(long, default_value = "auto")]
     pub(crate) language: String,
+
+    /// RFC-daemon-role F1.1: route the transcription through the daemon
+    /// as a tracked job and **wait** for it (so it lands in
+    /// `zwhisper history` and can be retried). Without `--queue` or
+    /// `--detach` the command runs LOCALLY in this process with zero
+    /// daemon dependency (the headless/ssh/cron guarantee, IDEA §5).
+    #[arg(long)]
+    pub(crate) queue: bool,
+
+    /// RFC-daemon-role F1.1: enqueue the transcription as a daemon job,
+    /// print the `job_id`, and return immediately (do not wait).
+    #[arg(long)]
+    pub(crate) detach: bool,
 }
 
 #[derive(Debug, Args)]
@@ -231,6 +250,82 @@ pub(crate) enum ModelCmd {
         /// Manifest model name, e.g. `tiny`, `small`, `large-v3`.
         model: String,
     },
+}
+
+/// `zwhisper jobs …` — inspect/cancel daemon transcription jobs
+/// (RFC-daemon-role Feature 1).
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum JobsCmd {
+    /// List queued/running jobs (the default when no subcommand given is
+    /// handled in the dispatcher).
+    List,
+    /// Cancel a queued or running job by id (best-effort).
+    Cancel {
+        /// Job id (UUID) as printed by `transcribe --detach` / `jobs`.
+        id: String,
+    },
+}
+
+/// `zwhisper history …` — durable session history (RFC-daemon-role
+/// Feature 2). Bare `zwhisper history` lists recent sessions.
+#[derive(Debug, Subcommand)]
+pub(crate) enum HistoryCmd {
+    /// Drop a session from the index. With `--delete-files`, also remove
+    /// the referenced audio/transcript files (otherwise audio is kept).
+    Forget {
+        /// Session id (UUID).
+        id: String,
+        /// Also delete the audio + transcript files from disk.
+        #[arg(long)]
+        delete_files: bool,
+    },
+}
+
+/// `zwhisper history [--limit N]` flags. The optional `forget`
+/// subcommand is handled separately; a bare invocation lists.
+#[derive(Debug, Args)]
+pub(crate) struct HistoryArgs {
+    /// Maximum number of recent sessions to show.
+    #[arg(long)]
+    pub(crate) limit: Option<u32>,
+
+    #[command(subcommand)]
+    pub(crate) command: Option<HistoryCmd>,
+}
+
+/// Destination for `zwhisper output last`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum OutputTarget {
+    /// Copy the transcript text into the clipboard.
+    Clipboard,
+    /// Raise a desktop notification.
+    Notify,
+}
+
+/// `zwhisper output …` — one-shot manual delivery of the last
+/// transcript (RFC-daemon-role F3.2 fallback for missed best-effort
+/// delivery).
+#[derive(Debug, Subcommand)]
+pub(crate) enum OutputCmd {
+    /// Deliver the most recent finished transcript to the chosen target.
+    Last {
+        /// Where to deliver: `clipboard` or `notify`.
+        #[arg(long)]
+        to: OutputTarget,
+    },
+}
+
+/// `zwhisper deliver …` — the session-bound delivery consumer
+/// (RFC-daemon-role Feature 3). Normally run via the auto-enabled
+/// `graphical-session.target` systemd user unit.
+#[derive(Debug, Args)]
+pub(crate) struct DeliverArgs {
+    /// Subscribe to `Jobs1.JobCompleted` and honour each job's resolved
+    /// `outputs` (clipboard/notification). Required — there is no other
+    /// mode yet, but the flag keeps room for future one-shot modes and
+    /// makes the long-running intent explicit.
+    #[arg(long)]
+    pub(crate) listen: bool,
 }
 
 /// `zwhisper audio …` subcommands — guided microphone setup &

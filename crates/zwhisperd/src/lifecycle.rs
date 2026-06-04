@@ -42,12 +42,15 @@ use tracing::{error, info, warn};
 use zbus::object_server::InterfaceRef;
 use zwhisper_core::audio::recorder::{Recorder, RecordingReport};
 use zwhisper_core::audio::state::{SessionId, StopReason};
+use zwhisper_core::profile::schema::OutputDest;
 use zwhisper_core::transcribe::config::DEFAULT_ASR_SAMPLE_RATE_HZ;
 use zwhisper_core::transcribe::{
     AudioArtifact, AudioCodec, AudioMetadata, AudioSource, PcmAvailability, TranscribeOpts,
-    transcribe_source,
 };
 
+use crate::history::writer::new_entry;
+use crate::history::{HistoryHandle, HistoryStatus};
+use crate::jobs::JobQueue;
 use crate::last_session::{self, LastSession};
 use crate::recorder_service::{RecorderInterface, RecorderInterfaceSignals};
 use crate::session::SessionManager;
@@ -66,6 +69,24 @@ pub(crate) struct LifecycleHooks {
     pub(crate) transcribe_language: String,
     /// Side map of per-backend typed settings, keyed by backend.
     pub(crate) transcribe_settings: zwhisper_core::transcribe::BackendSettings,
+    // ---- RFC-daemon-role additions ----
+    /// The sibling transcription job queue (F1.3). Auto-transcribe now
+    /// runs as a job here instead of inline, so it is tracked in
+    /// history and emits the new `Jobs1` signals — while the lifecycle
+    /// still emits the FROZEN `Recorder1` terminal signals from the
+    /// awaited job result.
+    pub(crate) queue: JobQueue,
+    /// The single durable history writer (F2.2).
+    pub(crate) history: HistoryHandle,
+    /// Resolved profile name, persisted in history and carried in
+    /// `Jobs1.JobCompleted` (F3.1).
+    pub(crate) profile_name: String,
+    /// `profile.outputs` resolved at completion time and carried in the
+    /// completion signal so the session-bound consumer never re-reads
+    /// the profile from disk (F3.1).
+    pub(crate) outputs: Vec<OutputDest>,
+    /// Native capture rate, recorded in history for a future retry.
+    pub(crate) native_rate: u32,
 }
 
 /// Spawn the lifecycle task. Returns immediately; the spawned task
@@ -175,6 +196,28 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
             // window succeeds.
             hooks.sessions.release();
 
+            // Record the session in durable history (status Recorded)
+            // BEFORE any transcribe step, so a crash leaves a queryable,
+            // recoverable trace and so the queue's later status updates
+            // (which find the entry by id) have something to update.
+            let codec = AudioCodec::from_path(&report.audio_path)
+                .map(|c| format!("{c:?}").to_lowercase())
+                .unwrap_or_else(|| "flac".to_owned());
+            hooks
+                .history
+                .upsert(new_entry(
+                    &session_id_str,
+                    &hooks.profile_name,
+                    &report.audio_path.display().to_string(),
+                    &codec,
+                    hooks.native_rate,
+                    1,
+                    hooks.transcribe_backend.as_str(),
+                    &hooks.transcribe_model,
+                    &hooks.transcribe_language,
+                ))
+                .await;
+
             if hooks.transcribe_auto {
                 let opts = TranscribeOpts {
                     backend: hooks.transcribe_backend,
@@ -187,8 +230,20 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                 // otherwise the coordinator decodes from the FLAC
                 // artifact. The durable FLAC is always present either way.
                 let audio_source = build_audio_source(&report);
-                match transcribe_source(&audio_source, &opts).await {
-                    Ok(art) => {
+                // RFC-daemon-role F1.3: run the transcription as a job on
+                // the sibling queue (history + Jobs1 signals) and await
+                // its result to emit the FROZEN Recorder1 signals exactly
+                // as before. The recording slot is already released, so
+                // C5 still holds while the job runs.
+                let rx = hooks.queue.submit_auto(
+                    session_id_str.clone(),
+                    audio_source,
+                    opts,
+                    hooks.profile_name.clone(),
+                    hooks.outputs.clone(),
+                );
+                match rx.await {
+                    Ok(Ok(art)) => {
                         let bytes = std::fs::metadata(&art.txt_path).map_or(0, |m| m.len());
                         info!(
                             session_id = %session_id_str,
@@ -219,16 +274,26 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                         .await;
                         emit_terminal_state(&hooks.iface_ref, "idle", &session_id_str).await;
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         error!(
                             session_id = %session_id_str,
                             error = %e,
-                            "transcribe step failed; audio preserved",
+                            "transcribe job failed; audio preserved",
                         );
                         // Do NOT emit TranscriptComplete on failure —
                         // the wire contract is "fired iff transcript
                         // exists". Surface the failure as terminal
-                        // state.
+                        // state. (History was already marked Failed by
+                        // the job.)
+                        emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
+                    }
+                    Err(_canceled) => {
+                        // The job's `done` sender was dropped (queue
+                        // closed during shutdown). Treat as failure.
+                        error!(
+                            session_id = %session_id_str,
+                            "transcribe job did not report a result (daemon shutting down?)",
+                        );
                         emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
                     }
                 }
@@ -252,6 +317,22 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
             )
             .await;
             hooks.sessions.release();
+            // Record the failed attempt in history so the user can see
+            // it (and the partial FLAC path) via `zwhisper history`.
+            let mut entry = new_entry(
+                &session_id_str,
+                &hooks.profile_name,
+                &hooks.audio_path.display().to_string(),
+                "flac",
+                hooks.native_rate,
+                1,
+                hooks.transcribe_backend.as_str(),
+                &hooks.transcribe_model,
+                &hooks.transcribe_language,
+            );
+            entry.status = HistoryStatus::Failed;
+            entry.last_error = Some(rec_err.to_string());
+            hooks.history.upsert(entry).await;
             emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
         }
     }

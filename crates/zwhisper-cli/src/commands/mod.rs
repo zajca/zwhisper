@@ -28,9 +28,13 @@
 #[cfg(feature = "setup")]
 pub(crate) mod audio;
 pub(crate) mod backend;
+pub(crate) mod deliver;
+pub(crate) mod history;
 pub(crate) mod hotkey;
 pub(crate) mod instructions;
+pub(crate) mod jobs;
 pub(crate) mod model;
+pub(crate) mod output;
 pub(crate) mod profile;
 pub(crate) mod record;
 pub(crate) mod status;
@@ -54,6 +58,51 @@ pub(crate) const EXIT_IPC_FAILURE: i32 = 3;
 /// fine, but said no") so packagers and CI can detect partial
 /// upgrades without parsing stderr.
 pub(crate) const EXIT_VERSION_MISMATCH: i32 = 4;
+/// RFC-daemon-role F1.2 — a blocking `transcribe --queue` waited the
+/// bounded [`JOB_WAIT_TIMEOUT`] without the job finishing. Distinct from
+/// a recording/transcribe *failure* (1): the job may still be running;
+/// the CLI tells the user to check `zwhisper jobs` / `zwhisper history`.
+pub(crate) const EXIT_JOB_TIMEOUT: i32 = 5;
+
+/// Bounded wait for `transcribe --queue` (F1.2 — "no silent default,
+/// needs a named config value"). 30 minutes comfortably covers a long
+/// local whisper.cpp run on a large model; past it the CLI stops
+/// blocking and points the user at `jobs`/`history` rather than hanging
+/// indefinitely. The daemon keeps running the job regardless.
+pub(crate) const JOB_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+
+/// Default number of rows `zwhisper history` requests when `--limit` is
+/// omitted.
+pub(crate) const HISTORY_DEFAULT_LIMIT: u32 = 20;
+
+/// Hint shown when the daemon is reachable but predates the `Jobs1` /
+/// `History1` interfaces (partial upgrade). Mirrors [`DAEMON_DOWN_HINT`]
+/// in spirit: actionable, points at the fix.
+pub(crate) const DAEMON_TOO_OLD_HINT: &str = "the running daemon is too old for this command (it lacks the Jobs1/History1 interface). Reinstall zwhisperd to match this client.";
+
+/// True when a zbus error means the daemon is up but does not implement
+/// the interface/method/property we asked for — i.e. a daemon older than
+/// the RFC-daemon-role surface (F4.1 graceful degrade).
+#[must_use]
+pub(crate) fn is_daemon_too_old(err: &zbus::Error) -> bool {
+    match err {
+        zbus::Error::MethodError(name, ..) => {
+            let n: &str = name.as_str();
+            n == "org.freedesktop.DBus.Error.UnknownInterface"
+                || n == "org.freedesktop.DBus.Error.UnknownMethod"
+                || n == "org.freedesktop.DBus.Error.UnknownObject"
+                || n == "org.freedesktop.DBus.Error.UnknownProperty"
+        }
+        zbus::Error::FDO(boxed) => matches!(
+            boxed.as_ref(),
+            zbus::fdo::Error::UnknownInterface(_)
+                | zbus::fdo::Error::UnknownMethod(_)
+                | zbus::fdo::Error::UnknownObject(_)
+                | zbus::fdo::Error::UnknownProperty(_)
+        ),
+        _ => false,
+    }
+}
 
 /// Well-known D-Bus error names for the daemon-not-running case. We
 /// hit `ServiceUnknown` when the bus has no activation entry, and
