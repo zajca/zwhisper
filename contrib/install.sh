@@ -28,6 +28,15 @@ if [ "${#missing[@]}" -gt 0 ]; then
     echo
 fi
 
+# Optional: wtype powers the `type_at_cursor` output (types transcripts at the
+# cursor). wlroots compositors only (Sway/Hyprland); on GNOME/KWin or when it is
+# absent, zwhisper falls back to clipboard + notification. Not required.
+if ! command -v wtype >/dev/null 2>&1; then
+    warn "Optional: wtype not found — the type_at_cursor output falls back to clipboard."
+    warn "On Arch (wlroots/Sway/Hyprland only):  sudo pacman -S --needed wtype"
+    echo
+fi
+
 # --- 2. helper scripts ---------------------------------------------------
 say "Installing helper scripts into $BIN_DEST"
 mkdir -p "$BIN_DEST"

@@ -31,8 +31,9 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tracing::info;
 use zwhisper_core::profile::error::ProfileError;
-use zwhisper_core::profile::listing::{SourcesUpdate, clone_to_user, update_sources};
-use zwhisper_core::profile::schema::Mode;
+use zwhisper_core::profile::listing::{SourcesUpdate, clone_to_user, set_outputs, update_sources};
+use zwhisper_core::profile::load;
+use zwhisper_core::profile::schema::{Mode, OutputDest};
 use zwhisper_core::setup::config::SetupConfig;
 use zwhisper_core::setup::volume::format_linear;
 use zwhisper_core::setup::{
@@ -643,6 +644,60 @@ impl Preset {
     }
 }
 
+/// Where the transcript is delivered, on top of the always-present `file`
+/// output every profile ships. The wizard offers three combinations:
+/// - [`OutputChoice::FileOnly`] → just the transcript file (no live
+///   delivery; the conservative default for meetings);
+/// - [`OutputChoice::FileAndType`] → file **plus** typing the text at the
+///   cursor ([`OutputDest::TypeAtCursor`], wlroots only — the natural
+///   dictation flow);
+/// - [`OutputChoice::FileAndClipboard`] → file **plus** copying the text
+///   to the clipboard ([`OutputDest::Clipboard`]).
+///
+/// The shared `File` prefix is intentional: every choice always keeps the
+/// profile's `file` output and only differs in the *additional* live
+/// delivery, so the prefix documents that invariant rather than being
+/// noise.
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputChoice {
+    FileOnly,
+    FileAndType,
+    FileAndClipboard,
+}
+
+impl OutputChoice {
+    /// A short human label for the menu and the summary.
+    fn label(self) -> &'static str {
+        match self {
+            Self::FileOnly => "file only",
+            Self::FileAndType => "file + type at cursor",
+            Self::FileAndClipboard => "file + clipboard",
+        }
+    }
+
+    /// The choice suggested as the empty-input default for a preset:
+    /// dictation wants the text typed where the cursor is; meeting capture
+    /// just wants the transcript on disk.
+    fn default_for(preset: Preset) -> Self {
+        match preset {
+            Preset::Dictation => Self::FileAndType,
+            Preset::Meeting => Self::FileOnly,
+        }
+    }
+
+    /// The *additional* live output this choice appends to the profile's
+    /// `file` output, or `None` for [`OutputChoice::FileOnly`] (file only,
+    /// no live delivery).
+    fn live(self) -> Option<OutputDest> {
+        match self {
+            Self::FileOnly => None,
+            Self::FileAndType => Some(OutputDest::TypeAtCursor),
+            Self::FileAndClipboard => Some(OutputDest::Clipboard),
+        }
+    }
+}
+
 /// What the wizard decided to do, assembled from the interactive prompts
 /// and then executed in one place. Kept separate from the I/O so the
 /// summary can be rendered by a pure function and unit-tested.
@@ -660,6 +715,9 @@ struct WizardPlan {
     made_default: bool,
     /// The chosen capture preset.
     preset: Preset,
+    /// The chosen transcript-delivery output combination (on top of the
+    /// always-present `file` output).
+    output_choice: OutputChoice,
     /// The user-override profile that was written.
     profile: String,
     /// The on-disk path of the written profile.
@@ -734,8 +792,9 @@ async fn setup_async(
     // 2. Calibrate against the chosen device.
     let outcome = calibrate_chosen(pw, chosen.id, cfg).await?;
 
-    // 3. Choose a capture preset.
+    // 3. Choose a capture preset, then how the transcript is delivered.
     let preset = prompt_preset()?;
+    let output_choice = prompt_output_choice(preset)?;
 
     // 4. Confirm, then apply side effects.
     if !prompt_confirm(
@@ -760,8 +819,10 @@ async fn setup_async(
         println!("set default source to id {}.", chosen.id);
     }
 
-    // 5. Resolve + write the target profile.
-    let (profile, profile_path) = resolve_and_write_profile(args, chosen, preset)?;
+    // 5. Resolve + write the target profile's `[sources]`, then layer the
+    //    chosen delivery output(s) on top of its existing `file` output.
+    let (profile, _sources_path) = resolve_and_write_profile(args, chosen, preset)?;
+    let profile_path = write_outputs(&profile, output_choice)?;
 
     // 6. Summary.
     let plan = WizardPlan {
@@ -771,6 +832,7 @@ async fn setup_async(
         final_volume: outcome.final_volume,
         made_default,
         preset,
+        output_choice,
         profile,
         profile_path,
     };
@@ -891,6 +953,32 @@ fn clone_base_profile(name: &str) -> color_eyre::Result<()> {
         )),
         Err(e) => Err(eyre!("{e}")),
     }
+}
+
+/// Layer the chosen transcript-delivery output onto the profile that
+/// `resolve_and_write_profile` just wrote. The profile already declares a
+/// `file` output (every shipped/base profile does); we keep all its
+/// existing outputs and append `choice.live()` when the user asked for a
+/// live delivery and it is not already present (idempotent — re-running the
+/// wizard with the same choice does not duplicate the table). For
+/// [`OutputChoice::FileOnly`] the existing outputs are written back
+/// unchanged, which is a no-op on disk. Returns the (unchanged) profile
+/// path (the same user-override file) so the summary can report it.
+fn write_outputs(name: &str, choice: OutputChoice) -> color_eyre::Result<std::path::PathBuf> {
+    // Start from the freshly-written profile's resolved outputs so we
+    // preserve whatever `file` (and any other) destinations it declares.
+    let mut outputs = load(name).map_err(|e| eyre!("{e}"))?.outputs;
+
+    // Append the live delivery if requested and not already present.
+    if let Some(live) = choice.live() {
+        if !outputs.contains(&live) {
+            outputs.push(live);
+        }
+    }
+
+    let path = set_outputs(name, &outputs).map_err(|e| eyre!("{e}"))?;
+    info!(profile = name, choice = ?choice, path = %path.display(), "wrote outputs to profile");
+    Ok(path)
 }
 
 // ===========================================================================
@@ -1138,6 +1226,25 @@ fn parse_preset_choice(input: &str) -> Result<Preset, MenuError> {
     }
 }
 
+/// Parse the output-delivery menu choice into an [`OutputChoice`]. The
+/// three rows are fixed: `1` → file only, `2` → file + type at cursor,
+/// `3` → file + clipboard. A blank line selects `default` (the
+/// preset-derived default the caller marks with `*`). Out-of-range or
+/// non-numeric input is a typed [`MenuError`] so the caller re-prompts.
+/// Pure (no I/O) so the mapping is unit-tested directly.
+fn parse_output_choice(input: &str, default: OutputChoice) -> Result<OutputChoice, MenuError> {
+    let default_index = match default {
+        OutputChoice::FileOnly => 0,
+        OutputChoice::FileAndType => 1,
+        OutputChoice::FileAndClipboard => 2,
+    };
+    match parse_menu_choice(input, 3, Some(default_index))? {
+        0 => Ok(OutputChoice::FileOnly),
+        1 => Ok(OutputChoice::FileAndType),
+        _ => Ok(OutputChoice::FileAndClipboard),
+    }
+}
+
 /// Parse a yes/no answer, falling back to `default` on a blank line.
 /// Accepts `y`/`yes`/`n`/`no` (case-insensitive); anything else returns
 /// the default rather than erroring — a wizard confirm should not abort
@@ -1206,12 +1313,28 @@ fn render_summary(plan: &WizardPlan) -> String {
          mic, re-run and confirm \"make default\", or set ZWHISPER_DICTATE_SOURCE."
             .to_owned()
     };
+    let delivery_line = match plan.output_choice {
+        OutputChoice::FileOnly => {
+            "  transcript     : written to the profile's transcript file.".to_owned()
+        }
+        OutputChoice::FileAndType => {
+            "  transcript     : written to the profile's transcript file and typed at the \
+             cursor (wlroots only; falls back to the clipboard elsewhere)."
+                .to_owned()
+        }
+        OutputChoice::FileAndClipboard => {
+            "  transcript     : written to the profile's transcript file and copied to the \
+             clipboard."
+                .to_owned()
+        }
+    };
     format!(
-        "Setup complete.\n  microphone     : {desc} (node {node})\n  PipeWire volume: {vol}\n{default_line}\n  preset         : {preset}\n  profile written: {profile} ({path})",
+        "Setup complete.\n  microphone     : {desc} (node {node})\n  PipeWire volume: {vol}\n{default_line}\n  preset         : {preset}\n  delivery       : {delivery}\n{delivery_line}\n  profile written: {profile} ({path})",
         desc = plan.description,
         node = plan.node_name,
         vol = format_percent(plan.final_volume),
         preset = plan.preset.label(),
+        delivery = plan.output_choice.label(),
         profile = plan.profile,
         path = plan.profile_path.display(),
     )
@@ -1276,6 +1399,64 @@ fn prompt_preset() -> color_eyre::Result<Preset> {
         let line = read_line()?;
         match parse_preset_choice(&line) {
             Ok(p) => return Ok(p),
+            Err(e) => println!("  {} — try again.", e.reason()),
+        }
+    }
+}
+
+/// Print the transcript-delivery menu and read a choice, re-prompting on
+/// bad input. The empty-input default is [`OutputChoice::default_for`] the
+/// chosen preset (dictation → type at cursor; meeting → file only). Pure
+/// parsing in [`parse_output_choice`].
+///
+/// When the type-at-cursor option is on offer, an **advisory** note (never
+/// a block) flags its requirements: it needs the optional `wtype`
+/// dependency and a wlroots compositor (Sway/Hyprland). If the current
+/// session looks like a non-wlroots desktop, [`sink::desktop_hint`]
+/// surfaces a reason and we add that typing falls back to the clipboard
+/// there. The note is informational only — the choice is still offered.
+fn prompt_output_choice(preset: Preset) -> color_eyre::Result<OutputChoice> {
+    use crate::commands::deliver::sink;
+
+    let default = OutputChoice::default_for(preset);
+    let mark = |c: OutputChoice| if c == default { "*" } else { " " };
+
+    println!("\nWhere should the transcript go?");
+    println!("{}1) {}", mark(OutputChoice::FileOnly), OutputChoice::FileOnly.label());
+    println!(
+        "{}2) {}",
+        mark(OutputChoice::FileAndType),
+        OutputChoice::FileAndType.label()
+    );
+    println!(
+        "{}3) {}",
+        mark(OutputChoice::FileAndClipboard),
+        OutputChoice::FileAndClipboard.label()
+    );
+
+    // Advisory for the type-at-cursor option (always shown since it is on
+    // the menu) — surface a session-specific hint when we have one.
+    let current = std::env::var("XDG_CURRENT_DESKTOP").ok();
+    let session = std::env::var("XDG_SESSION_DESKTOP").ok();
+    if let Some(hint) = sink::desktop_hint(current.as_deref(), session.as_deref()) {
+        println!("  note: {hint}; on those sessions typing falls back to the clipboard.");
+    }
+    println!(
+        "  note: \"type at cursor\" needs the optional `wtype` dependency and a wlroots \
+         compositor (Sway/Hyprland)."
+    );
+
+    let default_n = match default {
+        OutputChoice::FileOnly => 1,
+        OutputChoice::FileAndType => 2,
+        OutputChoice::FileAndClipboard => 3,
+    };
+    loop {
+        print!("delivery [default {default_n}]: ");
+        let _ = std::io::stdout().flush();
+        let line = read_line()?;
+        match parse_output_choice(&line, default) {
+            Ok(c) => return Ok(c),
             Err(e) => println!("  {} — try again.", e.reason()),
         }
     }
@@ -1734,6 +1915,14 @@ mod tests {
     // ---- render_summary ----------------------------------------------
 
     fn plan(made_default: bool, preset: Preset) -> WizardPlan {
+        plan_with_output(made_default, preset, OutputChoice::default_for(preset))
+    }
+
+    fn plan_with_output(
+        made_default: bool,
+        preset: Preset,
+        output_choice: OutputChoice,
+    ) -> WizardPlan {
         WizardPlan {
             id: 68,
             description: "Built-in Mic".to_owned(),
@@ -1741,6 +1930,7 @@ mod tests {
             final_volume: 0.27,
             made_default,
             preset,
+            output_choice,
             profile: "dictation".to_owned(),
             profile_path: std::path::PathBuf::from(
                 "/home/u/.config/zwhisper/profiles/dictation.toml",
@@ -1759,6 +1949,107 @@ mod tests {
         // Made default → mentions pactl get-default-source + dictation.
         assert!(s.contains("pactl get-default-source"), "{s}");
         assert!(s.contains("yes"), "{s}");
+        // Dictation's default delivery is file + type-at-cursor, and the
+        // summary states where the transcript goes.
+        assert!(s.contains("file + type at cursor"), "{s}");
+        assert!(s.contains("typed at the cursor"), "{s}");
+    }
+
+    #[test]
+    fn summary_states_clipboard_delivery() {
+        let s = render_summary(&plan_with_output(
+            false,
+            Preset::Meeting,
+            OutputChoice::FileAndClipboard,
+        ));
+        assert!(s.contains("file + clipboard"), "{s}");
+        assert!(s.contains("copied to the clipboard"), "{s}");
+    }
+
+    #[test]
+    fn summary_states_file_only_delivery() {
+        let s = render_summary(&plan_with_output(
+            false,
+            Preset::Meeting,
+            OutputChoice::FileOnly,
+        ));
+        assert!(s.contains("file only"), "{s}");
+        assert!(s.contains("transcript file"), "{s}");
+    }
+
+    // ---- OutputChoice mapping ----------------------------------------
+
+    #[test]
+    fn output_choice_default_matches_preset() {
+        // Dictation types where the cursor is; meeting just keeps the file.
+        assert_eq!(
+            OutputChoice::default_for(Preset::Dictation),
+            OutputChoice::FileAndType
+        );
+        assert_eq!(
+            OutputChoice::default_for(Preset::Meeting),
+            OutputChoice::FileOnly
+        );
+    }
+
+    #[test]
+    fn output_choice_live_maps_to_expected_output() {
+        // FileOnly adds no live delivery; the other two map to their
+        // concrete OutputDest variant.
+        assert_eq!(OutputChoice::FileOnly.live(), None);
+        assert_eq!(
+            OutputChoice::FileAndType.live(),
+            Some(OutputDest::TypeAtCursor)
+        );
+        assert_eq!(
+            OutputChoice::FileAndClipboard.live(),
+            Some(OutputDest::Clipboard)
+        );
+    }
+
+    // ---- parse_output_choice -----------------------------------------
+
+    #[test]
+    fn output_choice_parses_numbers() {
+        let d = OutputChoice::FileOnly;
+        assert_eq!(parse_output_choice("1", d), Ok(OutputChoice::FileOnly));
+        assert_eq!(parse_output_choice("2", d), Ok(OutputChoice::FileAndType));
+        assert_eq!(
+            parse_output_choice("3", d),
+            Ok(OutputChoice::FileAndClipboard)
+        );
+    }
+
+    #[test]
+    fn output_choice_blank_uses_preset_default() {
+        // A blank line selects whatever default the caller passes (which is
+        // OutputChoice::default_for(preset) at the call site).
+        assert_eq!(
+            parse_output_choice("", OutputChoice::FileAndType),
+            Ok(OutputChoice::FileAndType)
+        );
+        assert_eq!(
+            parse_output_choice("  ", OutputChoice::FileOnly),
+            Ok(OutputChoice::FileOnly)
+        );
+        assert_eq!(
+            parse_output_choice("", OutputChoice::FileAndClipboard),
+            Ok(OutputChoice::FileAndClipboard)
+        );
+    }
+
+    #[test]
+    fn output_choice_rejects_out_of_range_and_non_numeric() {
+        let d = OutputChoice::FileOnly;
+        assert_eq!(
+            parse_output_choice("4", d),
+            Err(MenuError::OutOfRange { count: 3 })
+        );
+        assert_eq!(
+            parse_output_choice("0", d),
+            Err(MenuError::OutOfRange { count: 3 })
+        );
+        assert_eq!(parse_output_choice("x", d), Err(MenuError::NotANumber));
     }
 
     #[test]

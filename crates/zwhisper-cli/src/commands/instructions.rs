@@ -52,6 +52,12 @@ Core commands:
 - `zwhisper profile set <name>`: persist the active profile used by `toggle`.
 - `zwhisper transcribe <file> --profile <name>`: transcribe an existing audio file.
 - `zwhisper backend health --backend deepgram`: validate cloud backend credentials.
+- `zwhisper output last --to clipboard`: copy the last transcript to the clipboard.
+- `zwhisper output last --to type`: type the last transcript at the cursor (wlroots/Sway/Hyprland only; falls back to clipboard).
+- `zwhisper output last --to notify`: raise a desktop notification for the last transcript.
+- `zwhisper deliver --listen`: session-bound consumer that auto-delivers each finished transcript per the profile's `[[output]]` (normally run by the auto-enabled user unit).
+
+Profiles declare delivery via `[[output]]` entries: `file`, `clipboard`, `notification`, `type_at_cursor` (the last types at the cursor on wlroots only).
 
 Manual desktop integration:
 
@@ -71,5 +77,7 @@ mod tests {
         assert!(text.contains("zwhisper status --json"));
         assert!(text.contains("zwhisper status --waybar"));
         assert!(text.contains("zwhisper profile set <name>"));
+        assert!(text.contains("output last --to type"));
+        assert!(text.contains("deliver --listen"));
     }
 }

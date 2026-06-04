@@ -11,11 +11,11 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use toml_edit::DocumentMut;
+use toml_edit::{DocumentMut, Item};
 use tracing::info;
 
 use super::error::ProfileError;
-use super::schema::Mode;
+use super::schema::{Mode, OutputDest};
 use super::{Profile, ProfileSource, embedded, loader, paths, resolve};
 
 /// One row in the `profile list` table. `source` is the precedence
@@ -330,6 +330,120 @@ fn update_sources_at(
         name = name,
         path = %path.display(),
         "profile [sources] updated"
+    );
+    Ok(path.to_owned())
+}
+
+/// Snake-case TOML token for an [`OutputDest`] discriminator (matches
+/// the schema's `#[serde(tag = "type", rename_all = "snake_case")]`).
+/// Centralised here so the writer never hardcodes a discriminator string
+/// in more than one place — the symmetric counterpart to [`mode_token`].
+fn output_token(dest: &OutputDest) -> &'static str {
+    match dest {
+        OutputDest::File { .. } => "file",
+        OutputDest::Clipboard => "clipboard",
+        OutputDest::Notification => "notification",
+        OutputDest::TypeAtCursor => "type_at_cursor",
+    }
+}
+
+/// Build a single `[[output]]` table for one [`OutputDest`]. Every table
+/// carries the `type = "<token>"` discriminator; `File` additionally
+/// carries `path = "<path>"`. The table is constructed explicitly rather
+/// than via serde so the rendered shape stays under this module's control
+/// (a plain [`toml_edit::Table`] renders as a `[[output]]` header
+/// automatically once collected into an [`toml_edit::ArrayOfTables`]).
+fn output_table(dest: &OutputDest) -> toml_edit::Table {
+    let mut table = toml_edit::Table::new();
+    table.insert("type", toml_edit::value(output_token(dest)));
+    if let OutputDest::File { path } = dest {
+        table.insert("path", toml_edit::value(path.as_str()));
+    }
+    table
+}
+
+/// Replace the `[[output]]` array-of-tables of a **user-override**
+/// profile, preserving the rest of the document (comments and formatting
+/// on every other section are left untouched — only the `output` key is
+/// rebuilt). The symmetric counterpart to [`update_sources`]: the
+/// rewritten document is round-trip deserialized and re-validated as a
+/// full [`Profile`] *before* it is persisted, and the write is atomic
+/// (temp file + `sync_all` + rename) so a crash leaves either the old or
+/// the new full body.
+///
+/// An empty `outputs` slice removes the `output` key entirely — a
+/// [`Profile`] permits zero outputs.
+///
+/// Errors mirror [`update_sources`]:
+/// - [`ProfileError::NotFound`] when no user-override file exists (the
+///   CLI should tell the user to clone the profile first — shipped /
+///   embedded profiles are not mutable);
+/// - [`ProfileError::Validation`] when the rewritten profile fails
+///   `Profile::validate` (e.g. a `File` output whose path token is
+///   invalid);
+/// - [`ProfileError::TomlParse`] / [`ProfileError::Io`] on a malformed
+///   on-disk file or a failed write.
+///
+/// Returns the path that was written.
+pub fn set_outputs(name: &str, outputs: &[OutputDest]) -> Result<PathBuf, ProfileError> {
+    paths::validate_name(name)?;
+    let path = paths::user_override_path(name)?;
+    if !path.is_file() {
+        return Err(ProfileError::NotFound {
+            name: name.to_owned(),
+            searched: vec![path.display().to_string()],
+        });
+    }
+    set_outputs_at(name, &path, outputs)
+}
+
+/// Path-explicit core of [`set_outputs`]. Production callers go through
+/// [`set_outputs`] (which resolves and existence-checks the user-override
+/// path); tests drive this directly against a tempdir path to stay
+/// hermetic, mirroring [`update_sources_at`]. `name` is used only for
+/// error messages.
+fn set_outputs_at(name: &str, path: &Path, outputs: &[OutputDest]) -> Result<PathBuf, ProfileError> {
+    // 1. Read + parse, preserving the full document (comments included).
+    let body = fs::read_to_string(path).map_err(|source| ProfileError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    let mut doc: DocumentMut = body.parse().map_err(|source| ProfileError::TomlParse {
+        path: path.to_owned(),
+        source,
+    })?;
+
+    // 2. Rebuild only the `output` array-of-tables. An empty slice drops
+    //    the key entirely; otherwise overwrite it with a fresh AoT so any
+    //    prior `[[output]]` formatting/comments are intentionally
+    //    replaced (the rest of the document is left as-is).
+    if outputs.is_empty() {
+        doc.remove("output");
+    } else {
+        let mut aot = toml_edit::ArrayOfTables::new();
+        for dest in outputs {
+            aot.push(output_table(dest));
+        }
+        doc.insert("output", Item::ArrayOfTables(aot));
+    }
+
+    // 3. Re-validate the rewritten document as a full Profile BEFORE
+    //    persisting. `load_from_str` parses, gates the schema version,
+    //    deserializes, and calls `Profile::validate` — so an output whose
+    //    path token is invalid (or any other broken invariant) is
+    //    rejected and the on-disk file is left untouched.
+    let rewritten = doc.to_string();
+    loader::load_from_str(&rewritten, name)?;
+
+    // 4. Atomic write: temp file in the same dir, fsync, rename over the
+    //    original (crash leaves either the old or the new full body).
+    atomic_replace(path, &rewritten)?;
+
+    info!(
+        name = name,
+        path = %path.display(),
+        outputs = outputs.len(),
+        "profile [[output]] rewritten"
     );
     Ok(path.to_owned())
 }
@@ -864,6 +978,122 @@ path = "~/Recordings/zwhisper/{profile}/{timestamp}.flac"
                 mic: Some("alsa_input.x"),
                 ..Default::default()
             },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ProfileError::Validation { .. }), "{err:?}");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            original,
+            "file must be untouched when round-trip validation fails"
+        );
+    }
+
+    // ---- set_outputs ----------------------------------------------------
+
+    #[test]
+    fn set_outputs_replaces_array_and_preserves_other_sections() {
+        let dir = TempDir::new().unwrap();
+        let path = write_user_profile(&dir, PROFILE_WITH_COMMENTS);
+
+        set_outputs_at(
+            "custom",
+            &path,
+            &[
+                OutputDest::File {
+                    path: "~/Recordings/zwhisper/{profile}/{timestamp}.flac".to_owned(),
+                },
+                OutputDest::TypeAtCursor,
+            ],
+        )
+        .unwrap();
+
+        // Reparse: exactly two `[[output]]` tables in order, first the
+        // file (with its path), second type_at_cursor.
+        let p = loader::load_from_path(&path).unwrap();
+        assert_eq!(p.outputs.len(), 2, "{:?}", p.outputs);
+        assert!(
+            matches!(&p.outputs[0], OutputDest::File { path } if path.contains(".flac")),
+            "{:?}",
+            p.outputs[0]
+        );
+        assert_eq!(p.outputs[1], OutputDest::TypeAtCursor);
+
+        // A comment on an unrelated section survives the output rewrite.
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(body.contains("# the microphone to capture"), "{body}");
+        assert!(body.contains("type = \"type_at_cursor\""), "{body}");
+    }
+
+    #[test]
+    fn set_outputs_round_trips_file_and_clipboard_tokens() {
+        let dir = TempDir::new().unwrap();
+        let path = write_user_profile(&dir, PROFILE_WITH_COMMENTS);
+
+        set_outputs_at(
+            "custom",
+            &path,
+            &[
+                OutputDest::File {
+                    path: "~/Recordings/zwhisper/{profile}/{timestamp}.flac".to_owned(),
+                },
+                OutputDest::Clipboard,
+            ],
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(body.contains("type = \"file\""), "{body}");
+        assert!(body.contains("type = \"clipboard\""), "{body}");
+
+        let p = loader::load_from_path(&path).unwrap();
+        assert_eq!(p.outputs.len(), 2, "{:?}", p.outputs);
+        assert!(matches!(&p.outputs[0], OutputDest::File { .. }));
+        assert_eq!(p.outputs[1], OutputDest::Clipboard);
+    }
+
+    #[test]
+    fn set_outputs_empty_removes_key_and_still_validates() {
+        let dir = TempDir::new().unwrap();
+        let path = write_user_profile(&dir, PROFILE_WITH_COMMENTS);
+
+        set_outputs_at("custom", &path, &[]).unwrap();
+
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(!body.contains("[[output]]"), "key should be gone: {body}");
+        // Zero outputs is a valid profile; it still loads.
+        let p = loader::load_from_path(&path).unwrap();
+        assert!(p.outputs.is_empty(), "{:?}", p.outputs);
+    }
+
+    #[test]
+    fn set_outputs_refuses_non_user_override() {
+        // `set_outputs` (the public entry) existence-checks the
+        // user-override path. A name with no user file → NotFound, so the
+        // CLI can tell the user to clone first. Use a name extremely
+        // unlikely to have a real user override on the host.
+        let err = set_outputs(
+            "definitely-not-a-real-user-profile-xyz",
+            &[OutputDest::Clipboard],
+        )
+        .unwrap_err();
+        assert!(matches!(err, ProfileError::NotFound { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn set_outputs_atomic_no_partial_on_validation_failure() {
+        // If the rewrite would produce an invalid profile (round-trip
+        // validate fails on a bad File path token), the original file
+        // must remain byte-for-byte unchanged.
+        let dir = TempDir::new().unwrap();
+        let path = write_user_profile(&dir, PROFILE_WITH_COMMENTS);
+        let original = fs::read_to_string(&path).unwrap();
+
+        let err = set_outputs_at(
+            "custom",
+            &path,
+            &[OutputDest::File {
+                path: "/tmp/{bad}".to_owned(),
+            }],
         )
         .unwrap_err();
         assert!(matches!(err, ProfileError::Validation { .. }), "{err:?}");

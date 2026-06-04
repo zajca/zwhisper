@@ -55,6 +55,7 @@ optdepends=(
     'whisper.cpp: local Whisper inference for the on-device backend'
     'xdg-desktop-portal: optional GlobalShortcuts probing/binding via zwhisper hotkey'
     'libsecret: Secret Service support for cloud API keys (deferred post-M8)'
+    'wtype: type transcripts at the cursor for the type_at_cursor output (wlroots compositors only — Sway/Hyprland; not GNOME/KWin)'
 )
 
 # Source: tag tarball from the GitHub release.  `b2sums` are

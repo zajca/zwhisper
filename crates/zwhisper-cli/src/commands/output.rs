@@ -135,7 +135,92 @@ async fn run_async(cmd: &OutputCmd) -> i32 {
             .await;
             EXIT_OK
         }
+        OutputTarget::Type => deliver_type(&text, &session.transcript_path).await,
     }
+}
+
+/// Type `text` at the cursor via the shared [`sink::TypeSink`] (RFC-type-at-cursor).
+///
+/// Unlike the best-effort `deliver --listen` consumer, a one-shot
+/// `zwhisper output last --to type` is inherently FOREGROUND intent — the user
+/// just invoked it and is focused on the target window — so we skip the
+/// `decide_type` submit-mode gate entirely. The size ceiling still applies
+/// ([`sink::TYPE_MAX_BYTES`]): a huge transcript would hold the virtual
+/// keyboard for minutes, so we refuse it and point the user at `--to clipboard`.
+///
+/// `wtype` requires a wlroots compositor (Sway/Hyprland); on GNOME/KWin it is
+/// absent or non-functional. We gate on [`sink::wtype_present`] and enrich the
+/// error with [`sink::desktop_hint`] when the session looks non-wlroots.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+async fn deliver_type(text: &str, transcript_path: &str) -> i32 {
+    // Size ceiling first: typing is intrusive and slow, so an oversized
+    // transcript degrades to a clear refusal rather than locking the keyboard.
+    if text.len() as u64 > sink::TYPE_MAX_BYTES {
+        eprintln!(
+            "transcript too large to type ({} bytes > {} ceiling); use --to clipboard",
+            text.len(),
+            sink::TYPE_MAX_BYTES
+        );
+        return EXIT_PROTOCOL_ERROR;
+    }
+
+    // Gate on a `wtype` binary; enrich the failure with the advisory desktop
+    // hint when the session looks non-wlroots (GNOME/KWin). A one-shot is
+    // inherently foreground intent, so on a typing failure we run the same
+    // OD4 fallback as the daemon: best-effort copy the transcript to the
+    // clipboard so the user is never left empty-handed.
+    if !sink::wtype_present() {
+        let hint = sink::desktop_hint(
+            std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+            std::env::var("XDG_SESSION_DESKTOP").ok().as_deref(),
+        );
+        let reason = match hint {
+            Some(detail) => format!("wtype not found ({detail})"),
+            None => "wtype not found; typing needs a wlroots compositor (Sway/Hyprland)".to_owned(),
+        };
+        return type_fallback_to_clipboard(text, &reason).await;
+    }
+
+    match sink::TypeSink::new().type_text(text).await {
+        Ok(()) => {
+            println!("typed last transcript at cursor ({transcript_path})");
+            EXIT_OK
+        }
+        // OD4: typing failed mid-attempt; best-effort clipboard fallback.
+        Err(err) => type_fallback_to_clipboard(text, &format!("wtype failed: {err}")).await,
+    }
+}
+
+/// OD4 / F6 one-shot fallback: typing was unavailable (`wtype` absent or it
+/// failed mid-attempt), so best-effort copy `text` into the clipboard instead.
+/// `reason` is the human-readable cause already determined by the caller.
+///
+/// Always returns [`EXIT_PROTOCOL_ERROR`]: the action the user asked for —
+/// typing — did not succeed, even when the clipboard fallback worked. Mirrors
+/// the daemon's `handle_type` fallback (deliver/mod.rs) so both paths behave
+/// consistently. The Wayland one-shot caveat is printed verbatim from
+/// [`deliver_clipboard`] (the selection may not persist without a clipboard
+/// manager; `zwhisper deliver --listen` is the robust path).
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+async fn type_fallback_to_clipboard(text: &str, reason: &str) -> i32 {
+    let clipboard = sink::ClipboardSink::new();
+    match clipboard.inject(text).await {
+        Ok(()) => {
+            println!(
+                "{reason}; transcript copied to clipboard instead (paste with Ctrl+V, or rerun with --to clipboard)"
+            );
+            // Same honest Wayland caveat as `deliver_clipboard`: without a
+            // clipboard manager the selection may not survive this process
+            // exiting; the long-running consumer is the robust path.
+            println!(
+                "note: on Wayland the selection may not persist after this command exits unless a clipboard manager is running; the `zwhisper deliver --listen` consumer is the robust path."
+            );
+        }
+        Err(inject_err) => {
+            eprintln!("{reason}; clipboard fallback also failed: {inject_err}; use --to clipboard");
+        }
+    }
+    EXIT_PROTOCOL_ERROR
 }
 
 /// Copy `text` into the clipboard via the shared [`sink::ClipboardSink`].

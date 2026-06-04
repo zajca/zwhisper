@@ -300,6 +300,8 @@ pub(crate) enum OutputTarget {
     Clipboard,
     /// Raise a desktop notification.
     Notify,
+    /// Type the transcript at the cursor via wtype (wlroots only).
+    Type,
 }
 
 /// `zwhisper output …` — one-shot manual delivery of the last
@@ -309,7 +311,7 @@ pub(crate) enum OutputTarget {
 pub(crate) enum OutputCmd {
     /// Deliver the most recent finished transcript to the chosen target.
     Last {
-        /// Where to deliver: `clipboard` or `notify`.
+        /// Where to deliver: `clipboard`, `notify`, or `type`.
         #[arg(long)]
         to: OutputTarget,
     },

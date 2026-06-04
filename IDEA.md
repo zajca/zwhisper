@@ -21,7 +21,7 @@ do velkého rozsahu fíčur musí klíčové předpoklady projít PoC fází:
 | **Whisper.cpp lokálně, post-process** | hypotéza | Cesta k binárce, model management, latence |
 | **Daemon + tray rozdělení** | hypotéza | Hardening vs reálný session env, secret-service přes D-Bus |
 | **Output delivery bez tray** | hypotéza | CLI/headless flow musí být použitelný i bez tray procesu — viz sekce 5 |
-| **Type-at-cursor (dictation)** | **R&D only**, mimo committed roadmap | wtype nefunguje na KWin/Mutter; ydotool nezná focus; libei dozraje časem |
+| **Type-at-cursor (dictation)** | **committed opt-in** via `wtype` (RFC-type-at-cursor) | jen wlroots (Sway/Hyprland); GNOME/Mutter i KDE/KWin nepodporováno (degraduje na clipboard); focus-race ošetřen foreground-only + size ceiling |
 | **Global hotkeys přes xdg-desktop-portal** | KDE primary, ostatní target empirically | GNOME UX neověřený; wlroots nekonzistentní; PTT semantics neexistují |
 | **Cloud transcription** | hypotéza | Čistě volitelný remote provider; žádný compliance/consent workflow |
 
@@ -288,11 +288,17 @@ notification daemonem). Žijí proto v `zwhisper-tray`, ne v daemonu.
 
 #### Type-at-cursor
 
-**R&D queue, ne committed feature.** Důvody v sekci 12. Default chování
-zwhisperu je **clipboard only**. Pokud user chce paste-on-cursor, sám si
-ručně stiskne Ctrl+V; pro automatizaci si může nastavit `ydotool` jako
-volitelný hack mimo zwhisper, ale ten setup ani jeho podpora nejsou
-součástí projektu.
+**Committed jako opt-in output — viz `docs/RFC-type-at-cursor.md`.**
+Mechanismus je **`wtype`** (`virtual-keyboard-v1`): podporováno **jen na
+wlroots** (Sway, Hyprland). **GNOME/Mutter ani KDE/KWin NEJSOU podporovány**
+(žádný z nich neimplementuje `virtual-keyboard-v1` pro tyhle klienty —
+mutter#4124; KWin vrací "Compositor does not support the virtual keyboard
+protocol") a degradují na clipboard + notifikaci. KDE/Mutter by potřebovaly
+budoucí `libei` backend (mají EIS; wlroots ho naopak nemá — disjunktní pokrytí). Default flow zůstává clipboard; uživatel si
+typing zapne přes `[[output]] type = "type_at_cursor"`. `ydotool`/uinput
+ani `libei`/`reis` se nepoužívají (důvody v RFC: focus-unaware resp.
+nezralé Rust bindings + wlroots nemá EIS). Pokud `wtype` chybí nebo
+selže, transkript nikdy nezmizí — spadne do clipboardu s notifikací.
 
 ### Delivery model — co se stane, když tray neběží
 
@@ -658,7 +664,9 @@ Aby projekt zůstal udržitelný v M0–M8:
 - Speaker enrollment / voice fingerprinting
 - Multi-language auto-detection
 - Mobile / non-Linux platformy
-- Push-to-talk a type-at-cursor (R&D queue, ne committed feature)
+- Push-to-talk (R&D queue, ne committed feature). Type-at-cursor je nově
+  committed opt-in output přes `wtype` — viz `docs/RFC-type-at-cursor.md`
+  (jen wlroots; GNOME/Mutter i KDE/KWin nepodporovány); libei/ydotool backendy zůstávají out of scope.
 - Privacy / compliance vrstva (consent UI, encrypt-at-rest, redaction)
 - Persistent outbox / retry pro session-bound sinky (FileSink je single source of truth)
 

@@ -26,7 +26,9 @@ use zbus::fdo::{DBusProxy, RequestNameFlags, RequestNameReply};
 use zbus::names::WellKnownName;
 use zwhisper_ipc::{DELIVER_BUS_NAME, Jobs1Proxy};
 
-use sink::{ClipboardDecision, ClipboardSink, decide_clipboard, notify};
+use sink::{
+    ClipboardDecision, ClipboardSink, TypeDecision, TypeSink, decide_clipboard, decide_type, notify,
+};
 
 use super::DAEMON_DOWN_HINT;
 
@@ -145,6 +147,7 @@ async fn run_async() {
     };
 
     let clipboard = ClipboardSink::new();
+    let type_sink = TypeSink::new();
     tracing::info!("deliver: listening for Jobs1.JobCompleted");
 
     // ---- Consume signals until the stream ends ---------------------
@@ -156,7 +159,7 @@ async fn run_async() {
                 continue;
             }
         };
-        handle_completed(&clipboard, &args).await;
+        handle_completed(&clipboard, &type_sink, &args).await;
     }
 
     // Stream ended (bus disconnected / daemon gone). Nothing more to do;
@@ -181,6 +184,7 @@ async fn claim_single_instance(conn: &zbus::Connection) -> Result<bool, zbus::Er
 /// we never look at the profile on disk.
 async fn handle_completed(
     clipboard: &ClipboardSink,
+    type_sink: &TypeSink,
     args: &zwhisper_ipc::jobs::JobCompletedArgs<'_>,
 ) {
     let submit_mode = args.submit_mode;
@@ -209,6 +213,9 @@ async fn handle_completed(
             }
             Some("clipboard") => {
                 handle_clipboard(clipboard, submit_mode, transcript_path, bytes).await;
+            }
+            Some("type_at_cursor") => {
+                handle_type(type_sink, clipboard, submit_mode, transcript_path, bytes).await;
             }
             // File delivery is the daemon's job (it writes the file before
             // emitting the signal). Any other / unknown tag: ignore.
@@ -270,6 +277,122 @@ async fn handle_clipboard(
         }
         ClipboardDecision::Skip => {}
     }
+}
+
+/// Drive the F4 type-at-cursor intent guard for a single `type_at_cursor`
+/// output (RFC-type-at-cursor F3 + F6). Typing injects keystrokes into the
+/// focused window, so it is stricter than the clipboard path: we only type for
+/// a foreground job that fits the (smaller) type ceiling, and every other
+/// outcome degrades to a clipboard + notification fallback (OD4) or a
+/// notify-with-action. No failure is ever swallowed — each path logs at WARN
+/// and surfaces a notification.
+async fn handle_type(
+    type_sink: &TypeSink,
+    clipboard: &ClipboardSink,
+    submit_mode: &str,
+    transcript_path: &str,
+    bytes: u64,
+) {
+    // ---- F6 step 1: wtype presence gate -----------------------------
+    // No `wtype` binary on $PATH (or a non-wlroots session): we cannot type
+    // at all. Degrade to the clipboard + notification fallback so the user
+    // still gets the transcript, enriching the message with the advisory
+    // desktop hint when the session looks non-wlroots (GNOME/KWin).
+    if !sink::wtype_present() {
+        let hint = sink::desktop_hint(
+            std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+            std::env::var("XDG_SESSION_DESKTOP").ok().as_deref(),
+        );
+        tracing::warn!(
+            hint = hint.as_deref().unwrap_or("none"),
+            "deliver: wtype not present; falling back to clipboard for type_at_cursor"
+        );
+        type_fallback_to_clipboard(clipboard, transcript_path, hint.as_deref()).await;
+        return;
+    }
+
+    // ---- F4: intent guard -------------------------------------------
+    match decide_type(submit_mode, bytes, sink::TYPE_MAX_BYTES) {
+        TypeDecision::NotifyWithAction => {
+            // Too large OR not foreground: do NOT type into whatever happens to
+            // be focused, and do NOT hijack the clipboard either — just offer
+            // the manual actions.
+            notify(
+                "Transcript ready",
+                &format!(
+                    "Run `zwhisper output last --to type` to type at the cursor, or `--to clipboard` to copy. File: {transcript_path}"
+                ),
+            )
+            .await;
+        }
+        TypeDecision::Type => {
+            // Foreground + fits: read the transcript and type it. A read
+            // failure is observable (WARN + notify); a typing failure degrades
+            // to the clipboard fallback (OD4: always, even on a type-only
+            // profile, so the user is never left empty-handed).
+            match tokio::fs::read_to_string(transcript_path).await {
+                Ok(text) => match type_sink.type_text(&text).await {
+                    Ok(()) => {
+                        tracing::info!(bytes = bytes, "deliver: transcript typed at cursor");
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "deliver: wtype failed; falling back to clipboard");
+                        // Best-effort clipboard inject; failures are logged
+                        // inside the inject path, the notify always fires.
+                        if let Err(inject_err) = clipboard.inject(&text).await {
+                            tracing::warn!(error = %inject_err, "deliver: clipboard fallback after wtype failure also failed");
+                        }
+                        notify(
+                            "Transcript ready",
+                            "Typed delivery unavailable — transcript copied to clipboard (Ctrl+V), or run `zwhisper output last --to clipboard`.",
+                        )
+                        .await;
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(error = %err, path = %transcript_path, "deliver: transcript read failed; notifying instead");
+                    notify(
+                        "Transcript ready",
+                        &format!("Could not read transcript file: {transcript_path}"),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+}
+
+/// Shared F6 fallback for the type-at-cursor path: best-effort copy the
+/// transcript into the clipboard and raise a notification explaining that
+/// typing was unavailable. Used when `wtype` is absent. The clipboard inject
+/// is best-effort (its own failures are logged); the notification always
+/// fires, optionally enriched with the advisory desktop `hint`.
+async fn type_fallback_to_clipboard(
+    clipboard: &ClipboardSink,
+    transcript_path: &str,
+    hint: Option<&str>,
+) {
+    // Read first so we can copy the actual transcript; a read failure still
+    // notifies so the user is never left without feedback.
+    let read = tokio::fs::read_to_string(transcript_path).await;
+    match read {
+        Ok(text) => {
+            if let Err(inject_err) = clipboard.inject(&text).await {
+                tracing::warn!(error = %inject_err, "deliver: clipboard fallback for type_at_cursor failed");
+            }
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, path = %transcript_path, "deliver: transcript read failed during type fallback");
+        }
+    }
+
+    let body = match hint {
+        Some(reason) => format!(
+            "Typing unavailable ({reason}) — transcript copied to clipboard (Ctrl+V), or run `zwhisper output last --to clipboard`."
+        ),
+        None => "Typing unavailable (wtype not found) — transcript copied to clipboard (Ctrl+V), or run `zwhisper output last --to clipboard`.".to_owned(),
+    };
+    notify("Transcript ready", &body).await;
 }
 
 #[cfg(test)]

@@ -98,6 +98,7 @@ pub(crate) fn encode_outputs(outputs: &[OutputDest]) -> Vec<Vec<String>> {
             OutputDest::File { path } => vec!["file".to_owned(), path.clone()],
             OutputDest::Clipboard => vec!["clipboard".to_owned()],
             OutputDest::Notification => vec!["notification".to_owned()],
+            OutputDest::TypeAtCursor => vec!["type_at_cursor".to_owned()],
         })
         .collect()
 }
@@ -134,10 +135,12 @@ mod tests {
             },
             OutputDest::Clipboard,
             OutputDest::Notification,
+            OutputDest::TypeAtCursor,
         ];
         let enc = encode_outputs(&outs);
         assert_eq!(enc[0], vec!["file".to_owned(), "/tmp/t.txt".to_owned()]);
         assert_eq!(enc[1], vec!["clipboard".to_owned()]);
         assert_eq!(enc[2], vec!["notification".to_owned()]);
+        assert_eq!(enc[3], vec!["type_at_cursor".to_owned()]);
     }
 }

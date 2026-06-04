@@ -362,6 +362,7 @@ pub enum OutputDest {
     File { path: String },
     Clipboard,
     Notification,
+    TypeAtCursor, // TOML: type = "type_at_cursor"
 }
 
 /// Hotkey block (M6 only). Round-trips through M2 unchanged so users
@@ -626,6 +627,24 @@ mod tests {
     #[test]
     fn validate_accepts_minimal_ok_profile() {
         ok_profile().validate().unwrap();
+    }
+
+    #[test]
+    fn type_at_cursor_output_validates_and_round_trips_through_toml() {
+        // RFC-type-at-cursor F1: the `type_at_cursor` destination needs no
+        // extra `validate` invariant and must survive a full TOML
+        // serialize/deserialize cycle composed with a File output, emitting
+        // the `type = "type_at_cursor"` discriminator from `snake_case`.
+        let mut p = ok_profile();
+        p.outputs.push(OutputDest::TypeAtCursor);
+        p.validate().unwrap();
+
+        let toml = toml_edit::ser::to_string(&p).unwrap();
+        assert!(toml.contains("type = \"type_at_cursor\""), "{toml}");
+
+        let parsed: Profile = toml_edit::de::from_str(&toml).unwrap();
+        assert_eq!(parsed, p);
+        assert!(parsed.outputs.contains(&OutputDest::TypeAtCursor));
     }
 
     #[test]
