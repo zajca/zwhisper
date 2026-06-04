@@ -7,6 +7,45 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+Thick-daemon role: transcription jobs, durable history, and session-bound
+transcript delivery (RFC: daemon-role, Phases 1–3).
+
+### Added
+
+- **`Jobs1` D-Bus interface.** A transcription job queue running as a
+  sibling of the recording slot (never the same lane): `TranscribeFile`,
+  `Cancel`, `ListJobs`, plus `JobCompleted` / `JobFailed` / `JobProgress`
+  signals. Configurable serialized concurrency (default 1, env
+  `ZWHISPER_JOB_CONCURRENCY`). Distinct from `Recorder1.TranscriptComplete`.
+- **`History1` D-Bus interface.** Durable session history at
+  `$XDG_STATE_HOME/zwhisper/history.json`, owned by a single serialized
+  writer task (no lost-update race). `ListSessions`, `GetSession`, `Forget`
+  (audio kept unless `--delete-files`). Startup recovery marks interrupted
+  sessions without auto-retry and reaps orphaned subprocesses. `Retry` is
+  registered but returns a typed `RetryUnavailable` until the audio-model
+  RFC lands (Phase 4).
+- **`zwhisper deliver --listen`.** Session-bound consumer (auto-enabled
+  systemd user unit, bound to `graphical-session.target`) that restores
+  Clipboard/Notification delivery from the resolved `profile.outputs`
+  carried in `JobCompleted`. Intent-based stale-clipboard guard (foreground
+  jobs inject; detached/background jobs notify-with-action). Best-effort:
+  a missed signal means the transcript is on disk only.
+- **New CLI commands.** `transcribe --queue/--detach` (the local path stays
+  the default — zero daemon dependency, preserving the headless guarantee),
+  `jobs [cancel]`, `history [forget]`, `retry`, and `output last --to
+  clipboard|notify` (the manual fallback for a missed delivery).
+- **Per-interface protocol versioning.** `Jobs1` / `History1` each expose
+  their own `ProtocolVersion`; clients degrade gracefully against an older
+  daemon that lacks the interfaces.
+
+### Changed
+
+- Post-record auto-transcribe now runs as a job on the queue (so it is
+  recorded in history and emits `Jobs1` signals), while the lifecycle still
+  emits the frozen `Recorder1` terminal signals — the wire contract is
+  unchanged. `whisper-cli` is spawned in its own process group with
+  kill-on-drop so cancel/shutdown tears it down cleanly.
+
 ## [0.3.0] - 2026-06-04
 
 Guided microphone setup & calibration (RFC: mic-setup).
