@@ -20,6 +20,8 @@ use zwhisper_core::audio::state::{SessionId, StopReason};
 use zwhisper_core::profile;
 use zwhisper_ipc::{OBJECT_PATH, RpcError, Status};
 
+use crate::history::HistoryHandle;
+use crate::jobs::JobQueue;
 use crate::lifecycle::{LifecycleHooks, spawn_lifecycle};
 use crate::session::SessionManager;
 
@@ -65,17 +67,26 @@ pub(crate) struct RecorderInterface {
     /// already covers the post-recording side; this lock covers the
     /// startup side.
     start_lock: Arc<AsyncMutex<()>>,
+    /// Sibling transcription job queue (RFC-daemon-role F1.3), handed to
+    /// the lifecycle task so auto-transcribe runs as a tracked job.
+    queue: JobQueue,
+    /// Single durable history writer (F2.2).
+    history: HistoryHandle,
 }
 
 impl RecorderInterface {
     pub(crate) fn new(
         sessions: Arc<SessionManager>,
         active_profile: Arc<AsyncMutex<String>>,
+        queue: JobQueue,
+        history: HistoryHandle,
     ) -> Self {
         Self {
             sessions,
             active_profile,
             start_lock: Arc::new(AsyncMutex::new(())),
+            queue,
+            history,
         }
     }
 
@@ -283,6 +294,14 @@ impl RecorderInterface {
                 whisper_cpp: profile.transcription.whisper_cpp.clone(),
                 deepgram: profile.transcription.deepgram.clone(),
             },
+            // RFC-daemon-role wiring: the sibling queue + history writer,
+            // the resolved profile name + outputs (carried in
+            // JobCompleted, F3.1), and the native capture rate.
+            queue: self.queue.clone(),
+            history: self.history.clone(),
+            profile_name: profile.name.clone(),
+            outputs: profile.outputs.clone(),
+            native_rate: profile.recording.sample_rate,
         };
 
         spawn_lifecycle(recorder, hooks);

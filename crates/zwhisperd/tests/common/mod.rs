@@ -42,7 +42,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use zwhisper_ipc::{BUS_NAME, OBJECT_PATH, Profiles1Proxy, Recorder1Proxy};
+use zwhisper_ipc::{
+    BUS_NAME, History1Proxy, Jobs1Proxy, OBJECT_PATH, Profiles1Proxy, Recorder1Proxy,
+};
 
 /// Reasons the fixture cannot run on this host. Tests map this to a
 /// `[SKIP] {reason}` `eprintln!` and return early — same discipline
@@ -307,6 +309,28 @@ impl DbusFixture {
     pub async fn proxy_profiles(&self) -> zbus::Result<Profiles1Proxy<'static>> {
         let conn = self.connection().await?;
         Profiles1Proxy::builder(&conn)
+            .destination(BUS_NAME)?
+            .path(OBJECT_PATH)?
+            .build()
+            .await
+    }
+
+    /// Build a `Jobs1` proxy bound to a fresh connection
+    /// (RFC-daemon-role Feature 1).
+    pub async fn proxy_jobs(&self) -> zbus::Result<Jobs1Proxy<'static>> {
+        let conn = self.connection().await?;
+        Jobs1Proxy::builder(&conn)
+            .destination(BUS_NAME)?
+            .path(OBJECT_PATH)?
+            .build()
+            .await
+    }
+
+    /// Build a `History1` proxy bound to a fresh connection
+    /// (RFC-daemon-role Feature 2).
+    pub async fn proxy_history(&self) -> zbus::Result<History1Proxy<'static>> {
+        let conn = self.connection().await?;
+        History1Proxy::builder(&conn)
             .destination(BUS_NAME)?
             .path(OBJECT_PATH)?
             .build()

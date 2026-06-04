@@ -69,6 +69,18 @@ pub(crate) struct SystemRunner;
 #[async_trait]
 impl Runner for SystemRunner {
     async fn run(&self, mut cmd: Command, _workdir: &Path) -> Result<RunOutput, TranscribeError> {
+        // RFC-daemon-role F1.3 / F2.3: run `whisper-cli` in its own
+        // process group and arm kill-on-drop so a cancelled or
+        // shutdown-aborted job tears the subprocess down instead of
+        // orphaning it. `process_group(0)` makes the child the leader
+        // of a fresh group (so a future `kill(-pgid, …)` reaches it and
+        // any helpers it spawns); `kill_on_drop(true)` means that when
+        // the awaiting task is aborted — `Jobs1.Cancel` of a running
+        // job, or daemon shutdown — tokio reaps the child on drop of
+        // the `Child` future. Neither flag changes the happy-path
+        // behaviour: a job that runs to completion is unaffected.
+        cmd.process_group(0).kill_on_drop(true);
+
         // Use `output()` to await the process and capture both
         // pipes in one shot. Spawn errors map straight to
         // `BackendSpawn`; the caller already populated `tool` via

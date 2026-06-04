@@ -26,6 +26,10 @@ use zwhisper_ipc::{BUS_NAME, OBJECT_PATH};
 mod active_profile;
 mod active_session;
 mod config;
+mod history;
+mod history_service;
+mod jobs;
+mod jobs_service;
 mod last_session;
 mod lifecycle;
 mod profiles_service;
@@ -33,8 +37,13 @@ mod recorder_service;
 mod session;
 mod tracing_init;
 
+use std::sync::OnceLock;
+
 use crate::config::{INFLIGHT_START_DRAIN_TIMEOUT, SHUTDOWN_DRAIN_TIMEOUT};
 
+use crate::history_service::HistoryInterface;
+use crate::jobs::JobQueue;
+use crate::jobs_service::JobsInterface;
 use crate::profiles_service::ProfilesInterface;
 use crate::recorder_service::RecorderInterface;
 use crate::session::SessionManager;
@@ -48,22 +57,52 @@ async fn main() -> color_eyre::Result<()> {
     let sessions = Arc::new(SessionManager::new());
     let active_profile = Arc::new(AsyncMutex::new(active_profile::load().unwrap_or_default()));
 
-    let recorder_iface = RecorderInterface::new(Arc::clone(&sessions), Arc::clone(&active_profile));
+    // RFC-daemon-role: the single durable history writer (F2.2) and the
+    // sibling transcription job queue (F1.3). The queue needs the bus
+    // connection to emit `Jobs1` signals, but the connection is built
+    // *after* the interfaces are registered — so it is delivered to the
+    // queue via a `OnceLock` set immediately after `build()`.
+    let conn_cell: Arc<OnceLock<zbus::Connection>> = Arc::new(OnceLock::new());
+    let (history_handle, _history_task) = history::spawn_writer();
+    let queue = JobQueue::new(
+        Arc::clone(&conn_cell),
+        history_handle.clone(),
+        config::job_concurrency(),
+    );
+
+    let recorder_iface = RecorderInterface::new(
+        Arc::clone(&sessions),
+        Arc::clone(&active_profile),
+        queue.clone(),
+        history_handle.clone(),
+    );
     let profiles_iface = ProfilesInterface::new(Arc::clone(&active_profile));
+    let jobs_iface = JobsInterface::new(queue.clone(), history_handle.clone());
+    let history_iface = HistoryInterface::new(history_handle.clone());
 
     // zbus 5.15 connection builder pattern (per the
-    // `connection::Builder` docs): register both interfaces at the
+    // `connection::Builder` docs): register every interface at the
     // same path, then claim the well-known name. Multiple
     // `serve_at()` calls on the same path stack interfaces — that
     // is the supported form for the multi-interface single-object
-    // case we need.
+    // case we need. `Recorder1`/`Profiles1` stay frozen; `Jobs1`/
+    // `History1` are the new RFC-daemon-role surface.
     let connection = zbus::connection::Builder::session()?
         .serve_at(OBJECT_PATH, recorder_iface)?
         .serve_at(OBJECT_PATH, profiles_iface)?
+        .serve_at(OBJECT_PATH, jobs_iface)?
+        .serve_at(OBJECT_PATH, history_iface)?
         .name(BUS_NAME)?
         .build()
         .await
         .map_err(|e| eyre!("failed to register on session bus as {BUS_NAME}: {e}"))?;
+
+    // Hand the queue the live connection so its detached job tasks can
+    // emit `Jobs1` signals. Set exactly once; any job only runs after
+    // this point.
+    if conn_cell.set(connection.clone()).is_err() {
+        warn!("connection cell was already set; Jobs1 signal emission may be impaired");
+    }
 
     info!(
         bus_name = BUS_NAME,
@@ -90,7 +129,7 @@ async fn main() -> color_eyre::Result<()> {
         warn!("signal stream closed without delivering a signal");
     }
 
-    shutdown(&connection, &sessions).await;
+    shutdown(&connection, &sessions, &queue).await;
 
     info!("zwhisperd exiting");
     Ok(())
@@ -108,7 +147,7 @@ async fn main() -> color_eyre::Result<()> {
 /// drop the connection while transcribe is still awaiting
 /// `whisper-cli`. The CLI would then never see `TranscriptComplete`
 /// or terminal `StateChanged "idle"` and would hang forever.
-async fn shutdown(connection: &zbus::Connection, sessions: &SessionManager) {
+async fn shutdown(connection: &zbus::Connection, sessions: &SessionManager, queue: &JobQueue) {
     // Wait for any in-flight `start_recording` to finish so its
     // lifecycle handle is registered before we drain. Without this
     // a SIGTERM landing in the brief await-heavy window between
@@ -162,6 +201,14 @@ async fn shutdown(connection: &zbus::Connection, sessions: &SessionManager) {
             );
         }
     }
+
+    // RFC-daemon-role F1.3: stop accepting new transcription jobs and
+    // await any standalone (`Jobs1.TranscribeFile`) jobs still running.
+    // Auto-transcribe jobs are already covered by the lifecycle drain
+    // above (the lifecycle task awaits the job result), so this mainly
+    // catches detached jobs. The kill_on_drop armed in the backend means
+    // anything still running past the timeout is torn down on exit.
+    queue.shutdown(SHUTDOWN_DRAIN_TIMEOUT).await;
 
     // Dropping the connection releases the bus name. zbus does this
     // implicitly when the last `Connection` clone is dropped; calling

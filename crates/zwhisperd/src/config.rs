@@ -36,6 +36,36 @@ pub(crate) const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// shutdown budget.
 pub(crate) const INFLIGHT_START_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Default transcription-job concurrency (RFC-daemon-role F1.3).
+/// **Decided: global serialized = 1.** whisper-cli is heavy; running
+/// two at once thrashes CPU/RAM for no throughput win. Per-backend
+/// parallel lanes (e.g. I/O-bound Deepgram) are deferred (YAGNI).
+pub(crate) const DEFAULT_JOB_CONCURRENCY: usize = 1;
+
+/// Environment variable that overrides [`DEFAULT_JOB_CONCURRENCY`].
+pub(crate) const JOB_CONCURRENCY_ENV: &str = "ZWHISPER_JOB_CONCURRENCY";
+
+/// Resolve the effective job concurrency. The default IS the design
+/// value (not a silent invented default); the env var is an explicit
+/// opt-in override. An unset/empty/unparseable/zero value falls back to
+/// the default with a WARN so the operator sees the rejection rather
+/// than silently getting surprising behaviour.
+pub(crate) fn job_concurrency() -> usize {
+    match std::env::var(JOB_CONCURRENCY_ENV) {
+        Err(_) => DEFAULT_JOB_CONCURRENCY,
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => n,
+            _ => {
+                tracing::warn!(
+                    value = %raw,
+                    "{JOB_CONCURRENCY_ENV} must be a positive integer; using default {DEFAULT_JOB_CONCURRENCY}",
+                );
+                DEFAULT_JOB_CONCURRENCY
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {

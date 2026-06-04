@@ -117,6 +117,12 @@ ashpd = { version = "0.13", default-features = true, features = ["global_shortcu
 # for read-only config and pulls extra surface area.
 toml = "0.8"
 notify-rust = { version = "4.11", default-features = false, features = ["z-with-tokio"] }
+# RFC-daemon-role Feature 3: the session-bound `zwhisper deliver`
+# consumer injects transcripts into the Wayland clipboard. `arboard`
+# wraps wl-clipboard/X11 selections behind one cross-backend API; the
+# handle must be held for the process lifetime (its C1 invariant) so the
+# selection survives until the next paste.
+arboard = "3"
 
 # Testing helpers
 assert_cmd = "2"

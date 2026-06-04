@@ -50,14 +50,18 @@
 //! incompatible mutation of `Recorder1` / `Profiles1`.
 
 pub mod error;
+pub mod history;
+pub mod jobs;
 pub mod profiles;
 pub mod recorder;
 pub mod types;
 
 pub use error::{RpcError, parse_error_name, parse_error_name_from_zbus};
+pub use history::History1Proxy;
+pub use jobs::Jobs1Proxy;
 pub use profiles::Profiles1Proxy;
 pub use recorder::Recorder1Proxy;
-pub use types::{ProfileEntry, ProfileEntryV2, Status};
+pub use types::{HistorySession, JobInfo, ProfileEntry, ProfileEntryV2, Status};
 
 // `PROTOCOL_VERSION`, `PROTOCOL_VERSION_PROPERTY`, and
 // `ProtocolMismatch` are defined further down in this file (after the
@@ -87,6 +91,20 @@ pub const RECORDER_INTERFACE: &str = "cz.zajca.Zwhisper1.Recorder1";
 /// D-Bus interface name for the `Profiles1` proxy. Phase 3 must use
 /// this exact string in its `#[zbus::interface(name = …)]` attribute.
 pub const PROFILES_INTERFACE: &str = "cz.zajca.Zwhisper1.Profiles1";
+
+/// D-Bus interface name for the `Jobs1` proxy (RFC-daemon-role
+/// Feature 1). New surface — `Recorder1`/`Profiles1` stay frozen.
+pub const JOBS_INTERFACE: &str = "cz.zajca.Zwhisper1.Jobs1";
+
+/// D-Bus interface name for the `History1` proxy (RFC-daemon-role
+/// Feature 2).
+pub const HISTORY_INTERFACE: &str = "cz.zajca.Zwhisper1.History1";
+
+/// Well-known name the session-bound `zwhisper deliver --listen`
+/// consumer claims to enforce single-instance (F3.4). A second
+/// invocation detects the existing owner and exits cleanly. Distinct
+/// from the daemon's `BUS_NAME`; both can coexist on the bus.
+pub const DELIVER_BUS_NAME: &str = "cz.zajca.Zwhisper1.Deliver";
 
 /// Workspace-wide protocol version, exposed over D-Bus as the
 /// read-only `cz.zajca.Zwhisper1.Recorder1.ProtocolVersion` property

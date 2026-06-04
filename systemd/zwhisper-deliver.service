@@ -1,0 +1,22 @@
+[Unit]
+Description=zwhisper transcript delivery (clipboard/notification)
+Documentation=https://github.com/zajca/zwhisper
+# RFC-daemon-role F3.5: bound to the graphical session. On a host with
+# no graphical session the target is never reached, so this auto-enabled
+# unit simply never activates — which is why auto-enable is safe even on
+# headless installs. The consumer also self-checks WAYLAND_DISPLAY and
+# exits cleanly if somehow started without it.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/zwhisper deliver --listen
+# The consumer is best-effort and session-bound; restart it if it dies,
+# but it exits 0 cleanly when there is no display or no daemon, so this
+# does not crash-loop on headless/login-race hosts.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

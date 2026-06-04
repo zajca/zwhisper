@@ -4,10 +4,20 @@
 # tray services, desktop launchers, or settings GUI cache entries.
 
 post_install() {
+    # RFC-daemon-role F3.5: auto-enable the session-bound transcript
+    # delivery consumer for every user. `--global` writes the enablement
+    # symlink under /etc/systemd/user/ without needing a live session, so
+    # it works at package-install time. It is bound to
+    # graphical-session.target, so on headless hosts (where that target
+    # never activates) the unit simply never starts — auto-enable is safe.
+    systemctl --global enable zwhisper-deliver.service >/dev/null 2>&1 || true
+
     cat <<- EOF
 
 	==> zwhisper installed.
 	==> Enable the daemon:    systemctl --user enable --now zwhisperd
+	==> Transcript delivery:  zwhisper-deliver.service is auto-enabled
+	==>                       (clipboard/notification on graphical sessions)
 	==> CLI status/toggle:    zwhisper status
 	==>                       zwhisper toggle
 	==> Models CLI:           zwhisper model --help
@@ -17,12 +27,24 @@ post_install() {
 }
 
 post_upgrade() {
+    # Ensure the delivery unit is enabled after upgrades from a version
+    # that predates it. Idempotent.
+    systemctl --global enable zwhisper-deliver.service >/dev/null 2>&1 || true
+
     cat <<- EOF
 
 	==> zwhisper upgraded to \$1.
 	==> Restart the user daemon to pick up the new binary:
 	==>     systemctl --user restart zwhisperd
+	==> Restart transcript delivery (per session):
+	==>     systemctl --user restart zwhisper-deliver
 	EOF
+}
+
+pre_remove() {
+    # Mirror the auto-enable on removal so we do not leave a dangling
+    # enablement symlink for a unit whose binary is about to vanish.
+    systemctl --global disable zwhisper-deliver.service >/dev/null 2>&1 || true
 }
 
 post_remove() {

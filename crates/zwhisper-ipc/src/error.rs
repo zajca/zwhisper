@@ -50,6 +50,33 @@ pub enum RpcError {
     /// unknown but a retry might succeed.
     #[error("transient error: {reason}")]
     Transient { reason: String },
+
+    // ---- RFC-daemon-role additions (Jobs1 / History1) ----
+    /// A `Jobs1.Cancel` / lookup referenced a `job_id` the daemon does
+    /// not know (already finished and reaped, or never existed).
+    #[error("job id {id} is not known")]
+    JobUnknown { id: String },
+
+    /// A `Jobs1.TranscribeFile` `path` failed validation (F1.4):
+    /// not a regular file, outside the allowed root, traversal, or a
+    /// device node. Distinct from [`Self::AudioNotFound`], which means
+    /// the path was well-formed but the file is gone.
+    #[error("invalid path: {reason}")]
+    InvalidPath { reason: String },
+
+    /// `History1.Retry` is registered but not yet wired to the model
+    /// registry — it lands only after the audio-source-model RFC ships
+    /// (RFC-daemon-role F2.4, Phase 4). Surfaced as a typed refusal so
+    /// the CLI can print the "available after the audio RFC" hint
+    /// instead of a generic failure.
+    #[error("retry is unavailable until the audio model RFC lands (RFC-daemon-role F2.4)")]
+    RetryUnavailable,
+
+    /// A `History1.Retry` / `GetSession` referenced an entry whose
+    /// `audio_path` no longer exists on disk (F2.5). Distinct from an
+    /// opaque I/O error so the CLI can tell the user the FLAC is gone.
+    #[error("audio file no longer exists: {path}")]
+    AudioNotFound { path: String },
 }
 
 impl RpcError {
@@ -64,6 +91,10 @@ impl RpcError {
             Self::ProfileLoadFailed { .. } => "ProfileLoadFailed",
             Self::RecordingFailed { .. } => "RecordingFailed",
             Self::Transient { .. } => "Transient",
+            Self::JobUnknown { .. } => "JobUnknown",
+            Self::InvalidPath { .. } => "InvalidPath",
+            Self::RetryUnavailable => "RetryUnavailable",
+            Self::AudioNotFound { .. } => "AudioNotFound",
         }
     }
 
@@ -153,6 +184,10 @@ fn match_known_variant(name: &str) -> Option<&'static str> {
         "ProfileLoadFailed" => Some("ProfileLoadFailed"),
         "RecordingFailed" => Some("RecordingFailed"),
         "Transient" => Some("Transient"),
+        "JobUnknown" => Some("JobUnknown"),
+        "InvalidPath" => Some("InvalidPath"),
+        "RetryUnavailable" => Some("RetryUnavailable"),
+        "AudioNotFound" => Some("AudioNotFound"),
         _ => None,
     }
 }

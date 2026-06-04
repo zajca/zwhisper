@@ -118,6 +118,12 @@ package() {
     #    daemon spawns on first call from any client.
     install -Dm644 "systemd/zwhisperd.service"       "$pkgdir/usr/lib/systemd/user/zwhisperd.service"
 
+    # 2b. Session-bound transcript-delivery consumer (RFC-daemon-role
+    #     Feature 3). Bound to graphical-session.target and auto-enabled
+    #     by the .install scriptlet; safe on headless hosts because the
+    #     target is never reached there.
+    install -Dm644 "systemd/zwhisper-deliver.service" "$pkgdir/usr/lib/systemd/user/zwhisper-deliver.service"
+
     # 3. D-Bus session-bus auto-activation entry.
     install -Dm644 "dbus/cz.zajca.Zwhisper1.service" "$pkgdir/usr/share/dbus-1/services/cz.zajca.Zwhisper1.service"
 
