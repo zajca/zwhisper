@@ -90,7 +90,14 @@ build() {
     # x86_64 chip, not just the build host.
     export RUSTFLAGS="-C strip=symbols"
 
-    cargo build --frozen --release -p zwhisperd -p zwhisper-cli
+    # `--features parakeet` compiles the in-process Parakeet ASR backend
+    # into both binaries. It is default-OFF in the crates (pulls ONNX
+    # Runtime via `ort`), but the shipped `dictation` profile uses
+    # `backend = "parakeet"`, so without it every dictation transcribe
+    # fails with "backend `parakeet` is not compiled in". The feature is
+    # shared by both packages, so a single `--features` flag applies to
+    # both `-p` targets.
+    cargo build --frozen --release --features parakeet -p zwhisperd -p zwhisper-cli
 }
 
 check() {

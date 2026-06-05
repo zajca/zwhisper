@@ -27,7 +27,7 @@ use crate::session::SessionManager;
 
 /// Result of [`RecorderInterface::output_path_for_session`] — pinned
 /// to a single helper so the path scheme is in one place.
-fn default_output_dir() -> PathBuf {
+pub(crate) fn default_output_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("zwhisper")

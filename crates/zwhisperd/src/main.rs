@@ -32,6 +32,7 @@ mod jobs;
 mod jobs_service;
 mod last_session;
 mod lifecycle;
+mod orphan_recovery;
 mod profiles_service;
 mod recorder_service;
 mod session;
@@ -103,6 +104,14 @@ async fn main() -> color_eyre::Result<()> {
     if conn_cell.set(connection.clone()).is_err() {
         warn!("connection cell was already set; Jobs1 signal emission may be impaired");
     }
+
+    // Reap a recording orphaned by a previous daemon exit. Any
+    // active-session.json present now is definitionally stale (an
+    // in-flight recording cannot survive a restart): preserve its audio,
+    // enqueue a recovery transcription, and clear the state. Runs after
+    // the connection is live so the enqueued job can emit Jobs1 signals;
+    // best-effort, never aborts startup.
+    orphan_recovery::recover(&queue).await;
 
     info!(
         bus_name = BUS_NAME,

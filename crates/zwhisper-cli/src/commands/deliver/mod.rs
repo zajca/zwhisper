@@ -133,7 +133,7 @@ async fn run_async() {
         }
     };
 
-    let mut signals = match proxy.receive_job_completed().await {
+    let mut completed = match proxy.receive_job_completed().await {
         Ok(s) => s,
         Err(err) => {
             // The daemon is likely down or predates Jobs1. Per the brief:
@@ -146,25 +146,68 @@ async fn run_async() {
         }
     };
 
+    // Also subscribe to JobFailed: a daemon auto-transcribe that fails
+    // (e.g. a `parakeet` profile on a build without the feature, or a
+    // missing whisper-cli) otherwise only lands in `StateChanged "failed"`
+    // + history, with nothing surfaced to the user. We are the one
+    // component with the notification daemon, so we raise it here.
+    let mut failed = match proxy.receive_job_failed().await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::warn!(error = %err, "deliver: cannot subscribe to Jobs1.JobFailed; exiting cleanly");
+            eprintln!("{DAEMON_DOWN_HINT}");
+            return;
+        }
+    };
+
     let clipboard = ClipboardSink::new();
     let type_sink = TypeSink::new();
-    tracing::info!("deliver: listening for Jobs1.JobCompleted");
+    tracing::info!("deliver: listening for Jobs1.JobCompleted + JobFailed");
 
-    // ---- Consume signals until the stream ends ---------------------
-    while let Some(signal) = signals.next().await {
-        let args = match signal.args() {
-            Ok(a) => a,
-            Err(err) => {
-                tracing::warn!(error = %err, "deliver: malformed JobCompleted payload; skipping");
-                continue;
-            }
-        };
-        handle_completed(&clipboard, &type_sink, &args).await;
+    // ---- Consume both signal streams until they end ----------------
+    // `tokio::select!` polls both; the loop exits only once *both*
+    // streams have ended (daemon gone), matching the previous
+    // single-stream exit semantics.
+    loop {
+        tokio::select! {
+            maybe = completed.next() => match maybe {
+                Some(signal) => match signal.args() {
+                    Ok(args) => handle_completed(&clipboard, &type_sink, &args).await,
+                    Err(err) => tracing::warn!(
+                        error = %err, "deliver: malformed JobCompleted payload; skipping"
+                    ),
+                },
+                None => break,
+            },
+            maybe = failed.next() => match maybe {
+                Some(signal) => match signal.args() {
+                    Ok(args) => handle_failed(&args).await,
+                    Err(err) => tracing::warn!(
+                        error = %err, "deliver: malformed JobFailed payload; skipping"
+                    ),
+                },
+                None => break,
+            },
+        }
     }
 
-    // Stream ended (bus disconnected / daemon gone). Nothing more to do;
+    // A stream ended (bus disconnected / daemon gone). Nothing more to do;
     // exit 0 and let systemd restart us when the daemon returns.
-    tracing::info!("deliver: JobCompleted stream ended; exiting cleanly");
+    tracing::info!("deliver: signal stream ended; exiting cleanly");
+}
+
+/// Surface a failed transcription job as a desktop notification. The
+/// audio is always preserved daemon-side (the job error is informational
+/// only); this just makes the failure visible instead of silent. The
+/// error text is the daemon's typed message — for the not-compiled case
+/// it already names the missing `--features` flag.
+async fn handle_failed(args: &zwhisper_ipc::jobs::JobFailedArgs<'_>) {
+    tracing::warn!(
+        job_id = %args.job_id,
+        error = %args.error,
+        "deliver: transcription job failed",
+    );
+    notify("Transcription failed", args.error).await;
 }
 
 /// Claim `DELIVER_BUS_NAME` on `conn`. Returns `Ok(true)` when we are the

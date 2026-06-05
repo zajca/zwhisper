@@ -69,6 +69,44 @@ impl Backend {
             _ => None,
         }
     }
+
+    /// Whether this backend's transcription code is compiled into the
+    /// current binary. The single source of truth mirrored by
+    /// `transcribe::coordinator::build_backend`: the in-process Parakeet
+    /// backend is gated behind the default-OFF `parakeet` Cargo feature,
+    /// so a build without it can *record* a parakeet profile (and even
+    /// download its model) but every transcribe attempt fails with
+    /// `TranscribeError::BackendNotCompiled`. `whisper-cpp` and
+    /// `deepgram` are always compiled in — note `whisper-cpp` still needs
+    /// its CLI binary discoverable at run time, which is a separate
+    /// "available" concern surfaced by `transcribe`. `assemblyai` /
+    /// `openai` are reserved ids with no implementation yet.
+    ///
+    /// `cfg!(feature = "parakeet")` here evaluates against
+    /// `zwhisper-core`'s own feature; binaries opt in transitively via
+    /// `zwhisper-core/parakeet`, so this is true exactly when the running
+    /// build can actually run Parakeet.
+    #[must_use]
+    pub const fn is_compiled_in(self) -> bool {
+        match self {
+            Self::WhisperCpp | Self::Deepgram => true,
+            Self::Parakeet => cfg!(feature = "parakeet"),
+            Self::AssemblyAi | Self::OpenAi => false,
+        }
+    }
+
+    /// The Cargo feature that must be enabled to compile this backend in,
+    /// when it is feature-gated. `None` means the backend is either always
+    /// present (`whisper-cpp`, `deepgram`) or not implemented at all
+    /// (`assemblyai`, `openai`). Callers pair this with
+    /// [`Self::is_compiled_in`] to print an actionable rebuild hint.
+    #[must_use]
+    pub const fn required_feature(self) -> Option<&'static str> {
+        match self {
+            Self::Parakeet => Some("parakeet"),
+            Self::WhisperCpp | Self::Deepgram | Self::AssemblyAi | Self::OpenAi => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -811,6 +849,30 @@ mod tests {
         p.transcription.backend = Backend::OpenAi;
         let err = p.validate().unwrap_err();
         assert!(matches!(err, ProfileError::BackendUnknown { .. }));
+    }
+
+    #[test]
+    fn backend_is_compiled_in_matches_build_features() {
+        // Always-present backends.
+        assert!(Backend::WhisperCpp.is_compiled_in());
+        assert!(Backend::Deepgram.is_compiled_in());
+        // Reserved ids with no implementation.
+        assert!(!Backend::AssemblyAi.is_compiled_in());
+        assert!(!Backend::OpenAi.is_compiled_in());
+        // Parakeet tracks its Cargo feature exactly.
+        assert_eq!(
+            Backend::Parakeet.is_compiled_in(),
+            cfg!(feature = "parakeet")
+        );
+    }
+
+    #[test]
+    fn backend_required_feature_only_for_parakeet() {
+        assert_eq!(Backend::Parakeet.required_feature(), Some("parakeet"));
+        assert_eq!(Backend::WhisperCpp.required_feature(), None);
+        assert_eq!(Backend::Deepgram.required_feature(), None);
+        assert_eq!(Backend::AssemblyAi.required_feature(), None);
+        assert_eq!(Backend::OpenAi.required_feature(), None);
     }
 
     #[test]

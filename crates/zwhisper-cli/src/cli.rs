@@ -178,6 +178,10 @@ pub(crate) enum BackendCmd {
         #[arg(long, default_value = "deepgram")]
         backend: String,
     },
+    /// List every backend id and whether its transcription code is
+    /// compiled into this build (feature-gated backends like `parakeet`
+    /// are default-OFF). Prints the rebuild hint for any that are not.
+    List,
 }
 
 /// `zwhisper hotkey …` subcommands — manage and diagnose the

@@ -192,6 +192,44 @@ pub(crate) fn write_atomic_to(
     Ok(())
 }
 
+/// Read the current active-session state file, if any.
+///
+/// Returns `None` when the file is absent (the steady state). A
+/// malformed or cross-version file also yields `None` after a WARN: a
+/// stale state file must never be able to wedge daemon startup. Used by
+/// the orphan-recovery reaper, which treats any file present at startup
+/// as definitionally orphaned (an in-flight recording cannot survive a
+/// daemon restart).
+pub(crate) fn read() -> Option<ActiveSession> {
+    read_from(&state_file_path())
+}
+
+pub(crate) fn read_from(path: &Path) -> Option<ActiveSession> {
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            warn!(error = %e, path = %path.display(), "could not read active-session.json");
+            return None;
+        }
+    };
+    match serde_json::from_slice::<ActiveSession>(&bytes) {
+        Ok(state) if state.schema_version == SCHEMA_VERSION => Some(state),
+        Ok(state) => {
+            warn!(
+                found = state.schema_version,
+                expected = SCHEMA_VERSION,
+                "active-session.json schema version mismatch; ignoring stale file",
+            );
+            None
+        }
+        Err(e) => {
+            warn!(error = %e, path = %path.display(), "active-session.json malformed; ignoring");
+            None
+        }
+    }
+}
+
 /// Best-effort removal. Called on terminal `StateChanged`. Failure
 /// to remove is logged but does NOT propagate — a stale file is
 /// only consulted by the tray when state is `recording`/`stopping`,

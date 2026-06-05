@@ -33,7 +33,7 @@ use tracing::info;
 use zwhisper_core::profile::error::ProfileError;
 use zwhisper_core::profile::listing::{SourcesUpdate, clone_to_user, set_outputs, update_sources};
 use zwhisper_core::profile::load;
-use zwhisper_core::profile::schema::{Mode, OutputDest};
+use zwhisper_core::profile::schema::{Backend, Mode, OutputDest};
 use zwhisper_core::setup::config::SetupConfig;
 use zwhisper_core::setup::volume::format_linear;
 use zwhisper_core::setup::{
@@ -796,6 +796,17 @@ async fn setup_async(
     let preset = prompt_preset()?;
     let output_choice = prompt_output_choice(preset)?;
 
+    // Resolve the target profile name now (the only thing `--profile`
+    // and the name prompt feed) so we can refuse *before* mutating any
+    // PipeWire state if the profile's transcription backend is not
+    // compiled into this build. Configuring a profile that records but
+    // can never transcribe is exactly the silent failure we prevent.
+    let profile_name = match &args.profile {
+        Some(n) => n.clone(),
+        None => prompt_profile_name(preset.default_profile_name())?,
+    };
+    ensure_backend_compiled(&profile_name)?;
+
     // 4. Confirm, then apply side effects.
     if !prompt_confirm(
         &format!(
@@ -821,7 +832,7 @@ async fn setup_async(
 
     // 5. Resolve + write the target profile's `[sources]`, then layer the
     //    chosen delivery output(s) on top of its existing `file` output.
-    let (profile, _sources_path) = resolve_and_write_profile(args, chosen, preset)?;
+    let (profile, _sources_path) = resolve_and_write_profile(&profile_name, chosen, preset)?;
     let profile_path = write_outputs(&profile, output_choice)?;
 
     // 6. Summary.
@@ -898,14 +909,11 @@ async fn calibrate_chosen(
 /// (so the wizard can start from a shipped/embedded base), then
 /// `update_sources`. Returns `(name, path)` for the summary.
 fn resolve_and_write_profile(
-    args: &AudioSetupArgs,
+    name: &str,
     device: &AudioDevice,
     preset: Preset,
 ) -> color_eyre::Result<(String, std::path::PathBuf)> {
-    let name = match &args.profile {
-        Some(n) => n.clone(),
-        None => prompt_profile_name(preset.default_profile_name())?,
-    };
+    let name = name.to_owned();
 
     let update = SourcesUpdate {
         mic: Some(device.node_name.as_str()),
@@ -931,12 +939,70 @@ fn resolve_and_write_profile(
     }
 }
 
+/// The base profile a brand-new wizard profile is cloned from. Kept in
+/// one place so [`ensure_backend_compiled`] resolves the same backend
+/// the clone in [`resolve_and_write_profile`] would inherit.
+const BASE_PROFILE: &str = "default";
+
+/// Refuse to configure a profile whose transcription backend is not
+/// compiled into this build (decision: hard-fail, no silent fallback).
+///
+/// The wizard only ever rewrites `[sources]` and `[[output]]`; the
+/// transcription backend is inherited — from the profile being edited
+/// when it already exists as a user override, otherwise from the
+/// [`BASE_PROFILE`] that [`resolve_and_write_profile`] clones. Either
+/// way, if that backend cannot run we stop *before* any PipeWire
+/// mutation with an actionable rebuild hint, instead of leaving the user
+/// a profile that records but never transcribes (the bug this guards).
+fn ensure_backend_compiled(name: &str) -> color_eyre::Result<()> {
+    let backend = match load(name) {
+        Ok(profile) => profile.transcription.backend,
+        Err(ProfileError::NotFound { .. }) => {
+            load(BASE_PROFILE)
+                .map_err(|e| eyre!("{e}"))?
+                .transcription
+                .backend
+        }
+        Err(e) => return Err(eyre!("{e}")),
+    };
+
+    if backend.is_compiled_in() {
+        return Ok(());
+    }
+
+    Err(backend_unavailable_error(name, backend))
+}
+
+/// Build the hard-fail report for a profile whose backend cannot run in
+/// this build. Pure (no I/O) so the message — the user's only guidance
+/// out of the silent-failure — is unit-tested. Distinguishes a
+/// feature-gated backend (actionable rebuild hint) from a reserved id
+/// that has no implementation at all.
+fn backend_unavailable_error(name: &str, backend: Backend) -> color_eyre::Report {
+    let detail = match backend.required_feature() {
+        Some(feature) => format!(
+            "the `{}` backend is not compiled into this zwhisper build. Rebuild with \
+             `cargo build --release --features {feature} -p zwhisper-cli -p zwhisperd` (or edit \
+             the profile to use a backend this build supports) before configuring it",
+            backend.as_str(),
+        ),
+        None => format!(
+            "the `{}` backend is not implemented in this build",
+            backend.as_str(),
+        ),
+    };
+
+    eyre!(
+        "profile {name:?} uses {detail}.\n\
+         Run `zwhisper backend list` to see which backends this build supports."
+    )
+}
+
 /// Clone the shipped/embedded `default` profile into a user override
 /// named `name`. Translates the two relevant typed errors into
 /// actionable hints: an existing file we somehow could not update
 /// (`OverwriteRefused`) and a bad destination name (`InvalidName`).
 fn clone_base_profile(name: &str) -> color_eyre::Result<()> {
-    const BASE_PROFILE: &str = "default";
     match clone_to_user(BASE_PROFILE, name) {
         Ok(path) => {
             info!(profile = name, path = %path.display(), "cloned base profile for wizard");
@@ -1570,6 +1636,33 @@ fn setup_err(err: SetupError) -> color_eyre::Report {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    // ---- backend-compiled guard messaging ----------------------------
+
+    #[test]
+    fn backend_unavailable_error_for_parakeet_names_the_feature() {
+        let msg = backend_unavailable_error("dictation", Backend::Parakeet).to_string();
+        assert!(msg.contains("dictation"), "names the profile: {msg}");
+        assert!(msg.contains("parakeet"), "names the backend: {msg}");
+        assert!(
+            msg.contains("--features parakeet"),
+            "gives the rebuild flag: {msg}"
+        );
+        assert!(
+            msg.contains("zwhisper backend list"),
+            "points at the discovery command: {msg}"
+        );
+    }
+
+    #[test]
+    fn backend_unavailable_error_for_unimplemented_has_no_rebuild_hint() {
+        let msg = backend_unavailable_error("x", Backend::OpenAi).to_string();
+        assert!(msg.contains("not implemented"), "{msg}");
+        assert!(
+            !msg.contains("--features"),
+            "no rebuild hint when no feature: {msg}"
+        );
+    }
 
     // ---- pw-cat argv (shell-free, explicit format) -------------------
 

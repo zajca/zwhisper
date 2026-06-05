@@ -33,6 +33,40 @@ pub(crate) fn run(cmd: &BackendCmd) -> color_eyre::Result<()> {
 async fn run_async(cmd: &BackendCmd) -> color_eyre::Result<()> {
     match cmd {
         BackendCmd::Health { backend } => health(backend).await,
+        BackendCmd::List => {
+            list_backends();
+            Ok(())
+        }
+    }
+}
+
+/// Print every backend id with its compile-time availability in this
+/// build. The discoverable counterpart to the wizard's hard-fail: a user
+/// who configures a `parakeet` profile can run this to see, without
+/// attempting a transcribe, whether the running binary can actually use
+/// it — and exactly which feature flag is missing if not.
+fn list_backends() {
+    use zwhisper_core::profile::schema::Backend;
+
+    const ALL: [Backend; 5] = [
+        Backend::WhisperCpp,
+        Backend::Deepgram,
+        Backend::Parakeet,
+        Backend::AssemblyAi,
+        Backend::OpenAi,
+    ];
+
+    println!("backends in this build:");
+    for backend in ALL {
+        let status = if backend.is_compiled_in() {
+            "compiled-in".to_owned()
+        } else {
+            match backend.required_feature() {
+                Some(feature) => format!("MISSING — rebuild with `--features {feature}`"),
+                None => "not implemented".to_owned(),
+            }
+        };
+        println!("  {:<12} {status}", backend.as_str());
     }
 }
 

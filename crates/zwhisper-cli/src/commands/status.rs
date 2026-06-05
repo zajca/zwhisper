@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tracing::debug;
+use zwhisper_hotkey::active_session::{ActiveSessionRef, read_active_session};
 use zwhisper_ipc::{Recorder1Proxy, Status};
 
 use super::{
@@ -81,20 +82,65 @@ async fn run_async(args: &StatusArgs) -> i32 {
 }
 
 fn print_status(status: &Status, args: &StatusArgs) -> color_eyre::Result<()> {
+    // Defensive surface for an orphaned recording: an active-session.json
+    // present while the daemon is NOT mid-session means the startup reaper
+    // has not (or could not) clean it. Only meaningful outside the
+    // recording states, where the file is expected.
+    let orphan = if is_active_recording_state(&status.state) {
+        None
+    } else {
+        read_active_session()
+    };
+
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&StatusJson::from(status))?
-        );
+        let mut json = StatusJson::from(status);
+        json.orphaned_session = orphan.as_ref().map(OrphanedSessionJson::from);
+        println!("{}", serde_json::to_string_pretty(&json)?);
     } else if args.waybar {
+        // Waybar output stays compact; the orphan note would not fit the
+        // bar and is surfaced in the default + json views instead.
         println!("{}", serde_json::to_string(&WaybarStatus::from(status))?);
     } else {
         let active = display_active_profile(status);
         println!("state: {}", status.state);
         println!("active profile: {active}");
         println!("duration: {}", format_duration_ms(status.duration_ms));
+        if let Some(orphan) = &orphan {
+            print_orphan_note(orphan);
+        }
     }
     Ok(())
+}
+
+/// Recording states in which an `active-session.json` on disk is
+/// expected (the daemon is mid-session). In any other state a present
+/// file is stale — an orphaned recording, surfaced so the user can act.
+fn is_active_recording_state(state: &str) -> bool {
+    matches!(
+        state,
+        "recording" | "starting" | "stopping" | "transcribing"
+    )
+}
+
+/// Human-readable warning about a stale recording marker. The audio file
+/// is always preserved; restarting the daemon auto-recovers it.
+#[allow(clippy::print_stdout)]
+fn print_orphan_note(orphan: &ActiveSessionRef) {
+    println!();
+    println!(
+        "WARNING: an orphaned recording marker is on disk but the daemon is not recording it."
+    );
+    println!(
+        "  session: {}  profile: {}  started: {}",
+        orphan.session_id,
+        orphan.profile,
+        orphan.started_at.to_rfc3339(),
+    );
+    println!(
+        "  Restart zwhisperd to auto-recover it (preserve audio + transcribe), or remove\n  \
+         {} to discard the marker (the recording file is kept).",
+        zwhisper_hotkey::active_session::state_file_path().display(),
+    );
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -103,6 +149,10 @@ struct StatusJson {
     active_profile: Option<String>,
     duration_ms: u64,
     duration: String,
+    /// Present only when a stale recording marker is detected (daemon not
+    /// mid-session). Omitted from the JSON otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    orphaned_session: Option<OrphanedSessionJson>,
 }
 
 impl From<&Status> for StatusJson {
@@ -112,6 +162,24 @@ impl From<&Status> for StatusJson {
             active_profile: active_profile_option(status),
             duration_ms: status.duration_ms,
             duration: format_duration_ms(status.duration_ms),
+            orphaned_session: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct OrphanedSessionJson {
+    session_id: String,
+    profile: String,
+    started_at: String,
+}
+
+impl From<&ActiveSessionRef> for OrphanedSessionJson {
+    fn from(orphan: &ActiveSessionRef) -> Self {
+        Self {
+            session_id: orphan.session_id.clone(),
+            profile: orphan.profile.clone(),
+            started_at: orphan.started_at.to_rfc3339(),
         }
     }
 }
@@ -204,8 +272,19 @@ mod tests {
     use crate::cli::StatusArgs;
 
     use super::{
-        StatusJson, WaybarStatus, active_profile_option, format_duration_ms, print_status,
+        StatusJson, WaybarStatus, active_profile_option, format_duration_ms,
+        is_active_recording_state, print_status,
     };
+
+    #[test]
+    fn recording_states_expect_active_session_file() {
+        for state in ["recording", "starting", "stopping", "transcribing"] {
+            assert!(is_active_recording_state(state), "{state}");
+        }
+        for state in ["idle", "failed", "", "unknown"] {
+            assert!(!is_active_recording_state(state), "{state}");
+        }
+    }
 
     #[test]
     fn zero_ms_renders_literally() {
@@ -249,6 +328,7 @@ mod tests {
                 active_profile: None,
                 duration_ms: 0,
                 duration: "0ms".to_owned(),
+                orphaned_session: None,
             }
         );
     }
