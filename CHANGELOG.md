@@ -7,6 +7,46 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-05
+
+Backend availability is now explicit, and recordings orphaned by a killed
+daemon recover themselves on the next start. Two silent-failure fixes,
+prompted by a dictation profile that transcribed nothing on a build
+without the Parakeet feature.
+
+### Added
+
+- **`Backend::is_compiled_in()` + `zwhisper backend list`.** A single
+  source of truth for which transcription backends the running build can
+  actually use, plus a command to inspect it without attempting a
+  transcribe. A feature-gated backend (`parakeet`) reports the missing
+  `--features` flag instead of failing only when first used.
+- **Backend guard in `zwhisper audio setup`.** The wizard now refuses,
+  with a rebuild hint and before any PipeWire mutation, to configure a
+  profile whose transcription backend is not compiled into this build —
+  instead of silently writing a profile that records but never
+  transcribes.
+- **Orphaned-recording recovery.** `zwhisperd` reaps a stale
+  `active-session.json` at startup: a recording cannot survive a daemon
+  restart, so a leftover marker is definitionally orphaned. The daemon
+  preserves the audio (`last-session.json`), enqueues a tracked recovery
+  transcribe job (so it lands in history and delivers normally), and
+  clears the marker.
+- **`Jobs1.JobFailed` delivery.** `zwhisper deliver` now raises a desktop
+  notification when a transcription job fails (e.g. a not-compiled
+  backend); previously a failed daemon auto-transcribe surfaced only in
+  `StateChanged "failed"` + history.
+- **Stale-session reporting in `zwhisper status`.** A defensive
+  human + JSON note when an `active-session.json` is present while the
+  daemon is not mid-session.
+
+### Fixed
+
+- **Packaging: Parakeet feature.** `packaging/arch/PKGBUILD` now builds
+  with `--features parakeet`, so the shipped `dictation` profile can
+  transcribe. A package built without it failed every dictation transcribe
+  with `backend ``parakeet`` is not compiled in`, surfaced only on stderr.
+
 ## [0.5.0] - 2026-06-04
 
 Type-at-cursor delivery: transcripts can now be typed directly into the
@@ -285,7 +325,8 @@ secrets editor in the settings GUI, hard RAM-cap enforcement,
 auto-update mechanism, localisation, telemetry, vendored cargo
 tarball. See `docs/M8-plan.md` § "Out of scope" for the full list.
 
-[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/zajca/zwhisper/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/zajca/zwhisper/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/zajca/zwhisper/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/zajca/zwhisper/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/zajca/zwhisper/compare/v0.3.0...v0.4.0

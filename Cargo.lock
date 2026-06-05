@@ -4735,7 +4735,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisper-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "arboard",
  "assert_cmd",
@@ -4766,7 +4766,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisper-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4802,7 +4802,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisper-hotkey"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ashpd",
  "async-trait",
@@ -4823,7 +4823,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisper-ipc"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "thiserror",
@@ -4834,7 +4834,7 @@ dependencies = [
 
 [[package]]
 name = "zwhisperd"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "color-eyre",
