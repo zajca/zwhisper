@@ -41,7 +41,9 @@ Thumbs.db
 
 # Local tooling caches (Claude Code, claude-mem, etc.)
 /.cache/
-/.claude/
+# Ignore local/ephemeral Claude Code state but track shared, committed skills.
+/.claude/*
+!/.claude/skills/
 
 # makepkg build artifacts: `makepkg -f` extracts the upstream
 # tarball into packaging/arch/src/, stages the install tree under
