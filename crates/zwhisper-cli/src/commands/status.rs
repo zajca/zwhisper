@@ -310,6 +310,12 @@ fn ticks_while(state: &str) -> bool {
     state == "recording"
 }
 
+/// Terminal `Recorder1` states: the end of one session's lifecycle.
+/// Everything else describes a session that is still in flight.
+fn is_terminal_state(state: &str) -> bool {
+    matches!(state, "idle" | "failed")
+}
+
 /// Lines the watcher must never suppress as a duplicate. A repeated
 /// render of a discrete, notification-worthy event is a *second*
 /// event, not a no-op, and swallowing it hides a real failure from
@@ -329,6 +335,21 @@ struct WatchState {
     base_ms: u64,
     anchor: Instant,
     orphan: Option<ActiveSessionRef>,
+    /// Session whose lifecycle is currently in flight, if any. The
+    /// daemon releases the recording slot *before* awaiting the
+    /// transcribe job (`zwhisperd/src/lifecycle.rs:194`), so a new
+    /// recording can legitimately start while the previous session is
+    /// still transcribing — and the older session's terminal signal
+    /// then arrives *after* the newer one is already recording. Without
+    /// this, that stale terminal would overwrite the live state.
+    current_session: Option<String>,
+    /// The daemon owns its name but did not answer the last resync, so
+    /// what we are rendering is unverified. The ticker retries while
+    /// this is set; without it, a failed resync at startup would leave
+    /// the bar claiming `idle` for the whole of a recording that began
+    /// before the watcher attached, since no further `StateChanged`
+    /// arrives until that recording stops.
+    stale: bool,
 }
 
 impl WatchState {
@@ -342,6 +363,8 @@ impl WatchState {
             base_ms: 0,
             anchor: Instant::now(),
             orphan: None,
+            current_session: None,
+            stale: false,
         }
     }
 
@@ -351,6 +374,7 @@ impl WatchState {
         self.active_profile.clone_from(&status.active_profile);
         self.base_ms = status.duration_ms;
         self.anchor = Instant::now();
+        self.stale = false;
     }
 
     /// The daemon went away. Report idle: whatever it was doing died
@@ -360,6 +384,9 @@ impl WatchState {
         self.active_profile = String::new();
         self.base_ms = 0;
         self.anchor = Instant::now();
+        self.current_session = None;
+        // Nothing left to reconcile against: idle is the truth now.
+        self.stale = false;
     }
 
     /// Re-anchor the local timer without an authoritative snapshot.
@@ -373,6 +400,13 @@ impl WatchState {
         self.active_profile = String::new();
         self.base_ms = 0;
         self.anchor = Instant::now();
+        self.stale = true;
+    }
+
+    /// Whether the per-second ticker should be armed: either the timer
+    /// is advancing, or we owe the daemon a retry.
+    fn wants_tick(&self) -> bool {
+        ticks_while(&self.recorder_state) || self.stale
     }
 
     fn duration_ms(&self) -> u64 {
@@ -451,7 +485,18 @@ async fn run_watch(args: &StatusArgs) -> i32 {
         }
     };
 
-    let recorder = match Recorder1Proxy::new(&conn).await {
+    // `ProtocolVersion` must never be served from zbus's property
+    // cache here. The cache is populated lazily on first read and is
+    // only invalidated by a `PropertiesChanged` signal, which a
+    // restarted daemon has no reason to emit for a value fixed at
+    // build time. A cached read would therefore report the *previous*
+    // daemon's version, and the re-acquisition handshake would wave
+    // through exactly the partial-upgrade case it exists to catch.
+    let recorder = match Recorder1Proxy::builder(&conn)
+        .uncached_properties(&[zwhisper_ipc::PROTOCOL_VERSION_PROPERTY])
+        .build()
+        .await
+    {
         Ok(p) => p,
         Err(err) => {
             eprintln!("failed to build Recorder1 proxy: {err}");
@@ -494,10 +539,15 @@ async fn run_watch(args: &StatusArgs) -> i32 {
         match resync(&recorder).await {
             Resync::Ok(status) => st.adopt(&status),
             Resync::Mismatch(code) => return code,
-            // The name was owned a moment ago; losing the race here is
-            // harmless. Report the default idle line and let the next
-            // signal correct it.
-            Resync::Unavailable => debug!("initial resync failed; starting from idle"),
+            // Report the default idle line, but mark it unverified so
+            // the ticker retries. Waiting for the next `StateChanged`
+            // is not enough: if the daemon was already recording when
+            // we attached, no signal arrives until that recording
+            // stops, and the bar would claim idle throughout.
+            Resync::Unavailable => {
+                debug!("initial resync failed; reporting idle until a retry succeeds");
+                st.stale = true;
+            }
         }
     } else {
         debug!("daemon not on the bus yet; reporting idle without activating it");
@@ -551,6 +601,27 @@ async fn run_watch(args: &StatusArgs) -> i32 {
                     debug!("StateChanged with malformed args, dropping");
                     continue;
                 };
+                if is_terminal_state(sig_args.new_state) {
+                    if st
+                        .current_session
+                        .as_deref()
+                        .is_some_and(|active| active != sig_args.session_id)
+                    {
+                        // A previous session finishing its transcribe
+                        // step while a newer one is already recording.
+                        // Its terminal state says nothing about the
+                        // session we are displaying.
+                        debug!(
+                            session_id = sig_args.session_id,
+                            state = sig_args.new_state,
+                            "terminal signal for a superseded session, ignoring"
+                        );
+                        continue;
+                    }
+                    st.current_session = None;
+                } else {
+                    st.current_session = Some(sig_args.session_id.to_owned());
+                }
                 st.recorder_state = sig_args.new_state.to_owned();
                 // The signal carries state and session id only, so the
                 // active profile and the daemon's own duration still
@@ -596,7 +667,23 @@ async fn run_watch(args: &StatusArgs) -> i32 {
                 st.orphan = orphan_for(&st.recorder_state);
             },
 
-            _ = ticker.tick(), if ticks_while(&st.recorder_state) => {
+            _ = ticker.tick(), if st.wants_tick() => {
+                if st.stale {
+                    // Only retry while the name is owned, so a retry
+                    // never becomes the thing that activates a daemon
+                    // the user has not started.
+                    if daemon_owns_name(&dbus).await {
+                        match resync(&recorder).await {
+                            Resync::Ok(status) => st.adopt(&status),
+                            Resync::Mismatch(code) => return code,
+                            Resync::Unavailable => {}
+                        }
+                        st.orphan = orphan_for(&st.recorder_state);
+                    } else {
+                        st.daemon_gone();
+                        st.orphan = orphan_for(&st.recorder_state);
+                    }
+                }
             },
         }
 
@@ -719,8 +806,8 @@ mod tests {
 
     use super::{
         Observation, StatusJson, WatchState, WaybarStatus, active_profile_option, emit_if_changed,
-        format_duration_ms, is_active_recording_state, is_discrete_state, print_status,
-        render_watch_line, ticks_while,
+        format_duration_ms, is_active_recording_state, is_discrete_state, is_terminal_state,
+        print_status, render_watch_line, ticks_while,
     };
 
     #[test]
@@ -988,6 +1075,77 @@ mod tests {
             "a real transition must be emitted"
         );
         assert_ne!(last, first);
+    }
+
+    #[test]
+    fn terminal_states_are_the_end_of_a_lifecycle() {
+        for state in ["idle", "failed"] {
+            assert!(is_terminal_state(state), "{state}");
+        }
+        for state in ["starting", "recording", "stopping"] {
+            assert!(!is_terminal_state(state), "{state}");
+        }
+    }
+
+    #[test]
+    fn a_stale_terminal_must_not_overwrite_a_newer_session() {
+        // The daemon releases the recording slot before awaiting the
+        // transcribe job, so session B can start while A is still
+        // transcribing; A's terminal `idle` then arrives last.
+        let mut st = WatchState::new();
+
+        // A is stopping.
+        st.current_session = Some("session-a".to_owned());
+        st.adopt(&status_of("stopping", "meeting", 60_000));
+
+        // B starts and is recording.
+        st.current_session = Some("session-b".to_owned());
+        st.adopt(&status_of("recording", "dictation", 0));
+
+        // A's terminal signal is for a session we are no longer showing.
+        let stale_terminal_is_for_another_session = st
+            .current_session
+            .as_deref()
+            .is_some_and(|active| active != "session-a");
+        assert!(
+            stale_terminal_is_for_another_session,
+            "the watcher must be able to tell A's terminal signal apart from B"
+        );
+        assert_eq!(st.observe().status.state, "recording");
+        assert!(
+            ticks_while(&st.recorder_state),
+            "B's timer must keep running"
+        );
+    }
+
+    #[test]
+    fn an_unverified_snapshot_keeps_the_ticker_armed_for_a_retry() {
+        let mut st = WatchState::new();
+        assert!(!st.wants_tick(), "a verified idle state needs no ticker");
+
+        st.reanchor_unknown();
+        assert!(st.stale);
+        assert!(
+            st.wants_tick(),
+            "an unverified state must keep retrying even though it is not recording"
+        );
+
+        st.adopt(&status_of("idle", "", 0));
+        assert!(!st.stale, "a successful resync clears the retry");
+        assert!(!st.wants_tick());
+    }
+
+    #[test]
+    fn a_departed_daemon_stops_the_retry() {
+        let mut st = WatchState::new();
+        st.reanchor_unknown();
+        st.current_session = Some("session-a".to_owned());
+        assert!(st.wants_tick());
+
+        st.daemon_gone();
+        assert!(!st.stale, "idle is verified once the daemon is off the bus");
+        assert!(!st.wants_tick());
+        assert_eq!(st.current_session, None);
     }
 
     #[test]
