@@ -5,8 +5,8 @@
 //! - **one-shot** (default) — a single `GetStatus` snapshot, printed
 //!   in the format selected by `--json` / `--waybar`, then exit.
 //! - **`--watch`** — print the current state immediately, then one
-//!   line per transition, driven by `Recorder1.StateChanged` and the
-//!   `Jobs1` signals. Replaces interval polling in a status bar; see
+//!   line per transition, driven by `Recorder1.StateChanged`.
+//!   Replaces interval polling in a status bar; see
 //!   `contrib/waybar/zwhisper.jsonc`.
 //!
 //! Exit codes (per `DoD` #12):
@@ -20,7 +20,6 @@
 //! reports `idle` and waits for `NameOwnerChanged` instead. Only a
 //! dead session bus (exit 3) or a protocol mismatch (exit 4) stops it.
 
-use std::collections::HashSet;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -28,7 +27,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use tracing::debug;
 use zwhisper_hotkey::active_session::{ActiveSessionRef, read_active_session};
-use zwhisper_ipc::{Jobs1Proxy, Recorder1Proxy, Status};
+use zwhisper_ipc::{Recorder1Proxy, Status};
 
 use super::{
     DAEMON_DOWN_HINT, EXIT_IPC_FAILURE, EXIT_OK, EXIT_PROTOCOL_ERROR, build_runtime,
@@ -297,6 +296,13 @@ fn format_duration_ms(ms: u64) -> String {
 /// running recording, and it costs no bus traffic.
 const WATCH_TICK: Duration = Duration::from_secs(1);
 
+/// Deadline for any single daemon round trip made from inside the
+/// watch loop. Two seconds is far longer than a healthy `GetStatus`
+/// (sub-millisecond on a local session bus) and short enough that a
+/// wedged daemon costs the bar one stale interval rather than the
+/// rest of the session.
+const RPC_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Recorder states in which the locally derived timer should keep
 /// ticking. Outside them the duration is frozen at the last value the
 /// daemon reported, so a finished recording does not keep counting up.
@@ -304,26 +310,25 @@ fn ticks_while(state: &str) -> bool {
     state == "recording"
 }
 
-/// Terminal `Jobs1.JobProgress` states. A job in any of these is no
-/// longer occupying the daemon, so it stops contributing the
-/// synthesized `transcribing` state.
-fn is_terminal_job_state(state: &str) -> bool {
-    matches!(state, "done" | "failed" | "cancelled")
+/// Lines the watcher must never suppress as a duplicate. A repeated
+/// render of a discrete, notification-worthy event is a *second*
+/// event, not a no-op, and swallowing it hides a real failure from
+/// the user. Continuous states (`idle`, the per-second `recording`
+/// ticks) are the only ones where repetition genuinely says nothing
+/// new, so dedup applies to those alone.
+fn is_discrete_state(state: &str) -> bool {
+    state == "failed"
 }
 
 /// Everything the watcher needs to render a line without calling the
 /// daemon. `base_ms` + `anchor` together reconstruct the recording
-/// duration between transitions; `running_jobs` synthesizes the
-/// `transcribing` state that `Recorder1` alone cannot express
-/// (`RecorderState` has no such variant — transcription happens in a
-/// `Jobs1` job after the recorder has already gone back to idle).
+/// duration between transitions.
 struct WatchState {
     recorder_state: String,
     active_profile: String,
     base_ms: u64,
     anchor: Instant,
     orphan: Option<ActiveSessionRef>,
-    running_jobs: HashSet<String>,
 }
 
 impl WatchState {
@@ -337,7 +342,6 @@ impl WatchState {
             base_ms: 0,
             anchor: Instant::now(),
             orphan: None,
-            running_jobs: HashSet::new(),
         }
     }
 
@@ -349,26 +353,26 @@ impl WatchState {
         self.anchor = Instant::now();
     }
 
-    /// The daemon went away. Report idle and drop job bookkeeping: any
-    /// job we were tracking died with it.
+    /// The daemon went away. Report idle: whatever it was doing died
+    /// with it, and the next `GetStatus` after it returns re-anchors.
     fn daemon_gone(&mut self) {
         "idle".clone_into(&mut self.recorder_state);
         self.active_profile = String::new();
         self.base_ms = 0;
         self.anchor = Instant::now();
-        self.running_jobs.clear();
     }
 
-    /// State as rendered. A running `Jobs1` job while the recorder sits
-    /// idle is the post-recording transcription step; surfacing it as
-    /// `transcribing` is what makes the bar show the part of the wait
-    /// the user actually notices. A live recorder state always wins —
-    /// a queued job must never mask `recording` or `failed`.
-    fn effective_state(&self) -> String {
-        if self.recorder_state == "idle" && !self.running_jobs.is_empty() {
-            return "transcribing".to_owned();
-        }
-        self.recorder_state.clone()
+    /// Re-anchor the local timer without an authoritative snapshot.
+    /// Used when `GetStatus` fails right after a `StateChanged`: the
+    /// signal told us the new state, but carrying the previous
+    /// session's `base_ms` and `anchor` forward would render the new
+    /// recording as already minutes old and climbing. Zeroing is the
+    /// honest reading — the elapsed time of the state we just entered
+    /// is, as far as we can verify, zero.
+    fn reanchor_unknown(&mut self) {
+        self.active_profile = String::new();
+        self.base_ms = 0;
+        self.anchor = Instant::now();
     }
 
     fn duration_ms(&self) -> u64 {
@@ -383,7 +387,7 @@ impl WatchState {
     fn observe(&self) -> Observation {
         Observation {
             status: Status {
-                state: self.effective_state(),
+                state: self.recorder_state.clone(),
                 active_profile: self.active_profile.clone(),
                 duration_ms: self.duration_ms(),
             },
@@ -392,7 +396,7 @@ impl WatchState {
     }
 }
 
-/// One rendered observation: the effective daemon state plus the
+/// One rendered observation: the daemon's reported state plus the
 /// locally derived orphan marker the one-shot path also reports.
 struct Observation {
     status: Status,
@@ -426,9 +430,9 @@ fn render_watch_line(obs: &Observation, args: &StatusArgs) -> color_eyre::Result
 
 /// `--watch` dispatcher. Returns an exit code like [`run_async`].
 ///
-/// Connection strategy: subscribe to `Recorder1.StateChanged`, the
-/// `Jobs1` signals and `NameOwnerChanged` for the daemon's well-known
-/// name **before** the first `GetStatus`, for the same reason
+/// Connection strategy: subscribe to `Recorder1.StateChanged` and to
+/// `NameOwnerChanged` for the daemon's well-known name **before** the
+/// first `GetStatus`, for the same reason
 /// `record.rs` subscribes first — a transition that happens between
 /// the snapshot and the subscription would otherwise be lost.
 ///
@@ -454,18 +458,6 @@ async fn run_watch(args: &StatusArgs) -> i32 {
             return EXIT_IPC_FAILURE;
         }
     };
-    // `Jobs1` is only present on RFC-daemon-role daemons. Building the
-    // proxy and its match rules never fails against an older daemon —
-    // the rules live on the bus, not on the service — so an old daemon
-    // simply means these streams stay silent and the synthesized
-    // `transcribing` state never appears.
-    let jobs = match Jobs1Proxy::new(&conn).await {
-        Ok(p) => p,
-        Err(err) => {
-            eprintln!("failed to build Jobs1 proxy: {err}");
-            return EXIT_IPC_FAILURE;
-        }
-    };
     let dbus = match zbus::fdo::DBusProxy::new(&conn).await {
         Ok(p) => p,
         Err(err) => {
@@ -481,28 +473,15 @@ async fn run_watch(args: &StatusArgs) -> i32 {
             return EXIT_IPC_FAILURE;
         }
     };
-    let mut job_progress = match jobs.receive_job_progress().await {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("failed to subscribe to JobProgress: {err}");
-            return EXIT_IPC_FAILURE;
-        }
-    };
-    let mut job_completed = match jobs.receive_job_completed().await {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("failed to subscribe to JobCompleted: {err}");
-            return EXIT_IPC_FAILURE;
-        }
-    };
-    let mut job_failed = match jobs.receive_job_failed().await {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("failed to subscribe to JobFailed: {err}");
-            return EXIT_IPC_FAILURE;
-        }
-    };
-    let mut owner_changes = match dbus.receive_name_owner_changed().await {
+    // arg0-filtered: the match rule is installed on the bus daemon, so
+    // it never delivers the churn of every other connection on the
+    // session bus. Unfiltered, this stream wakes the watcher for every
+    // process that connects or disconnects anywhere — measured at
+    // ~1/sec on a desktop running the very polled module this replaces.
+    let mut owner_changes = match dbus
+        .receive_name_owner_changed_with_args(&[(0, zwhisper_ipc::BUS_NAME)])
+        .await
+    {
         Ok(s) => s,
         Err(err) => {
             eprintln!("failed to subscribe to NameOwnerChanged: {err}");
@@ -512,15 +491,13 @@ async fn run_watch(args: &StatusArgs) -> i32 {
 
     let mut st = WatchState::new();
     if daemon_owns_name(&dbus).await {
-        if let super::HandshakeOutcome::Mismatch(err) = verify_protocol(&recorder).await {
-            return report_protocol_mismatch(&err);
-        }
-        match recorder.get_status().await {
-            Ok(status) => st.adopt(&status),
+        match resync(&recorder).await {
+            Resync::Ok(status) => st.adopt(&status),
+            Resync::Mismatch(code) => return code,
             // The name was owned a moment ago; losing the race here is
             // harmless. Report the default idle line and let the next
             // signal correct it.
-            Err(err) => debug!(error = %err, "initial GetStatus failed; starting from idle"),
+            Resync::Unavailable => debug!("initial resync failed; starting from idle"),
         }
     } else {
         debug!("daemon not on the bus yet; reporting idle without activating it");
@@ -528,7 +505,7 @@ async fn run_watch(args: &StatusArgs) -> i32 {
     st.orphan = orphan_for(&st.recorder_state);
 
     let mut last_line = String::new();
-    if let Err(err) = emit_if_changed(&st, args, &mut last_line) {
+    if let Err(err) = emit_if_changed(&st, args, &mut last_line).map(drop) {
         eprintln!("failed to render status: {err}");
         return EXIT_IPC_FAILURE;
     }
@@ -542,23 +519,24 @@ async fn run_watch(args: &StatusArgs) -> i32 {
     let mut ctrl_c = std::pin::pin!(tokio::signal::ctrl_c());
 
     // One flag per stream, mirroring `record.rs`: a stream that yielded
-    // `None` must stop being polled or the select spins. All streams
-    // are fed by the same connection, so all-closed means the session
-    // bus went away — unrecoverable here, and worth a non-zero exit so
-    // the bar restarts us.
+    // `None` must stop being polled or the select spins. The loop head
+    // then turns either flag into a clean exit.
     let mut state_done = false;
-    let mut progress_done = false;
-    let mut completed_done = false;
-    let mut failed_done = false;
     let mut owner_done = false;
 
     loop {
-        if state_done && progress_done && completed_done && failed_done && owner_done {
-            eprintln!("session bus connection closed; stopping watch");
+        // Either of these two streams dying makes everything we render
+        // unverifiable: `state_stream` is the only source of state, and
+        // `owner_changes` is the only way we learn the daemon left. A
+        // watcher that kept running on a dead `state_stream` would go
+        // on printing a duration that climbs forever for a recording
+        // that already ended — confidently wrong, which for a status
+        // indicator is worse than being absent. Exiting non-zero lets
+        // the bar's `restart-interval` bring us back.
+        if state_done || owner_done {
+            eprintln!("daemon signal stream closed; stopping watch so the bar can restart it");
             return EXIT_IPC_FAILURE;
         }
-
-        let mut dirty = false;
 
         tokio::select! {
             _ = &mut ctrl_c => return EXIT_OK,
@@ -578,58 +556,19 @@ async fn run_watch(args: &StatusArgs) -> i32 {
                 // active profile and the daemon's own duration still
                 // come from a snapshot. One RPC per transition, never
                 // per tick.
-                match recorder.get_status().await {
-                    Ok(status) => {
+                match resync(&recorder).await {
+                    Resync::Ok(status) => {
                         st.active_profile.clone_from(&status.active_profile);
                         st.base_ms = status.duration_ms;
                         st.anchor = Instant::now();
                     }
-                    Err(err) => debug!(error = %err, "GetStatus after StateChanged failed"),
+                    Resync::Mismatch(code) => return code,
+                    // Carrying the previous session's anchor forward
+                    // would render this brand-new state as already
+                    // minutes old and climbing.
+                    Resync::Unavailable => st.reanchor_unknown(),
                 }
                 st.orphan = orphan_for(&st.recorder_state);
-                dirty = true;
-            },
-
-            maybe = job_progress.next(), if !progress_done => {
-                let Some(signal) = maybe else {
-                    debug!("JobProgress stream closed");
-                    progress_done = true;
-                    continue;
-                };
-                let Ok(sig_args) = signal.args() else {
-                    debug!("JobProgress with malformed args, dropping");
-                    continue;
-                };
-                if is_terminal_job_state(sig_args.state) {
-                    st.running_jobs.remove(sig_args.job_id);
-                } else {
-                    st.running_jobs.insert(sig_args.job_id.to_owned());
-                }
-                dirty = true;
-            },
-
-            maybe = job_completed.next(), if !completed_done => {
-                let Some(signal) = maybe else {
-                    debug!("JobCompleted stream closed");
-                    completed_done = true;
-                    continue;
-                };
-                if let Ok(sig_args) = signal.args() {
-                    st.running_jobs.remove(sig_args.job_id);
-                    dirty = true;
-                }
-            },
-
-            maybe = job_failed.next(), if !failed_done => {
-                let Some(signal) = maybe else {
-                    debug!("JobFailed stream closed");
-                    failed_done = true;
-                    continue;
-                };
-                if let Ok(sig_args) = signal.args() {
-                    st.running_jobs.remove(sig_args.job_id);
-                    dirty = true;
-                }
             },
 
             maybe = owner_changes.next(), if !owner_done => {
@@ -638,38 +577,85 @@ async fn run_watch(args: &StatusArgs) -> i32 {
                     owner_done = true;
                     continue;
                 };
-                let Ok(sig_args) = signal.args() else { continue };
-                if sig_args.name.as_str() != zwhisper_ipc::BUS_NAME {
+                let Ok(sig_args) = signal.args() else {
+                    debug!("NameOwnerChanged with malformed args, dropping");
                     continue;
-                }
+                };
                 if sig_args.new_owner.is_none() {
                     debug!("daemon left the bus");
                     st.daemon_gone();
-                    st.orphan = orphan_for(&st.recorder_state);
-                    dirty = true;
                 } else {
                     debug!("daemon appeared on the bus");
                     // A restarted daemon may be a different build.
-                    if let super::HandshakeOutcome::Mismatch(err) = verify_protocol(&recorder).await {
-                        return report_protocol_mismatch(&err);
+                    match resync(&recorder).await {
+                        Resync::Ok(status) => st.adopt(&status),
+                        Resync::Mismatch(code) => return code,
+                        Resync::Unavailable => st.reanchor_unknown(),
                     }
-                    match recorder.get_status().await {
-                        Ok(status) => st.adopt(&status),
-                        Err(err) => debug!(error = %err, "GetStatus after daemon restart failed"),
-                    }
-                    st.orphan = orphan_for(&st.recorder_state);
-                    dirty = true;
                 }
+                st.orphan = orphan_for(&st.recorder_state);
             },
 
             _ = ticker.tick(), if ticks_while(&st.recorder_state) => {
-                dirty = true;
             },
         }
 
-        if dirty && let Err(err) = emit_if_changed(&st, args, &mut last_line) {
+        // Every arm that falls through to here changed something; the
+        // ones that did not (`continue` on a closed or malformed
+        // signal) never reach it.
+        if let Err(err) = emit_if_changed(&st, args, &mut last_line).map(drop) {
             eprintln!("failed to render status: {err}");
             return EXIT_IPC_FAILURE;
+        }
+    }
+}
+
+/// Outcome of a timeout-guarded handshake-plus-snapshot round trip.
+enum Resync {
+    Ok(Status),
+    /// The daemon answered, but with a protocol version this client
+    /// refuses to talk to. Carries the exit code to return.
+    Mismatch(i32),
+    /// No usable answer within [`RPC_TIMEOUT`], or the call failed.
+    Unavailable,
+}
+
+/// Re-verify the protocol and take a fresh snapshot, both under a
+/// deadline.
+///
+/// The deadline is the point: `NameHasOwner` can report the daemon as
+/// present while it is wedged (a deadlock, a blocking syscall on its
+/// executor — anything short of a crash), and an unbounded `await`
+/// here would hang the whole watcher. Because the await sits inside a
+/// chosen `tokio::select!` branch, that would also stop Ctrl+C from
+/// being polled, and a watcher that never exits is one the bar's
+/// `restart-interval` can never recover. The rest of the CLI guards
+/// this same class of call the same way — see `toggle.rs`,
+/// `hotkey.rs`, `transcribe.rs`.
+async fn resync(recorder: &Recorder1Proxy<'_>) -> Resync {
+    let handshake = async {
+        match verify_protocol(recorder).await {
+            super::HandshakeOutcome::Mismatch(err) => Some(report_protocol_mismatch(&err)),
+            super::HandshakeOutcome::Match | super::HandshakeOutcome::DaemonDown => None,
+        }
+    };
+    match tokio::time::timeout(RPC_TIMEOUT, handshake).await {
+        Ok(Some(code)) => return Resync::Mismatch(code),
+        Ok(None) => {}
+        Err(_elapsed) => {
+            debug!("protocol handshake timed out; daemon present but unresponsive");
+            return Resync::Unavailable;
+        }
+    }
+    match tokio::time::timeout(RPC_TIMEOUT, recorder.get_status()).await {
+        Ok(Ok(status)) => Resync::Ok(status),
+        Ok(Err(err)) => {
+            debug!(error = %err, "GetStatus failed");
+            Resync::Unavailable
+        }
+        Err(_elapsed) => {
+            debug!("GetStatus timed out; daemon present but unresponsive");
+            Resync::Unavailable
         }
     }
 }
@@ -694,18 +680,25 @@ fn orphan_for(state: &str) -> Option<ActiveSessionRef> {
     }
 }
 
-/// Print one line, but only when it differs from the previous one.
-/// Unrelated `NameOwnerChanged` traffic and repeated terminal job
-/// states would otherwise push identical lines at a bar for no reason.
+/// Print one line, but only when it says something new.
+///
+/// Repeated renders of a continuous state (`idle`, or a `recording`
+/// tick whose duration has not advanced a whole unit yet) carry no
+/// information, so they are suppressed. A discrete state is different:
+/// a second `failed` is a second failure, and swallowing it because it
+/// happens to render identically to the first would hide a real event
+/// from the user. See [`is_discrete_state`].
 #[allow(clippy::print_stdout)]
 fn emit_if_changed(
     st: &WatchState,
     args: &StatusArgs,
     last_line: &mut String,
-) -> color_eyre::Result<()> {
-    let line = render_watch_line(&st.observe(), args)?;
-    if line == *last_line {
-        return Ok(());
+) -> color_eyre::Result<bool> {
+    let observation = st.observe();
+    let discrete = is_discrete_state(&observation.status.state);
+    let line = render_watch_line(&observation, args)?;
+    if !discrete && line == *last_line {
+        return Ok(false);
     }
     let mut out = std::io::stdout().lock();
     writeln!(out, "{line}")?;
@@ -714,7 +707,7 @@ fn emit_if_changed(
     out.flush()?;
     last_line.clear();
     last_line.push_str(&line);
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -726,7 +719,7 @@ mod tests {
 
     use super::{
         Observation, StatusJson, WatchState, WaybarStatus, active_profile_option, emit_if_changed,
-        format_duration_ms, is_active_recording_state, is_terminal_job_state, print_status,
+        format_duration_ms, is_active_recording_state, is_discrete_state, print_status,
         render_watch_line, ticks_while,
     };
 
@@ -827,7 +820,7 @@ mod tests {
     #[test]
     fn watch_starts_idle_before_the_daemon_says_anything() {
         let st = WatchState::new();
-        assert_eq!(st.effective_state(), "idle");
+        assert_eq!(st.observe().status.state, "idle");
         assert_eq!(st.duration_ms(), 0);
     }
 
@@ -857,44 +850,74 @@ mod tests {
     }
 
     #[test]
-    fn a_running_job_synthesizes_the_transcribing_state() {
+    fn only_the_daemons_own_states_are_ever_rendered() {
+        // The watcher reports what `Recorder1` says and never invents a
+        // state of its own. `transcribing` in particular is not ours to
+        // synthesize — see the follow-up issue for the daemon-side
+        // signal that would carry it properly.
         let mut st = WatchState::new();
-        st.adopt(&status_of("idle", "", 0));
-        st.running_jobs.insert("job-1".to_owned());
-        assert_eq!(st.effective_state(), "transcribing");
-        st.running_jobs.remove("job-1");
-        assert_eq!(st.effective_state(), "idle");
-    }
-
-    #[test]
-    fn a_live_recorder_state_is_never_masked_by_a_job() {
-        let mut st = WatchState::new();
-        st.running_jobs.insert("job-1".to_owned());
-        for state in ["recording", "starting", "stopping", "failed"] {
+        for state in ["idle", "starting", "recording", "stopping", "failed"] {
             st.adopt(&status_of(state, "meeting", 0));
-            assert_eq!(st.effective_state(), state, "{state}");
+            assert_eq!(st.observe().status.state, state, "{state}");
         }
     }
 
     #[test]
-    fn terminal_job_states_stop_contributing() {
-        for state in ["done", "failed", "cancelled"] {
-            assert!(is_terminal_job_state(state), "{state}");
-        }
-        for state in ["queued", "running"] {
-            assert!(!is_terminal_job_state(state), "{state}");
-        }
-    }
-
-    #[test]
-    fn a_departed_daemon_reports_idle_and_drops_its_jobs() {
+    fn a_departed_daemon_reports_idle_from_zero() {
         let mut st = WatchState::new();
         st.adopt(&status_of("recording", "meeting", 42_000));
-        st.running_jobs.insert("job-1".to_owned());
         st.daemon_gone();
-        assert_eq!(st.effective_state(), "idle");
+        assert_eq!(st.observe().status.state, "idle");
         assert_eq!(st.duration_ms(), 0);
-        assert!(st.running_jobs.is_empty());
+        assert_eq!(st.observe().status.active_profile, "");
+    }
+
+    #[test]
+    fn a_failed_resync_does_not_carry_the_previous_session_forward() {
+        // The regression this guards: `StateChanged("recording")` lands,
+        // the follow-up snapshot fails, and the bar renders the *previous*
+        // session's profile and elapsed time, climbing from a stale anchor.
+        let mut st = WatchState::new();
+        st.adopt(&status_of("stopping", "meeting", 45_000));
+        assert_eq!(st.duration_ms(), 45_000);
+
+        st.recorder_state = "recording".to_owned();
+        st.reanchor_unknown();
+
+        assert_eq!(st.observe().status.active_profile, "");
+        assert!(
+            st.duration_ms() < 1_000,
+            "a re-anchored timer must start near zero, got {}",
+            st.duration_ms()
+        );
+    }
+
+    #[test]
+    fn failed_is_discrete_and_the_continuous_states_are_not() {
+        assert!(is_discrete_state("failed"));
+        for state in ["idle", "starting", "recording", "stopping"] {
+            assert!(!is_discrete_state(state), "{state}");
+        }
+    }
+
+    #[test]
+    fn a_second_identical_failure_is_still_emitted() {
+        // Two fast failures can render byte-identically (both
+        // `duration_ms: 0`). Suppressing the second would hide a real
+        // second failure from the user.
+        let mut st = WatchState::new();
+        st.adopt(&status_of("failed", "meeting", 0));
+        let args = watch_args(false, true);
+        let mut last = String::new();
+
+        assert!(emit_if_changed(&st, &args, &mut last).unwrap());
+        let first = last.clone();
+
+        assert!(
+            emit_if_changed(&st, &args, &mut last).unwrap(),
+            "the identical second failure must be re-emitted, not suppressed"
+        );
+        assert_eq!(last, first, "and it must render the same line");
     }
 
     #[test]
@@ -948,18 +971,23 @@ mod tests {
         let args = watch_args(false, true);
         let mut last = String::new();
 
-        emit_if_changed(&st, &args, &mut last).unwrap();
+        assert!(
+            emit_if_changed(&st, &args, &mut last).unwrap(),
+            "the first observation must be emitted"
+        );
         let first = last.clone();
-        assert!(!first.is_empty(), "first observation must be emitted");
 
-        // Same state again: `last_line` must be untouched, which is what
-        // the caller uses to decide nothing was written.
-        emit_if_changed(&st, &args, &mut last).unwrap();
-        assert_eq!(last, first);
+        assert!(
+            !emit_if_changed(&st, &args, &mut last).unwrap(),
+            "a repeated continuous state must be suppressed"
+        );
 
         st.adopt(&status_of("recording", "meeting", 0));
-        emit_if_changed(&st, &args, &mut last).unwrap();
-        assert_ne!(last, first, "a real transition must change the line");
+        assert!(
+            emit_if_changed(&st, &args, &mut last).unwrap(),
+            "a real transition must be emitted"
+        );
+        assert_ne!(last, first);
     }
 
     #[test]
