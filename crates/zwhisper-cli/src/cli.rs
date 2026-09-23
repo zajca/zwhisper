@@ -153,6 +153,15 @@ pub(crate) struct StatusArgs {
     /// Print Waybar-compatible JSON.
     #[arg(long)]
     pub(crate) waybar: bool,
+
+    /// Stream state changes instead of printing one snapshot and
+    /// exiting. Prints the current state immediately, then one line
+    /// per transition, driven by the daemon's `StateChanged` and
+    /// `Jobs1` signals. Combines with `--json` / `--waybar`, which
+    /// select the line format. Intended for a status-bar module with
+    /// no polling interval.
+    #[arg(long)]
+    pub(crate) watch: bool,
 }
 
 #[derive(Debug, Args)]

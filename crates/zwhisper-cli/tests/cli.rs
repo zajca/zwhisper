@@ -36,6 +36,22 @@ fn prints_version() {
 /// RPC. Developer machines may have a live daemon; otherwise the CLI
 /// prints the actionable "daemon not running" hint to stderr and exits
 /// 2 (per `DoD` #12 the "user-facing protocol error" code).
+/// #25 — `--watch` is a streaming mode, so the integration net only
+/// asserts the surface exists and is documented; the behaviour is
+/// covered by unit tests in `commands::status` and by the manual
+/// verification steps in the issue.
+#[test]
+fn status_help_documents_watch_mode() {
+    bin()
+        .arg("status")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--watch"))
+        .stdout(predicate::str::contains("--waybar"))
+        .stdout(predicate::str::contains("--json"));
+}
+
 #[test]
 fn status_reports_live_daemon_or_actionable_hint() {
     let assert = bin().arg("status").assert();

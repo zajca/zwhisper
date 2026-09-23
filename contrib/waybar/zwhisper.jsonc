@@ -6,16 +6,41 @@
 // 3. Optionally append contrib/waybar/style.css to your style.css to
 //    colour the module red while recording.
 //
-// `zwhisper status --waybar` emits {text, tooltip, class, percentage}
-// JSON. `class` is ["zwhisper", <state>] (e.g. "zwhisper recording"),
-// so you can style .zwhisper.recording in CSS.
+// `zwhisper status --waybar --watch` emits one {text, tooltip, class,
+// percentage} JSON object per state change, driven by the daemon's
+// D-Bus signals. `class` is ["zwhisper", <state>] (e.g. "zwhisper
+// recording"), so you can style .zwhisper.recording in CSS.
+//
+// There is no "interval": the module is push-driven, so the bar
+// updates as soon as the daemon changes state instead of up to one
+// interval later. Waybar reads the long-running process line by line;
+// "restart-interval" only covers the case where it exits (a dead
+// session bus), and a watcher started before zwhisperd reports "idle"
+// and picks the daemon up when it appears — without D-Bus-activating
+// it.
 {
     "custom/zwhisper": {
-        "exec": "zwhisper status --waybar",
+        "exec": "zwhisper status --waybar --watch",
         "return-type": "json",
-        "interval": 2,
+        "restart-interval": 5,
         "format": " {}",
         "on-click": "~/.local/bin/zwhisper-dictate",
         "on-click-right": "~/.local/bin/zwhisper-cycle-profile"
     }
 }
+
+// Polled variant, kept for anyone who prefers it (for example a bar
+// that cannot keep a child process alive). Costs up to `interval`
+// seconds of latency on every transition, and re-activates the daemon
+// over D-Bus on every tick:
+//
+// {
+//     "custom/zwhisper": {
+//         "exec": "zwhisper status --waybar",
+//         "return-type": "json",
+//         "interval": 2,
+//         "format": " {}",
+//         "on-click": "~/.local/bin/zwhisper-dictate",
+//         "on-click-right": "~/.local/bin/zwhisper-cycle-profile"
+//     }
+// }
