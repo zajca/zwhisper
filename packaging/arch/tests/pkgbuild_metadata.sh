@@ -96,8 +96,23 @@ runtime_depends_match_runtime_features() {
 
 build_uses_frozen_release_workspace() {
     local f="$PKGBUILD"
-    grep -q 'cargo build --frozen --release -p zwhisperd -p zwhisper-cli' "$f" \
-        || { echo "FAIL: build() does not build the CLI-only product packages" >&2; return 1; }
+    # Assert the properties that matter, not one contiguous string.
+    # This check used to grep for the whole invocation verbatim and
+    # broke the moment `--features parakeet` was inserted between
+    # `--release` and the `-p` flags, even though the PKGBUILD was
+    # correct — the gate failed for a change it was never meant to
+    # catch. Each flag is now checked on its own.
+    local build_line
+    build_line="$(grep -m1 'cargo build .*--release' "$f" || true)"
+    [ -n "$build_line" ] \
+        || { echo "FAIL: build() has no release cargo build" >&2; return 1; }
+    for required in -- --frozen --release '-p zwhisperd' '-p zwhisper-cli'; do
+        [ "$required" = -- ] && continue
+        case "$build_line" in
+            *"$required"*) ;;
+            *) echo "FAIL: build() is missing '$required': $build_line" >&2; return 1 ;;
+        esac
+    done
     grep -q 'cargo fetch --locked' "$f" \
         || { echo "FAIL: prepare() does not run cargo fetch --locked" >&2; return 1; }
     if grep -q 'CFLTK_WAYLAND_ONLY=1' "$f"; then

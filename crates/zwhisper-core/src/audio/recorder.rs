@@ -591,9 +591,15 @@ fn wire_asr_sink(sink: &gst_app::AppSink, capture: Arc<Mutex<PcmCapture>>) {
                     return Ok(gst::FlowSuccess::Ok);
                 };
                 let bytes = map.as_slice();
-                let mut samples = Vec::with_capacity(bytes.len() / 4);
-                for chunk in bytes.chunks_exact(4) {
-                    samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                // `as_chunks` hands back `&[[u8; 4]]`, so each element is
+                // already the exact array `from_le_bytes` wants — no
+                // per-element indexing and no bounds checks. A trailing
+                // partial frame cannot be decoded and is dropped, which
+                // is what `chunks_exact` did too.
+                let (frames, _partial) = bytes.as_chunks::<4>();
+                let mut samples = Vec::with_capacity(frames.len());
+                for frame in frames {
+                    samples.push(f32::from_le_bytes(*frame));
                 }
                 if let Ok(mut cap) = capture.lock() {
                     cap.push(&samples);
