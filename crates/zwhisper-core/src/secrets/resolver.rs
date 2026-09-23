@@ -547,6 +547,12 @@ mod tests {
     /// `DoD` #9 (resolver-side): every formatting style produces a
     /// non-leaking string. `Debug`, `Display`, and (transitively)
     /// any `tracing::field::display(&secret)` consumer must redact.
+    // The `&s` arguments below are the point of the test, not an
+    // oversight: a caller can pass a reference (that is what
+    // `tracing::field::display(&secret)` does), and that path must
+    // redact too. Taking clippy's advice here would delete the
+    // coverage this test exists for.
+    #[allow(clippy::useless_borrows_in_formatting)]
     #[test]
     fn no_format_style_leaks_the_secret() {
         let leak = "leaky-cabbage-1234";
