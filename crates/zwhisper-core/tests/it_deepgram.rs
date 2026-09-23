@@ -360,10 +360,7 @@ async fn quota_failure_429_is_retried_then_classified() {
         .unwrap_err();
     match err {
         TranscribeError::BackendQuota {
-            backend,
-            status,
-            retry_after_s: _,
-            ..
+            backend, status, ..
         } => {
             assert_eq!(backend, "deepgram");
             assert_eq!(status, 429);
