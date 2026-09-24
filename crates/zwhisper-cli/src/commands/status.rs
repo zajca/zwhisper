@@ -9,6 +9,13 @@
 //!   Replaces interval polling in a status bar; see
 //!   `contrib/waybar/zwhisper.jsonc`.
 //!
+//! Both modes also report the daemon's last failure with its code,
+//! message, and suggested action (RFC-actionable-errors § F10). This is
+//! the only way `zwhisper status` can say anything about a failure at
+//! all: `Recorder1.GetStatus` returns only `idle` or `recording`, so
+//! the one-shot path reads `Diagnostics1.GetLastFailure` and `--watch`
+//! keeps the latest `FailureReported`.
+//!
 //! Exit codes (per `DoD` #12):
 //! - `0` — daemon responded with a `Status` snapshot; in watch mode,
 //!   a clean Ctrl+C
@@ -27,7 +34,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use tracing::debug;
 use zwhisper_hotkey::active_session::{ActiveSessionRef, read_active_session};
-use zwhisper_ipc::{Recorder1Proxy, Status};
+use zwhisper_ipc::{Diagnostics1Proxy, LastFailure, Recorder1Proxy, Status};
 
 use super::{
     DAEMON_DOWN_HINT, EXIT_IPC_FAILURE, EXIT_OK, EXIT_PROTOCOL_ERROR, build_runtime,
@@ -94,7 +101,12 @@ async fn run_async(args: &StatusArgs) -> i32 {
         }
     };
 
-    if let Err(err) = print_status(&status, args) {
+    // Best-effort: a daemon too old to serve `Diagnostics1` still
+    // reports its state, so a missing interface must not fail the
+    // command — it just means there is no failure detail to show.
+    let last_failure = fetch_last_failure(&conn).await;
+
+    if let Err(err) = print_status(&status, last_failure.as_ref(), args) {
         eprintln!("failed to render status: {err}");
         return EXIT_IPC_FAILURE;
     }
@@ -102,7 +114,19 @@ async fn run_async(args: &StatusArgs) -> i32 {
     EXIT_OK
 }
 
-fn print_status(status: &Status, args: &StatusArgs) -> color_eyre::Result<()> {
+/// Read `Diagnostics1.GetLastFailure`, or `None` when the daemon has
+/// not failed, does not serve the interface, or the call fails.
+async fn fetch_last_failure(conn: &zbus::Connection) -> Option<LastFailure> {
+    let proxy = Diagnostics1Proxy::new(conn).await.ok()?;
+    let failure = proxy.get_last_failure().await.ok()?;
+    failure.is_present().then_some(failure)
+}
+
+fn print_status(
+    status: &Status,
+    last_failure: Option<&LastFailure>,
+    args: &StatusArgs,
+) -> color_eyre::Result<()> {
     // Defensive surface for an orphaned recording: an active-session.json
     // present while the daemon is NOT mid-session means the startup reaper
     // has not (or could not) clean it. Only meaningful outside the
@@ -116,21 +140,80 @@ fn print_status(status: &Status, args: &StatusArgs) -> color_eyre::Result<()> {
     if args.json {
         let mut json = StatusJson::from(status);
         json.orphaned_session = orphan.as_ref().map(OrphanedSessionJson::from);
+        json.last_failure = last_failure.map(LastFailureJson::from);
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else if args.waybar {
         // Waybar output stays compact; the orphan note would not fit the
         // bar and is surfaced in the default + json views instead.
-        println!("{}", serde_json::to_string(&WaybarStatus::from(status))?);
+        println!(
+            "{}",
+            serde_json::to_string(&WaybarStatus::build(status, last_failure))?
+        );
     } else {
         let active = display_active_profile(status);
         println!("state: {}", status.state);
         println!("active profile: {active}");
         println!("duration: {}", format_duration_ms(status.duration_ms));
+        if let Some(failure) = last_failure {
+            print_failure_note(failure);
+        }
         if let Some(orphan) = &orphan {
             print_orphan_note(orphan);
         }
     }
     Ok(())
+}
+
+/// Human-readable block for the daemon's last failure. Printed for both
+/// a live `failed` state and a failure that happened earlier — the
+/// distinction is in the timestamp, which is why it is shown.
+#[allow(clippy::print_stdout)]
+fn print_failure_note(failure: &LastFailure) {
+    println!();
+    println!("last failure: {} ({})", failure.message, failure.code);
+    println!("  -> {}", failure.action);
+    let scope = if !failure.session_id.is_empty() {
+        format!("session {}", failure.session_id)
+    } else if !failure.job_id.is_empty() {
+        format!("job {}", failure.job_id)
+    } else {
+        "before recording started".to_owned()
+    };
+    println!("  {scope}, {}", format_age(failure.at_ms, now_ms()));
+}
+
+/// Unix-epoch milliseconds, or `0` if the clock is before the epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// How long ago a Unix-epoch millisecond timestamp was.
+///
+/// `zwhisper-cli` deliberately does not depend on `chrono` (see
+/// `commands::history::format_sessions_table`), and for "is this failure
+/// the one I just caused?" a relative age answers the question better
+/// than a wall-clock time anyway. A timestamp in the future — a clock
+/// step between the daemon writing it and the CLI reading it — degrades
+/// to the raw epoch value rather than rendering a nonsense age.
+fn format_age(at_ms: u64, now_ms: u64) -> String {
+    let Some(delta_ms) = now_ms.checked_sub(at_ms) else {
+        return format!("at {at_ms} ms since epoch");
+    };
+    let secs = delta_ms / 1000;
+    if secs < 60 {
+        return format!("{secs}s ago");
+    }
+    let mins = secs / 60;
+    if mins < 60 {
+        return format!("{mins}m ago");
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    format!("{}d ago", hours / 24)
 }
 
 /// Recording states in which an `active-session.json` on disk is
@@ -174,6 +257,12 @@ struct StatusJson {
     /// mid-session). Omitted from the JSON otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     orphaned_session: Option<OrphanedSessionJson>,
+    /// The daemon's last failure, when it has had one since starting.
+    /// `code` is the stable machine-readable
+    /// `zwhisper_core::diagnostics::FailureCode` string; branch on that,
+    /// not on `message`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_failure: Option<LastFailureJson>,
 }
 
 impl From<&Status> for StatusJson {
@@ -184,7 +273,45 @@ impl From<&Status> for StatusJson {
             duration_ms: status.duration_ms,
             duration: format_duration_ms(status.duration_ms),
             orphaned_session: None,
+            last_failure: None,
         }
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct LastFailureJson {
+    code: String,
+    message: String,
+    action: String,
+    /// Omitted when the failure predates any session (a pre-capture
+    /// refusal), so a consumer never sees an empty-string id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job_id: Option<String>,
+    at_ms: u64,
+}
+
+impl From<&LastFailure> for LastFailureJson {
+    fn from(f: &LastFailure) -> Self {
+        Self {
+            code: f.code.clone(),
+            message: f.message.clone(),
+            action: f.action.clone(),
+            session_id: non_empty(&f.session_id),
+            job_id: non_empty(&f.job_id),
+            at_ms: f.at_ms,
+        }
+    }
+}
+
+/// `None` for an empty wire string. The D-Bus contract uses `""` for
+/// "not applicable"; JSON consumers are better served by omission.
+fn non_empty(value: &str) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_owned())
     }
 }
 
@@ -213,8 +340,16 @@ struct WaybarStatus {
     percentage: u8,
 }
 
-impl From<&Status> for WaybarStatus {
-    fn from(status: &Status) -> Self {
+impl WaybarStatus {
+    /// Render for a status bar.
+    ///
+    /// `text` is deliberately unchanged from the pre-diagnostics format,
+    /// including the bare `"failed"`, so existing bar configs keep
+    /// working. The failure detail rides in the tooltip, and its stable
+    /// code is appended as an extra CSS class so a user can style
+    /// `.mic_muted` differently from `.model_missing` without parsing
+    /// anything.
+    fn build(status: &Status, last_failure: Option<&LastFailure>) -> Self {
         let active = display_active_profile(status);
         let duration = format_duration_ms(status.duration_ms);
         let text = match status.state.as_str() {
@@ -224,13 +359,19 @@ impl From<&Status> for WaybarStatus {
             "failed" => "failed".to_owned(),
             _ => "idle".to_owned(),
         };
+        let mut tooltip = format!(
+            "zwhisper: state={}, active_profile={}, duration={duration}",
+            status.state, active
+        );
+        let mut class = waybar_classes(&status.state);
+        if let Some(failure) = last_failure {
+            tooltip.push_str(&format!("\n{}\n-> {}", failure.message, failure.action));
+            class.push(failure.code.clone());
+        }
         Self {
             text,
-            tooltip: format!(
-                "zwhisper: state={}, active_profile={}, duration={duration}",
-                status.state, active
-            ),
-            class: waybar_classes(&status.state),
+            tooltip,
+            class,
             percentage: waybar_percentage(&status.state),
         }
     }
@@ -350,6 +491,11 @@ struct WatchState {
     /// before the watcher attached, since no further `StateChanged`
     /// arrives until that recording stops.
     stale: bool,
+    /// The latest `Diagnostics1.FailureReported`, cleared when a new
+    /// recording starts. Kept locally rather than re-queried because the
+    /// signal always arrives *before* the `StateChanged "failed"` that
+    /// makes it relevant.
+    failure: Option<LastFailure>,
 }
 
 impl WatchState {
@@ -365,6 +511,7 @@ impl WatchState {
             orphan: None,
             current_session: None,
             stale: false,
+            failure: None,
         }
     }
 
@@ -387,6 +534,10 @@ impl WatchState {
         self.current_session = None;
         // Nothing left to reconcile against: idle is the truth now.
         self.stale = false;
+        // A failure from a daemon that is gone is not actionable state
+        // for the bar; the next GetStatus re-reads whatever the fresh
+        // daemon knows.
+        self.failure = None;
     }
 
     /// Re-anchor the local timer without an authoritative snapshot.
@@ -426,15 +577,18 @@ impl WatchState {
                 duration_ms: self.duration_ms(),
             },
             orphan: self.orphan.clone(),
+            failure: self.failure.clone(),
         }
     }
 }
 
-/// One rendered observation: the daemon's reported state plus the
-/// locally derived orphan marker the one-shot path also reports.
+/// One rendered observation: the daemon's reported state, the locally
+/// derived orphan marker the one-shot path also reports, and the last
+/// failure reason.
 struct Observation {
     status: Status,
     orphan: Option<ActiveSessionRef>,
+    failure: Option<LastFailure>,
 }
 
 /// Render one line for the stream. Every format is single-line and
@@ -443,11 +597,15 @@ struct Observation {
 /// every line-oriented consumer, Waybar included.
 fn render_watch_line(obs: &Observation, args: &StatusArgs) -> color_eyre::Result<String> {
     if args.waybar {
-        return Ok(serde_json::to_string(&WaybarStatus::from(&obs.status))?);
+        return Ok(serde_json::to_string(&WaybarStatus::build(
+            &obs.status,
+            obs.failure.as_ref(),
+        ))?);
     }
     if args.json {
         let mut json = StatusJson::from(&obs.status);
         json.orphaned_session = obs.orphan.as_ref().map(OrphanedSessionJson::from);
+        json.last_failure = obs.failure.as_ref().map(LastFailureJson::from);
         return Ok(serde_json::to_string(&json)?);
     }
     let active = display_active_profile(&obs.status);
@@ -458,6 +616,14 @@ fn render_watch_line(obs: &Observation, args: &StatusArgs) -> color_eyre::Result
     );
     if obs.orphan.is_some() {
         line.push_str("  [orphaned recording marker on disk]");
+    }
+    if let Some(failure) = &obs.failure {
+        // One line per observation is the contract, so the reason is
+        // appended rather than printed as its own block.
+        line.push_str(&format!(
+            "  [{}: {} -> {}]",
+            failure.code, failure.message, failure.action
+        ));
     }
     Ok(line)
 }
@@ -518,6 +684,22 @@ async fn run_watch(args: &StatusArgs) -> i32 {
             return EXIT_IPC_FAILURE;
         }
     };
+    // Subscribe to the failure detail before the first snapshot, for the
+    // same reason `state_stream` is: a transition between the snapshot
+    // and the subscription would otherwise be lost. A daemon too old to
+    // serve `Diagnostics1` still streams state, so a failed subscription
+    // downgrades to "no failure detail" rather than stopping the watch.
+    let diagnostics = Diagnostics1Proxy::new(&conn).await.ok();
+    let mut failure_stream = match &diagnostics {
+        Some(proxy) => match proxy.receive_failure_reported().await {
+            Ok(stream) => Some(stream),
+            Err(err) => {
+                debug!(error = %err, "no FailureReported stream; watching without failure detail");
+                None
+            }
+        },
+        None => None,
+    };
     // arg0-filtered: the match rule is installed on the bus daemon, so
     // it never delivers the churn of every other connection on the
     // session bus. Unfiltered, this stream wakes the watcher for every
@@ -553,6 +735,15 @@ async fn run_watch(args: &StatusArgs) -> i32 {
         debug!("daemon not on the bus yet; reporting idle without activating it");
     }
     st.orphan = orphan_for(&st.recorder_state);
+    // Seed from the daemon's record so a bar started after a failure
+    // shows it, rather than waiting for the next one.
+    if let Some(proxy) = &diagnostics {
+        st.failure = proxy
+            .get_last_failure()
+            .await
+            .ok()
+            .filter(LastFailure::is_present);
+    }
 
     let mut last_line = String::new();
     if let Err(err) = emit_if_changed(&st, args, &mut last_line).map(drop) {
@@ -620,6 +811,12 @@ async fn run_watch(args: &StatusArgs) -> i32 {
                     }
                     st.current_session = None;
                 } else {
+                    if sig_args.new_state == "starting" {
+                        // A new attempt supersedes the previous one's
+                        // diagnosis; leaving it attached would make the
+                        // bar blame a fresh recording for an old fault.
+                        st.failure = None;
+                    }
                     st.current_session = Some(sig_args.session_id.to_owned());
                 }
                 st.recorder_state = sig_args.new_state.to_owned();
@@ -640,6 +837,37 @@ async fn run_watch(args: &StatusArgs) -> i32 {
                     Resync::Unavailable => st.reanchor_unknown(),
                 }
                 st.orphan = orphan_for(&st.recorder_state);
+            },
+
+            // `FailureReported` always precedes the terminal
+            // `StateChanged "failed"` for the same work item, so by the
+            // time the state arrives this arm has already stored the
+            // reason. A closed stream is not fatal — it only costs the
+            // detail, and `Option::take` stops the arm being polled.
+            maybe = async {
+                match failure_stream.as_mut() {
+                    Some(stream) => stream.next().await,
+                    None => std::future::pending().await,
+                }
+            }, if failure_stream.is_some() => {
+                let Some(signal) = maybe else {
+                    debug!("FailureReported stream closed; continuing without failure detail");
+                    failure_stream = None;
+                    continue;
+                };
+                match signal.args() {
+                    Ok(f) => {
+                        st.failure = Some(LastFailure {
+                            session_id: f.session_id.to_owned(),
+                            job_id: f.job_id.to_owned(),
+                            code: f.code.to_owned(),
+                            message: f.message.to_owned(),
+                            action: f.action.to_owned(),
+                            at_ms: now_ms(),
+                        });
+                    }
+                    Err(err) => debug!(error = %err, "FailureReported with malformed args, dropping"),
+                }
             },
 
             maybe = owner_changes.next(), if !owner_done => {
@@ -800,14 +1028,14 @@ fn emit_if_changed(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use zwhisper_ipc::Status;
+    use zwhisper_ipc::{LastFailure, Status};
 
     use crate::cli::StatusArgs;
 
     use super::{
-        Observation, StatusJson, WatchState, WaybarStatus, active_profile_option, emit_if_changed,
-        format_duration_ms, is_active_recording_state, is_discrete_state, is_terminal_state,
-        print_status, render_watch_line, ticks_while,
+        LastFailureJson, Observation, StatusJson, WatchState, WaybarStatus, active_profile_option,
+        emit_if_changed, format_age, format_duration_ms, is_active_recording_state,
+        is_discrete_state, is_terminal_state, print_status, render_watch_line, ticks_while,
     };
 
     #[test]
@@ -847,6 +1075,120 @@ mod tests {
         assert_eq!(format_duration_ms(ms), "1h 02m 03s");
     }
 
+    fn failure(code: &str) -> LastFailure {
+        LastFailure {
+            session_id: "sess-1".to_owned(),
+            job_id: String::new(),
+            code: code.to_owned(),
+            message: "microphone `Built-in Mic` is muted".to_owned(),
+            action: "unmute it: `wpctl set-mute 52 0`".to_owned(),
+            at_ms: 1_700_000_000_000,
+        }
+    }
+
+    #[test]
+    fn waybar_text_is_unchanged_by_a_failure() {
+        // Bar configs and CSS key on `text`; a new diagnostic must not
+        // move it. The detail belongs in the tooltip and the class list.
+        let status = Status {
+            state: "failed".to_owned(),
+            active_profile: "default".to_owned(),
+            duration_ms: 0,
+        };
+        let plain = WaybarStatus::build(&status, None);
+        let with_failure = WaybarStatus::build(&status, Some(&failure("mic_muted")));
+        assert_eq!(plain.text, "failed");
+        assert_eq!(with_failure.text, plain.text);
+        assert_eq!(with_failure.percentage, plain.percentage);
+    }
+
+    #[test]
+    fn waybar_tooltip_carries_the_message_and_the_action() {
+        let status = Status {
+            state: "failed".to_owned(),
+            active_profile: "default".to_owned(),
+            duration_ms: 0,
+        };
+        let w = WaybarStatus::build(&status, Some(&failure("mic_muted")));
+        assert!(w.tooltip.contains("Built-in Mic"), "{}", w.tooltip);
+        assert!(w.tooltip.contains("wpctl set-mute 52 0"), "{}", w.tooltip);
+    }
+
+    #[test]
+    fn waybar_appends_the_failure_code_as_a_css_class() {
+        let status = Status {
+            state: "failed".to_owned(),
+            active_profile: "default".to_owned(),
+            duration_ms: 0,
+        };
+        let w = WaybarStatus::build(&status, Some(&failure("mic_muted")));
+        assert_eq!(w.class, vec!["zwhisper", "failed", "mic_muted"]);
+        // Without a failure the class list is exactly what it always was.
+        let plain = WaybarStatus::build(&status, None);
+        assert_eq!(plain.class, vec!["zwhisper", "failed"]);
+    }
+
+    #[test]
+    fn last_failure_json_omits_inapplicable_ids() {
+        let mut f = failure("model_missing");
+        f.session_id = String::new();
+        let json = serde_json::to_value(LastFailureJson::from(&f)).unwrap();
+        assert!(
+            json.get("session_id").is_none(),
+            "an empty id must be omitted, not serialized as \"\": {json}"
+        );
+        assert!(json.get("job_id").is_none());
+        assert_eq!(json["code"], "model_missing");
+    }
+
+    #[test]
+    fn last_failure_json_keeps_the_ids_it_has() {
+        let json = serde_json::to_value(LastFailureJson::from(&failure("mic_muted"))).unwrap();
+        assert_eq!(json["session_id"], "sess-1");
+        assert!(json.get("job_id").is_none());
+        assert_eq!(json["at_ms"], 1_700_000_000_000_u64);
+    }
+
+    #[test]
+    fn age_rendering_covers_each_unit() {
+        let now = 100_000_000_000_u64;
+        assert_eq!(format_age(now, now), "0s ago");
+        assert_eq!(format_age(now - 45_000, now), "45s ago");
+        assert_eq!(format_age(now - 5 * 60_000, now), "5m ago");
+        assert_eq!(format_age(now - 3 * 3_600_000, now), "3h ago");
+        assert_eq!(format_age(now - 50 * 3_600_000, now), "2d ago");
+    }
+
+    #[test]
+    fn a_future_timestamp_degrades_instead_of_underflowing() {
+        // A clock step between the daemon writing the timestamp and the
+        // CLI reading it must not panic or render a wrapped age.
+        let rendered = format_age(2_000, 1_000);
+        assert!(rendered.contains("2000"), "{rendered}");
+    }
+
+    #[test]
+    fn watch_line_carries_the_failure_reason() {
+        let obs = Observation {
+            status: Status {
+                state: "failed".to_owned(),
+                active_profile: "default".to_owned(),
+                duration_ms: 0,
+            },
+            orphan: None,
+            failure: Some(failure("mic_muted")),
+        };
+        let args = StatusArgs {
+            json: false,
+            waybar: false,
+            watch: true,
+        };
+        let line = render_watch_line(&obs, &args).unwrap();
+        assert!(line.contains("mic_muted"), "{line}");
+        assert!(line.contains("wpctl set-mute 52 0"), "{line}");
+        assert_eq!(line.lines().count(), 1, "watch output must stay one line");
+    }
+
     #[test]
     fn empty_active_profile_serializes_as_null() {
         let status = Status {
@@ -863,6 +1205,7 @@ mod tests {
                 duration_ms: 0,
                 duration: "0ms".to_owned(),
                 orphaned_session: None,
+                last_failure: None,
             }
         );
     }
@@ -875,7 +1218,7 @@ mod tests {
             duration_ms: 90_000,
         };
         assert_eq!(
-            WaybarStatus::from(&status),
+            WaybarStatus::build(&status, None),
             WaybarStatus {
                 text: "REC 1m 30s".to_owned(),
                 tooltip: "zwhisper: state=recording, active_profile=meeting, duration=1m 30s"
@@ -1012,6 +1355,7 @@ mod tests {
         let obs = Observation {
             status: status_of("recording", "meeting", 90_000),
             orphan: None,
+            failure: None,
         };
         for args in [
             watch_args(false, true),
@@ -1030,9 +1374,10 @@ mod tests {
         let obs = Observation {
             status: status.clone(),
             orphan: None,
+            failure: None,
         };
         let line = render_watch_line(&obs, &watch_args(false, true)).unwrap();
-        let expected = serde_json::to_string(&WaybarStatus::from(&status)).unwrap();
+        let expected = serde_json::to_string(&WaybarStatus::build(&status, None)).unwrap();
         assert_eq!(line, expected);
     }
 
@@ -1042,6 +1387,7 @@ mod tests {
         let obs = Observation {
             status: status.clone(),
             orphan: None,
+            failure: None,
         };
         let line = render_watch_line(&obs, &watch_args(true, false)).unwrap();
         assert_eq!(
@@ -1160,6 +1506,6 @@ mod tests {
             waybar: false,
             watch: false,
         };
-        print_status(&status, &args).unwrap();
+        print_status(&status, None, &args).unwrap();
     }
 }

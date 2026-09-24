@@ -1,5 +1,5 @@
-//! Wire-format freeze tests for the RFC-daemon-role D-Bus surface
-//! (`Jobs1` + `History1`).
+//! Wire-format freeze tests for the post-M3 D-Bus surface
+//! (`Jobs1` + `History1` + `Diagnostics1`).
 //!
 //! Mirrors `wire_freeze.rs` for the new interfaces. ANY change to a
 //! method name, argument signature, return signature, signal name,
@@ -13,8 +13,8 @@
 use zvariant::Type;
 
 use zwhisper_ipc::{
-    ERROR_NAME_PREFIX, HISTORY_INTERFACE, History1Proxy, HistorySession, JOBS_INTERFACE, JobInfo,
-    Jobs1Proxy,
+    DIAGNOSTICS_INTERFACE, Diagnostics1Proxy, ERROR_NAME_PREFIX, HISTORY_INTERFACE, History1Proxy,
+    HistorySession, JOBS_INTERFACE, JobInfo, Jobs1Proxy, LastFailure,
 };
 
 // ---------------------------------------------------------------------
@@ -29,6 +29,11 @@ fn jobs_interface_name_is_pinned() {
 #[test]
 fn history_interface_name_is_pinned() {
     assert_eq!(HISTORY_INTERFACE, "cz.zajca.Zwhisper1.History1");
+}
+
+#[test]
+fn diagnostics_interface_name_is_pinned() {
+    assert_eq!(DIAGNOSTICS_INTERFACE, "cz.zajca.Zwhisper1.Diagnostics1");
 }
 
 #[test]
@@ -47,12 +52,29 @@ fn job_info_wire_signature_is_ssst() {
 
 #[test]
 fn history_session_wire_signature_is_pinned() {
-    assert_eq!(HistorySession::SIGNATURE.to_string(), "(stssssssss)");
+    assert_eq!(HistorySession::SIGNATURE.to_string(), "(stssssssssss)");
 }
 
 // ---------------------------------------------------------------------
 // Signal payload signatures.
 // ---------------------------------------------------------------------
+
+#[test]
+fn last_failure_wire_signature_is_pinned() {
+    // Diagnostics1.GetLastFailure returns
+    // (session_id:s, job_id:s, code:s, message:s, action:s, at_ms:t).
+    assert_eq!(LastFailure::SIGNATURE.to_string(), "(ssssst)");
+}
+
+#[test]
+fn failure_reported_payload_signature_is_sssss() {
+    // FailureReported(session_id:s, job_id:s, code:s, message:s,
+    //                 action:s)
+    assert_eq!(
+        <(String, String, String, String, String)>::SIGNATURE.to_string(),
+        "(sssss)"
+    );
+}
 
 #[test]
 fn job_completed_payload_signature() {
@@ -124,6 +146,13 @@ async fn pin_jobs1_job_progress_signal(p: &Jobs1Proxy<'_>) {
 }
 
 #[allow(dead_code)]
+fn pin_history_session_fields(h: &HistorySession) {
+    let _: &String = &h.last_error;
+    let _: &String = &h.last_error_code;
+    let _: &String = &h.last_error_action;
+}
+
+#[allow(dead_code)]
 fn pin_job_completed_args_fields(args: &zwhisper_ipc::jobs::JobCompletedArgs<'_>) {
     let _: &str = args.job_id;
     let _: &str = args.submit_mode;
@@ -132,6 +161,35 @@ fn pin_job_completed_args_fields(args: &zwhisper_ipc::jobs::JobCompletedArgs<'_>
     let _: &str = args.transcript_path;
     let _: u64 = args.bytes;
     let _: &str = args.backend;
+}
+
+#[allow(dead_code)]
+async fn pin_diagnostics1_get_last_failure(p: &Diagnostics1Proxy<'_>) -> zbus::Result<LastFailure> {
+    p.get_last_failure().await
+}
+
+#[allow(dead_code)]
+async fn pin_diagnostics1_failure_reported_signal(p: &Diagnostics1Proxy<'_>) {
+    let _ = p.receive_failure_reported().await;
+}
+
+#[allow(dead_code)]
+fn pin_failure_reported_args_fields(args: &zwhisper_ipc::diagnostics::FailureReportedArgs<'_>) {
+    let _: &str = args.session_id;
+    let _: &str = args.job_id;
+    let _: &str = args.code;
+    let _: &str = args.message;
+    let _: &str = args.action;
+}
+
+#[allow(dead_code)]
+fn pin_last_failure_fields(f: &LastFailure) {
+    let _: &String = &f.session_id;
+    let _: &String = &f.job_id;
+    let _: &String = &f.code;
+    let _: &String = &f.message;
+    let _: &String = &f.action;
+    let _: u64 = f.at_ms;
 }
 
 #[allow(dead_code)]

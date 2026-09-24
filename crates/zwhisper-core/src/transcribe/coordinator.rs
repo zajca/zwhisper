@@ -92,6 +92,35 @@ pub async fn transcribe_source(
     backend.transcribe(audio, &model_artifact, opts).await
 }
 
+/// Check that `(backend, model)` could be transcribed **right now**,
+/// without any audio.
+///
+/// Runs exactly the two resolutions [`transcribe_source`] performs
+/// before it touches the audio — build the backend, then resolve the
+/// model artifact — and discards the results. Sharing the code path is
+/// the point: a pre-capture check that resolved models differently from
+/// the real transcribe could refuse a recording that would have worked,
+/// or wave through one that will fail after the user has already spoken.
+///
+/// Called by the daemon before starting a recording
+/// (RFC-actionable-errors § F6). Cheap: no network, no audio, a handful
+/// of `stat` calls.
+pub fn preflight(opts: &TranscribeOpts) -> Result<(), TranscribeError> {
+    let backend = build_backend(opts)?;
+    let models_dir =
+        models::models_dir().map_err(|e| TranscribeError::ModelResolution(e.to_string()))?;
+    let artifact = resolve_model_artifact(opts, &models_dir)?;
+
+    let caps = backend.capabilities();
+    if !caps.accepts_model_kind(artifact.tag()) {
+        return Err(TranscribeError::UnsupportedModelKind {
+            backend: backend.id(),
+            kind: kind_label(artifact.tag()),
+        });
+    }
+    Ok(())
+}
+
 /// Build the backend instance for the selected [`Backend`]. Unsupported
 /// or not-compiled-in backends surface a typed error naming the reason.
 fn build_backend(opts: &TranscribeOpts) -> Result<Box<dyn Transcriber>, TranscribeError> {

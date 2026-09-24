@@ -26,6 +26,7 @@ use zwhisper_ipc::{BUS_NAME, OBJECT_PATH};
 mod active_profile;
 mod active_session;
 mod config;
+mod diagnostics_service;
 mod history;
 mod history_service;
 mod jobs;
@@ -33,6 +34,7 @@ mod jobs_service;
 mod last_session;
 mod lifecycle;
 mod orphan_recovery;
+mod preflight;
 mod profiles_service;
 mod recorder_service;
 mod session;
@@ -42,6 +44,7 @@ use std::sync::OnceLock;
 
 use crate::config::{INFLIGHT_START_DRAIN_TIMEOUT, SHUTDOWN_DRAIN_TIMEOUT};
 
+use crate::diagnostics_service::{DiagnosticsInterface, FailureReporter};
 use crate::history_service::HistoryInterface;
 use crate::jobs::JobQueue;
 use crate::jobs_service::JobsInterface;
@@ -65,9 +68,14 @@ async fn main() -> color_eyre::Result<()> {
     // queue via a `OnceLock` set immediately after `build()`.
     let conn_cell: Arc<OnceLock<zbus::Connection>> = Arc::new(OnceLock::new());
     let (history_handle, _history_task) = history::spawn_writer();
+    // Every failure site publishes through one reporter
+    // (RFC-actionable-errors F7): it stores the snapshot `GetLastFailure`
+    // serves and emits `FailureReported` ahead of the frozen signal.
+    let reporter = FailureReporter::new(Arc::clone(&conn_cell));
     let queue = JobQueue::new(
         Arc::clone(&conn_cell),
         history_handle.clone(),
+        reporter.clone(),
         config::job_concurrency(),
     );
 
@@ -76,10 +84,12 @@ async fn main() -> color_eyre::Result<()> {
         Arc::clone(&active_profile),
         queue.clone(),
         history_handle.clone(),
+        reporter.clone(),
     );
     let profiles_iface = ProfilesInterface::new(Arc::clone(&active_profile));
     let jobs_iface = JobsInterface::new(queue.clone(), history_handle.clone());
     let history_iface = HistoryInterface::new(history_handle.clone());
+    let diagnostics_iface = DiagnosticsInterface::new(reporter.last_failure_cell());
 
     // zbus 5.15 connection builder pattern (per the
     // `connection::Builder` docs): register every interface at the
@@ -87,12 +97,14 @@ async fn main() -> color_eyre::Result<()> {
     // `serve_at()` calls on the same path stack interfaces — that
     // is the supported form for the multi-interface single-object
     // case we need. `Recorder1`/`Profiles1` stay frozen; `Jobs1`/
-    // `History1` are the new RFC-daemon-role surface.
+    // `History1` are the RFC-daemon-role surface and `Diagnostics1`
+    // carries the RFC-actionable-errors failure detail.
     let connection = zbus::connection::Builder::session()?
         .serve_at(OBJECT_PATH, recorder_iface)?
         .serve_at(OBJECT_PATH, profiles_iface)?
         .serve_at(OBJECT_PATH, jobs_iface)?
         .serve_at(OBJECT_PATH, history_iface)?
+        .serve_at(OBJECT_PATH, diagnostics_iface)?
         .name(BUS_NAME)?
         .build()
         .await

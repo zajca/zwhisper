@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::diagnostics::DiagnosticsConfig;
+
 use super::error::{ProfileError, SUPPORTED_BACKENDS_M5};
 
 /// Native capture sample rates the pipeline can record. The FLAC
@@ -391,6 +393,67 @@ impl Default for DeepgramSettings {
     }
 }
 
+/// Failure-detection knobs read from `[diagnostics]`
+/// (RFC-actionable-errors § F9). All fields are optional in TOML;
+/// `Default` mirrors [`DiagnosticsConfig::default`] field for field, so
+/// the shipped thresholds have exactly one definition.
+///
+/// The clipping and silence thresholds are hardware-dependent — an
+/// onboard codec with an aggressive mic boost behaves nothing like a USB
+/// condenser — which is why they live on the profile rather than in a
+/// global config: a profile already *is* the per-setup unit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DiagnosticsSettings {
+    /// Peak (dBFS) at or above which an analysis window counts as
+    /// clipped.
+    pub clip_peak_db: f32,
+    /// Fraction of windows that must clip before the recording is
+    /// reported as clipped. Raise it for a noisy room prone to
+    /// transients.
+    pub clip_window_ratio: f32,
+    /// Whole-session RMS (dBFS) below which the recording is reported
+    /// as silent.
+    pub silent_rms_db: f32,
+    /// Minimum recording length (ms) before any level verdict is made.
+    pub min_analysis_ms: u64,
+    /// Whether to check the source's mute flag before starting a
+    /// recording. Turn it off if `wpctl` reports a mute state your
+    /// hardware does not actually honour.
+    pub mute_probe: bool,
+}
+
+impl Default for DiagnosticsSettings {
+    fn default() -> Self {
+        let cfg = DiagnosticsConfig::default();
+        Self {
+            clip_peak_db: cfg.clip_peak_db,
+            clip_window_ratio: cfg.clip_window_ratio,
+            silent_rms_db: cfg.silent_rms_db,
+            min_analysis_ms: cfg.min_analysis_ms,
+            mute_probe: cfg.mute_probe,
+        }
+    }
+}
+
+impl DiagnosticsSettings {
+    /// Project onto the runtime config, leaving the fields this table
+    /// deliberately does not expose (the level interval, the probe
+    /// timeout) at their defaults — they are implementation tuning, not
+    /// user-facing thresholds.
+    #[must_use]
+    pub fn to_config(&self) -> DiagnosticsConfig {
+        DiagnosticsConfig {
+            clip_peak_db: self.clip_peak_db,
+            clip_window_ratio: self.clip_window_ratio,
+            silent_rms_db: self.silent_rms_db,
+            min_analysis_ms: self.min_analysis_ms,
+            mute_probe: self.mute_probe,
+            ..DiagnosticsConfig::default()
+        }
+    }
+}
+
 /// Output destinations. M2 honours `File`; `Clipboard` and
 /// `Notification` parse cleanly but emit a tracing warning at engine
 /// time (M4 / tray-bound).
@@ -429,6 +492,13 @@ pub struct Profile {
 
     #[serde(default)]
     pub hotkey: Hotkey,
+
+    /// Optional `[diagnostics]` table overriding the failure-detection
+    /// thresholds. `None` (the default) means
+    /// [`DiagnosticsConfig::default`]; `skip_serializing_if` keeps every
+    /// existing profile round-tripping byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<DiagnosticsSettings>,
 }
 
 impl Profile {
@@ -556,6 +626,15 @@ impl Profile {
             }
         }
 
+        if let Some(diag) = &self.diagnostics {
+            diag.to_config()
+                .validate()
+                .map_err(|message| ProfileError::Validation {
+                    profile: self.name.clone(),
+                    message,
+                })?;
+        }
+
         for out in &self.outputs {
             if let OutputDest::File { path } = out {
                 preflight_path_template(path).map_err(|message| ProfileError::Validation {
@@ -659,6 +738,7 @@ mod tests {
                 path: "~/Recordings/zwhisper/{profile}/{timestamp}.flac".into(),
             }],
             hotkey: Hotkey::default(),
+            diagnostics: None,
         }
     }
 

@@ -17,22 +17,29 @@
 //! `linear_to_db` for the dBFS metering — keeping the silence guard
 //! (`linear <= 0 → f32::NEG_INFINITY`, never `NaN`) in one place.
 //!
-//! [`db_to_linear`] is compiled under either the `audio` or the `setup`
-//! feature: the `audio` pipeline converts `sources.input_gain_db` into
-//! the `volume` element factor, and the `setup` calibration uses it for
-//! its recommendation. [`linear_to_db`] stays `setup`-only — the dBFS
-//! metering is its sole consumer (the pipeline needs only the forward
-//! conversion). The `profile` feature pulls just [`MIN_INPUT_GAIN_DB`] /
-//! [`MAX_INPUT_GAIN_DB`] for range validation.
+//! [`db_to_linear`], [`linear_to_db`] and [`SILENCE_FLOOR_DB`] are
+//! unconditional — `crate::diagnostics` needs all three in every feature
+//! combination. The `profile` feature pulls just [`MIN_INPUT_GAIN_DB`] /
+//! [`MAX_INPUT_GAIN_DB`] for range validation, which is why those two
+//! stay gated.
+
+/// dBFS floor reported for silence / an empty capture. Well below any
+/// real noise floor, so an all-zero buffer maps to a clean sentinel
+/// instead of `-inf` arithmetic leaking into clamps and comparisons.
+/// Re-exported as `crate::setup::config::SILENCE_FLOOR_DB`, which is the
+/// name RFC-mic-setup and the calibration tests use.
+pub(crate) const SILENCE_FLOOR_DB: f32 = -120.0;
 
 /// Lower bound for a profile's `input_gain_db`. A −30 dB trim attenuates
 /// to ~3 % amplitude, well past any sane mic level reduction; anything
 /// below is almost certainly a typo and is rejected up front.
+#[cfg(any(feature = "audio", feature = "setup", feature = "profile"))]
 pub(crate) const MIN_INPUT_GAIN_DB: f32 = -30.0;
 
 /// Upper bound for a profile's `input_gain_db`. +30 dB is a ~31.6×
 /// amplification — already extreme; a larger boost would clip on any
 /// real signal, so it is rejected rather than silently honoured.
+#[cfg(any(feature = "audio", feature = "setup", feature = "profile"))]
 pub(crate) const MAX_INPUT_GAIN_DB: f32 = 30.0;
 
 /// Convert a gain in decibels to a linear amplitude factor: `10^(db/20)`.
@@ -44,13 +51,10 @@ pub(crate) const MAX_INPUT_GAIN_DB: f32 = 30.0;
 /// schema and writer do), so this stays a pure math helper with no
 /// hidden clamping.
 ///
-/// Gated to `audio` **or** `setup` — both consume the forward
-/// conversion: the `audio` pipeline turns `sources.input_gain_db` into
-/// the `volume` element factor, the `setup` calibration uses it for its
-/// recommendation. The `profile` feature needs only the range
-/// constants, so compiling the conversion there would be dead code
-/// under `-D warnings`.
-#[cfg(any(feature = "audio", feature = "setup"))]
+/// Unconditional, like [`linear_to_db`]: besides the `audio` pipeline's
+/// `volume` factor and the `setup` calibration's recommendation,
+/// `crate::diagnostics` converts each level window's dBFS back to a
+/// linear amplitude so window energies can be summed.
 pub(crate) fn db_to_linear(db: f32) -> f32 {
     10.0_f32.powf(db / 20.0)
 }
@@ -64,9 +68,9 @@ pub(crate) fn db_to_linear(db: f32) -> f32 {
 /// `-inf`/floor sentinel, never a `NaN` that would poison later
 /// `clamp`/comparison logic.
 ///
-/// Gated to `setup` like [`db_to_linear`] (the dBFS metering is its only
-/// Wave-1 consumer); `profile` validation needs just the range constants.
-#[cfg(feature = "setup")]
+/// Unconditional: `crate::diagnostics` converts a recorded session's
+/// mean-square energy to dBFS in every feature combination, so gating
+/// this would make the diagnostics layer feature-dependent for no gain.
 pub(crate) fn linear_to_db(linear: f32) -> f32 {
     if linear <= 0.0 {
         f32::NEG_INFINITY
@@ -75,11 +79,21 @@ pub(crate) fn linear_to_db(linear: f32) -> f32 {
     }
 }
 
-// The dB↔linear function tests need the functions, which are only
-// compiled under `setup` (Wave 1); gate the suite to match so the other
-// feature combos stay clean. The range-constant invariant is a
-// compile-time assertion above, not a runtime test.
-#[cfg(all(test, feature = "setup"))]
+// Range-constant invariant as a compile-time assertion: the bounds must
+// be finite and ordered. A `const` assert is the idiomatic check for an
+// invariant over constants (a runtime `#[test]` would just trip clippy's
+// `assertions_on_constants`); a violation fails the build, not a test.
+#[cfg(any(feature = "audio", feature = "setup", feature = "profile"))]
+const _: () = assert!(MIN_INPUT_GAIN_DB.is_finite());
+#[cfg(any(feature = "audio", feature = "setup", feature = "profile"))]
+const _: () = assert!(MAX_INPUT_GAIN_DB.is_finite());
+#[cfg(any(feature = "audio", feature = "setup", feature = "profile"))]
+const _: () = assert!(MIN_INPUT_GAIN_DB < MAX_INPUT_GAIN_DB);
+const _: () = assert!(SILENCE_FLOOR_DB.is_finite());
+
+// The range-constant invariant above is a compile-time assertion, not a
+// runtime test.
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -136,11 +150,3 @@ mod tests {
         assert!((linear_to_db(0.5) - (-6.0206)).abs() < 1e-3);
     }
 }
-
-// Range-constant invariant as a compile-time assertion: the bounds must
-// be finite and ordered. A `const` assert is the idiomatic check for an
-// invariant over constants (a runtime `#[test]` would just trip clippy's
-// `assertions_on_constants`); a violation fails the build, not a test.
-const _: () = assert!(MIN_INPUT_GAIN_DB.is_finite());
-const _: () = assert!(MAX_INPUT_GAIN_DB.is_finite());
-const _: () = assert!(MIN_INPUT_GAIN_DB < MAX_INPUT_GAIN_DB);

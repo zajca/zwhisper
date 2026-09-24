@@ -20,9 +20,11 @@ use zwhisper_core::audio::state::{SessionId, StopReason};
 use zwhisper_core::profile;
 use zwhisper_ipc::{OBJECT_PATH, RpcError, Status};
 
+use crate::diagnostics_service::FailureReporter;
 use crate::history::HistoryHandle;
 use crate::jobs::JobQueue;
 use crate::lifecycle::{LifecycleHooks, spawn_lifecycle};
+use crate::preflight::diagnostics_config;
 use crate::session::SessionManager;
 
 /// Result of [`RecorderInterface::output_path_for_session`] — pinned
@@ -72,6 +74,9 @@ pub(crate) struct RecorderInterface {
     queue: JobQueue,
     /// Single durable history writer (F2.2).
     history: HistoryHandle,
+    /// Publishes the structured reason for a pre-capture refusal or a
+    /// failed `Recorder::start`, ahead of `StateChanged "failed"`.
+    reporter: FailureReporter,
 }
 
 impl RecorderInterface {
@@ -80,6 +85,7 @@ impl RecorderInterface {
         active_profile: Arc<AsyncMutex<String>>,
         queue: JobQueue,
         history: HistoryHandle,
+        reporter: FailureReporter,
     ) -> Self {
         Self {
             sessions,
@@ -87,6 +93,7 @@ impl RecorderInterface {
             start_lock: Arc::new(AsyncMutex::new(())),
             queue,
             history,
+            reporter,
         }
     }
 
@@ -156,6 +163,47 @@ impl RecorderInterface {
             .into());
         }
 
+        // Pre-capture checks (RFC-actionable-errors F6). Run before the
+        // session slot is reserved so a refusal leaves no state behind,
+        // and before any GStreamer work so the user learns now rather
+        // than after speaking a whole sentence.
+        let diagnostics = diagnostics_config(&profile);
+        let preflight = crate::preflight::run(&profile, &diagnostics).await;
+
+        if let Some(reason) = preflight.refusal {
+            warn!(
+                profile = %profile.name,
+                code = reason.code.as_str(),
+                reason = %reason.message,
+                action = %reason.action,
+                "refusing to start recording",
+            );
+            // No session exists yet, so the signal carries an empty
+            // session id; the message names the device instead. The
+            // `deliver` consumer turns this into the notification the
+            // hotkey path needs — a refused `zwhisper toggle` otherwise
+            // fails silently in the background.
+            self.reporter.report("", "", &reason).await;
+            return Err(RpcError::RecordingFailed {
+                reason: format!("{}; {}", reason.message, reason.action),
+            }
+            .into());
+        }
+
+        // The transcription will fail, but the audio is worth keeping —
+        // report it now so the user can fix it (possibly before this
+        // recording even stops) and carry on capturing.
+        if let Some(reason) = &preflight.advisory {
+            warn!(
+                profile = %profile.name,
+                code = reason.code.as_str(),
+                reason = %reason.message,
+                action = %reason.action,
+                "transcription will fail for this recording; recording anyway",
+            );
+            self.reporter.report("", "", reason).await;
+        }
+
         let session_id = SessionId::new();
         self.sessions
             .try_reserve(session_id, &profile.name)
@@ -219,6 +267,10 @@ impl RecorderInterface {
             // zwhisper-owned SW trim (RFC-mic-setup Phase 3); `None`
             // when the profile carries no `input_gain_db`.
             input_gain_db: profile.sources.input_gain_db,
+            // Failure-detection thresholds (RFC-actionable-errors). The
+            // profile's optional `[diagnostics]` table overrides them;
+            // absent, the conservative defaults apply.
+            diagnostics: diagnostics.clone(),
         };
 
         let recorder = match Recorder::start(opts) {
@@ -226,6 +278,10 @@ impl RecorderInterface {
             Err(e) => {
                 error!(error = %e, "Recorder::start failed");
                 self.sessions.release();
+                let reason = zwhisper_core::diagnostics::FailureReason::from(&e);
+                // Ordering contract: the reason precedes the frozen
+                // terminal state for the same session.
+                self.reporter.report(&session_id_str, "", &reason).await;
                 if let Err(em) = Self::state_changed(&emitter, "failed", &session_id_str).await {
                     warn!(error = %em, "failed to emit StateChanged failed");
                 }
@@ -302,6 +358,13 @@ impl RecorderInterface {
             profile_name: profile.name.clone(),
             outputs: profile.outputs.clone(),
             native_rate: profile.recording.sample_rate,
+            // RFC-actionable-errors: the lifecycle publishes every
+            // terminal failure through the reporter, and hands the
+            // capture's level statistics to the transcribe job so an
+            // empty transcript can be explained.
+            reporter: self.reporter.clone(),
+            mic_node: profile.sources.mic.clone(),
+            diagnostics,
         };
 
         spawn_lifecycle(recorder, hooks);

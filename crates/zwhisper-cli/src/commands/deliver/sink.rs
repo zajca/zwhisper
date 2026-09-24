@@ -148,14 +148,32 @@ impl ClipboardSink {
 /// the consumer. The `notify-rust` call is synchronous, so it runs inside
 /// `spawn_blocking` to keep the reactor responsive.
 pub(crate) async fn notify(summary: &str, body: &str) {
+    notify_with_urgency(summary, body, false).await;
+}
+
+/// [`notify`], with control over urgency.
+///
+/// `critical` raises `Urgency::Critical`, which on most notification
+/// daemons means the bubble does not auto-dismiss. Reserved for the
+/// failures the user must fix before the next recording will work — a
+/// muted microphone or a missing model recurs identically until acted
+/// on, and a notification that vanishes while the user is typing does
+/// not help (RFC-actionable-errors § F10).
+pub(crate) async fn notify_with_urgency(summary: &str, body: &str, critical: bool) {
     let summary = summary.to_owned();
     let body = body.to_owned();
+    let urgency = if critical {
+        notify_rust::Urgency::Critical
+    } else {
+        notify_rust::Urgency::Normal
+    };
     let join = tokio::task::spawn_blocking(move || {
         notify_rust::Notification::new()
             .appname("zwhisper")
             .summary(&summary)
             .body(&body)
             .icon("zwhisper-idle")
+            .urgency(urgency)
             .timeout(notify_rust::Timeout::Default)
             .show()
             .map(|_| ())

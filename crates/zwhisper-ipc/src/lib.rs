@@ -49,6 +49,7 @@
 //! widening goes through `Recorder2` / `Profiles2`, never an
 //! incompatible mutation of `Recorder1` / `Profiles1`.
 
+pub mod diagnostics;
 pub mod error;
 pub mod history;
 pub mod jobs;
@@ -56,6 +57,7 @@ pub mod profiles;
 pub mod recorder;
 pub mod types;
 
+pub use diagnostics::{Diagnostics1Proxy, LastFailure};
 pub use error::{RpcError, parse_error_name, parse_error_name_from_zbus};
 pub use history::History1Proxy;
 pub use jobs::Jobs1Proxy;
@@ -99,6 +101,11 @@ pub const JOBS_INTERFACE: &str = "cz.zajca.Zwhisper1.Jobs1";
 /// D-Bus interface name for the `History1` proxy (RFC-daemon-role
 /// Feature 2).
 pub const HISTORY_INTERFACE: &str = "cz.zajca.Zwhisper1.History1";
+
+/// D-Bus interface name for the `Diagnostics1` proxy
+/// (RFC-actionable-errors). New surface carrying the structured failure
+/// reason alongside the frozen `Recorder1` state string.
+pub const DIAGNOSTICS_INTERFACE: &str = "cz.zajca.Zwhisper1.Diagnostics1";
 
 /// Well-known name the session-bound `zwhisper deliver --listen`
 /// consumer claims to enforce single-instance (F3.4). A second

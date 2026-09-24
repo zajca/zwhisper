@@ -111,14 +111,19 @@ impl DeepgramBatch {
         opts: &TranscribeOpts,
         key: SecretString,
     ) -> Result<TranscriptArtifacts, TranscribeError> {
-        self.do_transcribe_with_key(audio, opts, key).await
+        self.do_transcribe_with_key(audio, opts, key, "an explicitly supplied key")
+            .await
     }
 
+    /// `key_source` is the rendered provenance of `key` (an env
+    /// variable name or a file path) so a 401/403 can tell the user
+    /// which secret to rotate. It never contains the key itself.
     async fn do_transcribe_with_key(
         &self,
         audio: &Path,
         opts: &TranscribeOpts,
         key: SecretString,
+        key_source: &str,
     ) -> Result<TranscriptArtifacts, TranscribeError> {
         let started_at = Instant::now();
 
@@ -146,7 +151,7 @@ impl DeepgramBatch {
         // returns the bytes directly; the response object never
         // escapes that scope (user feedback #1, 2026-05-02).
         let body_bytes = self
-            .post_with_retry(&url, &headers, audio, audio_size)
+            .post_with_retry(&url, &headers, audio, audio_size, key_source)
             .await?;
         let dg_response: DeepgramResponse =
             serde_json::from_slice(&body_bytes).map_err(|source| {
@@ -407,8 +412,13 @@ impl Transcriber for DeepgramBatch {
             source = %source_label(&source),
             "API key resolved",
         );
-        self.do_transcribe_with_key(audio.artifact_path(), opts, key)
-            .await
+        self.do_transcribe_with_key(
+            audio.artifact_path(),
+            opts,
+            key,
+            &source_description(&source),
+        )
+        .await
     }
 }
 
@@ -437,6 +447,7 @@ impl DeepgramBatch {
         headers: &HeaderMap,
         audio: &Path,
         audio_size: u64,
+        key_source: &str,
     ) -> Result<Vec<u8>, TranscribeError> {
         let client = self.client()?;
         let budget = Duration::from_secs(self.settings.retry_total_budget_s);
@@ -503,6 +514,7 @@ impl DeepgramBatch {
                             outcome.status,
                             &outcome.body,
                             outcome.retry_after,
+                            key_source,
                         ));
                     }
                     let delay = backoff_delay(attempt, outcome.retry_after);
@@ -518,6 +530,7 @@ impl DeepgramBatch {
                             outcome.status,
                             &outcome.body,
                             outcome.retry_after,
+                            key_source,
                         ));
                     }
                     warn!(
@@ -631,6 +644,7 @@ fn classify_http_error(
     status: StatusCode,
     body_bytes: &[u8],
     retry_after: Option<u64>,
+    key_source: &str,
 ) -> TranscribeError {
     let body = String::from_utf8_lossy(body_bytes).into_owned();
     let excerpt = truncate_body(&body);
@@ -639,6 +653,7 @@ fn classify_http_error(
         401 | 403 => TranscribeError::BackendAuth {
             backend: BACKEND_ID,
             status: status.as_u16(),
+            key_source: key_source.to_owned(),
         },
         402 | 429 => TranscribeError::BackendQuota {
             backend: BACKEND_ID,
@@ -700,6 +715,17 @@ fn source_label(src: &ResolveSource) -> &'static str {
     match src {
         ResolveSource::Env(_) => "env",
         ResolveSource::File(_) => "file",
+    }
+}
+
+/// Render where a key came from for a user-facing error: the env
+/// variable **name** or the secrets-file **path**. Never the value —
+/// `ResolveSource` holds only a name or a path by construction, so this
+/// cannot leak the key even if the variant set grows.
+fn source_description(src: &ResolveSource) -> String {
+    match src {
+        ResolveSource::Env(name) => format!("`{name}`"),
+        ResolveSource::File(path) => format!("`{}`", path.display()),
     }
 }
 

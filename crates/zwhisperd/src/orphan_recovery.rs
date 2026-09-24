@@ -153,6 +153,10 @@ fn build_job_spec(session: &ActiveSession, audio_path: &Path) -> color_eyre::Res
         submit_mode: SubmitMode::Detached,
         label: format!("recovered:{}", session.session_id),
         done: None,
+        // The recording predates this daemon, so its level statistics
+        // died with the previous process — nothing to diagnose an empty
+        // result with beyond `empty_transcript`.
+        capture: None,
     })
 }
 
