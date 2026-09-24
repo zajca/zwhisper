@@ -24,6 +24,7 @@ use super::error::RecordingError;
 use super::pipeline;
 use super::state::{RecorderState, SessionId, StopReason};
 use super::watchdog::{self, Classification};
+use crate::diagnostics::{DiagnosticsConfig, LevelSummary};
 
 const EOS_TIMEOUT_SECS: u64 = 5;
 const BUS_POLL_TIMEOUT_MS: u64 = 100;
@@ -85,6 +86,13 @@ pub struct RecordOptions {
     /// `volume` element on the mic branch (the dB value is converted to
     /// a clamped linear factor); see `pipeline::PipelineParams`.
     pub input_gain_db: Option<f32>,
+    /// Failure-detection thresholds (RFC-actionable-errors). Supplies
+    /// the `level` element's message interval and the clip threshold the
+    /// per-window fold compares against. Level measurement is
+    /// unconditional — unlike [`Self::capture_pcm`] it is not tied to a
+    /// backend, because every profile deserves a clipping/silence
+    /// verdict.
+    pub diagnostics: DiagnosticsConfig,
 }
 
 impl Default for RecordOptions {
@@ -99,6 +107,7 @@ impl Default for RecordOptions {
             capture_pcm: false,
             max_pcm_bytes: DEFAULT_MAX_PCM_BYTES,
             input_gain_db: None,
+            diagnostics: DiagnosticsConfig::default(),
         }
     }
 }
@@ -129,6 +138,12 @@ pub struct RecordingReport {
     /// Sample rate of [`Self::pcm`] (the ASR rate). Meaningful only when
     /// `pcm` is `Some`.
     pub pcm_sample_rate: u32,
+    /// Whole-session peak/RMS statistics folded from the pipeline's
+    /// `level` element (RFC-actionable-errors § F4). `None` when no
+    /// `level` message arrived at all — a recording shorter than one
+    /// interval, or a pipeline that never reached `Playing`. Feed it to
+    /// `crate::diagnostics::diagnose_levels` to turn it into a verdict.
+    pub levels: Option<LevelSummary>,
 }
 
 /// Reasons the caller wants the recorder to stop. Translated to a
@@ -183,6 +198,10 @@ pub struct Recorder {
     /// Shared live-PCM accumulator filled by the ASR `appsink`
     /// callbacks. `None` when PCM capture is disabled.
     pcm_capture: Option<Arc<Mutex<PcmCapture>>>,
+    /// Level statistics folded by the bus thread from the `level`
+    /// element's periodic messages. Always present — measurement does
+    /// not depend on any backend or feature.
+    levels: Arc<Mutex<LevelSummary>>,
 }
 
 /// Bounded accumulator for the ASR fan-out's live mono `f32` PCM. The
@@ -259,6 +278,7 @@ impl Recorder {
             asr_rate_hz: opts.asr_sample_rate,
             capture_pcm: opts.capture_pcm,
             input_gain_db: opts.input_gain_db,
+            level_interval_ns: opts.diagnostics.level_interval_ns(),
         };
         let (pipeline, output_token, asr_sink) = pipeline::build(&selection, &opts.output, params)?;
 
@@ -312,6 +332,7 @@ impl Recorder {
         let state = Arc::new(Mutex::new(RecorderState::Starting));
         let underruns = Arc::new(AtomicU32::new(0));
         let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let levels = Arc::new(Mutex::new(LevelSummary::default()));
 
         let bus_thread = spawn_bus_thread(BusThreadCtx {
             bus: bus.clone(),
@@ -319,6 +340,8 @@ impl Recorder {
             shutdown: Arc::clone(&bus_shutdown),
             underruns: Arc::clone(&underruns),
             warnings: Arc::clone(&warnings),
+            levels: Arc::clone(&levels),
+            clip_peak_db: opts.diagnostics.clip_peak_db,
         });
 
         *state.lock().expect("poisoned recorder state") = RecorderState::Recording;
@@ -338,6 +361,7 @@ impl Recorder {
             sample_rate: opts.sample_rate,
             asr_sample_rate: opts.asr_sample_rate,
             pcm_capture,
+            levels,
             output_path: opts.output,
             started_at: Instant::now(),
         })
@@ -345,6 +369,19 @@ impl Recorder {
 
     pub fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    /// Snapshot of the folded level statistics, or `None` when no
+    /// `level` message has arrived. A poisoned lock reads as `None`:
+    /// the absence of a verdict is always a safe answer, and this must
+    /// never turn a successful recording into an error.
+    fn level_summary(&self) -> Option<LevelSummary> {
+        let summary = *self.levels.lock().ok()?;
+        if summary.is_empty() {
+            None
+        } else {
+            Some(summary)
+        }
     }
 
     pub fn state(&self) -> RecorderState {
@@ -510,6 +547,25 @@ impl Recorder {
                         "captured live ASR PCM",
                     );
                 }
+                let levels = self.level_summary();
+                if let Some(summary) = &levels {
+                    debug!(
+                        session_id = %self.session_id,
+                        windows = summary.windows,
+                        max_peak_db = summary.max_peak_db,
+                        rms_db = summary.rms_db(),
+                        clipped_windows = summary.clipped_windows,
+                        "recording level summary",
+                    );
+                } else {
+                    // No `level` message arrived at all: the recording
+                    // was shorter than one interval, or the element did
+                    // not run. The session then gets no level verdict.
+                    debug!(
+                        session_id = %self.session_id,
+                        "no level statistics captured for this recording",
+                    );
+                }
                 *self.state.lock().expect("poisoned recorder state") = RecorderState::Idle;
                 Ok(RecordingReport {
                     session_id: self.session_id,
@@ -520,6 +576,7 @@ impl Recorder {
                     audio_path: self.output_path.clone(),
                     pcm,
                     pcm_sample_rate: self.asr_sample_rate,
+                    levels,
                 })
             }
         }
@@ -570,6 +627,10 @@ struct BusThreadCtx {
     shutdown: Arc<AtomicBool>,
     underruns: Arc<AtomicU32>,
     warnings: Arc<Mutex<Vec<String>>>,
+    levels: Arc<Mutex<LevelSummary>>,
+    /// Peak (dBFS) at or above which a `level` window counts as clipped.
+    /// Copied out of the config so the thread owns a plain `f32`.
+    clip_peak_db: f32,
 }
 
 /// Attach a `new-sample` callback to the ASR `appsink` that decodes
@@ -651,6 +712,19 @@ fn run_bus_thread(ctx: BusThreadCtx) {
                     if v.len() < MAX_WARNINGS {
                         v.push(format!("{source}: {message}"));
                     }
+                }
+            }
+            Classification::Level {
+                peak_db,
+                rms_db,
+                duration_ms,
+            } => {
+                // A poisoned lock means an earlier panic in our own
+                // code; the recording itself is unaffected, so drop the
+                // window rather than taking the whole bus thread down
+                // over a diagnostic.
+                if let Ok(mut summary) = ctx.levels.lock() {
+                    summary.fold(peak_db, rms_db, duration_ms, ctx.clip_peak_db);
                 }
             }
             Classification::Ignore => {}

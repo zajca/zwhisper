@@ -64,7 +64,7 @@ pub use audio_source::{
     PcmFormat, PcmSourceError,
 };
 pub use bundle_download::{BundleError, BundleInstaller, BundleProgress};
-pub use coordinator::{transcribe_file, transcribe_source};
+pub use coordinator::{preflight, transcribe_file, transcribe_source};
 pub use model::{
     ModelArtifact, ModelKind, ModelKindTag, ModelRegistry, ModelSource, ModelSpec, ModelStatus,
     RemoteFile, RuntimeMeta,

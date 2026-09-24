@@ -13,6 +13,10 @@ use super::error::RecordingError;
 /// Element name of the ASR fan-out appsink (RFC Phase 4).
 pub(crate) const ASR_SINK_NAME: &str = "asr_sink";
 
+/// Element name of the level meter (RFC-actionable-errors § F4). Named
+/// so its bus messages are attributable in a log line.
+pub(crate) const LEVEL_ELEMENT_NAME: &str = "zw_level";
+
 /// Parameters for [`build`]: the native capture rate the FLAC artifact
 /// is written at, the ASR rate the fan-out branch normalizes to, whether
 /// to add the ASR fan-out branch at all, and the optional software input
@@ -36,6 +40,11 @@ pub(crate) struct PipelineParams {
     /// bounds, so a profile that slipped past validation still cannot
     /// drive the element out of range.
     pub input_gain_db: Option<f32>,
+    /// Interval (ns) between the `level` element's analysis messages
+    /// (RFC-actionable-errors § F4). The element sits on the mixed mono
+    /// stream, after the optional input trim and before the `tee`, so it
+    /// measures exactly the signal that reaches the FLAC.
+    pub level_interval_ns: u64,
 }
 
 /// Build the capture pipeline. With `params.capture_pcm`, the mixed
@@ -216,11 +225,13 @@ fn mic_volume_element(input_gain_db: Option<f32>) -> String {
 ///   `pipewiresrc` with no `audiomixer`.
 ///
 /// In both shapes the optional mic `volume` trim sits right after the
-/// mic's `audioresample`. The resulting mono stream is produced at the
-/// native rate; with PCM capture it fans out through a `tee` to (1) a
-/// FLAC writer at the native rate and (2) an `appsink` resampled to the
-/// ASR rate as mono `f32`. The `tee`/ASR fan-out is identical in both
-/// shapes.
+/// mic's `audioresample`, and a `level` meter sits on the mixed mono
+/// stream — after the trim, before any fan-out — so the measured signal
+/// is exactly the one written to the FLAC. The resulting mono stream is
+/// produced at the native rate; with PCM capture it fans out through a
+/// `tee` to (1) a FLAC writer at the native rate and (2) an `appsink`
+/// resampled to the ASR rate as mono `f32`. The `tee`/ASR fan-out is
+/// identical in both shapes.
 fn pipeline_description(
     escaped_mic: &str,
     escaped_monitor: Option<&str>,
@@ -265,6 +276,11 @@ fn pipeline_description(
         }
     };
 
+    let level = format!(
+        " ! level name={LEVEL_ELEMENT_NAME} interval={} post-messages=true",
+        params.level_interval_ns,
+    );
+
     if params.capture_pcm {
         let asr = params.asr_rate_hz;
         // Branch 1 (FLAC, native rate) and branch 2 (ASR appsink, mono
@@ -273,14 +289,14 @@ fn pipeline_description(
         // writer. `sync=false` lets the appsink pull as fast as the
         // recorder drains; the recorder bounds memory itself.
         format!(
-            "{sources} ! tee name=asr_tee \
+            "{sources}{level} ! tee name=asr_tee \
              asr_tee. ! queue ! flacenc ! filesink location=\"{escaped_output}\" \
              asr_tee. ! queue leaky=no ! audioconvert ! audioresample ! \
              audio/x-raw,format=F32LE,rate={asr},channels=1 ! \
              appsink name={ASR_SINK_NAME} sync=false max-buffers=0 drop=false"
         )
     } else {
-        format!("{sources} ! flacenc ! filesink location=\"{escaped_output}\"")
+        format!("{sources}{level} ! flacenc ! filesink location=\"{escaped_output}\"")
     }
 }
 
@@ -321,9 +337,12 @@ fn escape_for_parse_launch(s: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// Matches `DiagnosticsConfig::default().level_interval_ns()`.
+    const TEST_LEVEL_INTERVAL_NS: u64 = 100_000_000;
 
     fn params(native: u32, capture: bool) -> PipelineParams {
         PipelineParams {
@@ -331,6 +350,7 @@ mod tests {
             asr_rate_hz: 16_000,
             capture_pcm: capture,
             input_gain_db: None,
+            level_interval_ns: TEST_LEVEL_INTERVAL_NS,
         }
     }
 
@@ -340,6 +360,7 @@ mod tests {
             asr_rate_hz: 16_000,
             capture_pcm: capture,
             input_gain_db,
+            level_interval_ns: TEST_LEVEL_INTERVAL_NS,
         }
     }
 
@@ -353,6 +374,56 @@ mod tests {
         );
         assert!(!d.contains("tee"), "no tee without capture: {d}");
         assert!(!d.contains("appsink"), "{d}");
+    }
+
+    #[test]
+    fn level_meter_is_present_in_every_graph_shape() {
+        for (monitor, capture) in [
+            (Some("mon"), false),
+            (Some("mon"), true),
+            (None, false),
+            (None, true),
+        ] {
+            let d = pipeline_description("mic", monitor, "/out.flac", params(16_000, capture));
+            assert_eq!(
+                d.matches("level name=zw_level").count(),
+                1,
+                "exactly one level meter expected (monitor={monitor:?}, capture={capture}): {d}"
+            );
+            assert!(
+                d.contains(&format!("interval={TEST_LEVEL_INTERVAL_NS}")),
+                "{d}"
+            );
+            assert!(d.contains("post-messages=true"), "{d}");
+        }
+    }
+
+    #[test]
+    fn level_meter_sits_after_the_trim_and_before_the_fan_out() {
+        // The meter must read the signal that actually reaches the
+        // FLAC: after the `volume` trim, before the `tee`/encoder. A
+        // meter placed before the trim would report levels the user
+        // cannot act on, and one placed on the ASR branch would measure
+        // nothing at all for the non-Parakeet profiles.
+        let d = pipeline_description(
+            "mic",
+            None,
+            "/out.flac",
+            params_gain(16_000, true, Some(-6.0)),
+        );
+        let volume_at = d.find("volume volume=").expect("trim present");
+        let level_at = d.find("level name=zw_level").expect("meter present");
+        let tee_at = d.find("tee name=asr_tee").expect("tee present");
+        assert!(volume_at < level_at, "trim must precede the meter: {d}");
+        assert!(level_at < tee_at, "meter must precede the tee: {d}");
+    }
+
+    #[test]
+    fn level_meter_precedes_the_encoder_without_capture() {
+        let d = pipeline_description("mic", Some("mon"), "/out.flac", params(16_000, false));
+        let level_at = d.find("level name=zw_level").expect("meter present");
+        let enc_at = d.find("flacenc").expect("encoder present");
+        assert!(level_at < enc_at, "meter must precede the encoder: {d}");
     }
 
     #[test]

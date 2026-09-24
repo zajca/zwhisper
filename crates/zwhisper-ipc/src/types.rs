@@ -82,15 +82,24 @@ pub struct JobInfo {
 /// One entry in the response of `History1.ListSessions` /
 /// `History1.GetSession` (RFC-daemon-role Feature 2).
 ///
-/// Wire signature: `(stssssssss)` — `session_id`, `created_at_ms`
+/// Wire signature: `(stssssssssss)` — `session_id`, `created_at_ms`
 /// (Unix-epoch ms, unsigned per C6), `profile`, `audio_path`,
 /// `backend`, `model`, `lang`, `status`, `transcript_path` (`""` when
-/// none), `last_error` (`""` when none). `status` ∈ `recorded |
+/// none), `last_error` (`""` when none), `last_error_code` and
+/// `last_error_action` (both `""` when none). `status` ∈ `recorded |
 /// transcribing | interrupted | done | failed`.
 ///
 /// This is the wire projection of the daemon's richer on-disk
 /// `HistoryEntry`; fields the CLI never renders (codec, native_rate,
 /// channels, whisper_pid) are intentionally dropped from the wire.
+///
+/// `last_error_code` is a `zwhisper_core::diagnostics::FailureCode` wire
+/// string, so `zwhisper history --json` is machine-readable without
+/// parsing the human `last_error` text, and `last_error_action` carries
+/// the fix. `History1` is a post-freeze interface, so widening it is a
+/// deliberate, reviewed change rather than a contract break; the
+/// `PROTOCOL_VERSION` handshake rejects a mismatched client before any
+/// call reaches this struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct HistorySession {
     pub session_id: String,
@@ -103,6 +112,8 @@ pub struct HistorySession {
     pub status: String,
     pub transcript_path: String,
     pub last_error: String,
+    pub last_error_code: String,
+    pub last_error_action: String,
 }
 
 #[cfg(test)]
@@ -139,8 +150,9 @@ mod tests {
 
     #[test]
     fn history_session_serializes_to_dbus_signature() {
-        // RFC-daemon-role History1.ListSessions/GetSession returns
-        // (stssssssss): s + t + eight s.
-        assert_eq!(HistorySession::SIGNATURE.to_string(), "(stssssssss)");
+        // History1.ListSessions/GetSession returns (stssssssssss):
+        // s + t + ten s. The last two are the RFC-actionable-errors
+        // `last_error_code` / `last_error_action` columns.
+        assert_eq!(HistorySession::SIGNATURE.to_string(), "(stssssssssss)");
     }
 }

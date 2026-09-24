@@ -13,7 +13,10 @@
 /// instead of `-inf` arithmetic leaking into clamps and comparisons.
 /// Mirrors the `linear_to_db(0)` guard but as a finite, comparable
 /// value the recommendation math can subtract against.
-pub const SILENCE_FLOOR_DB: f32 = -120.0;
+///
+/// Defined in `crate::gain` so `crate::diagnostics` shares the same
+/// floor without depending on the `setup` feature.
+pub const SILENCE_FLOOR_DB: f32 = crate::gain::SILENCE_FLOOR_DB;
 
 /// Target speech **peak** in dBFS. Mid of the RFC window (−9…−6 dBFS):
 /// loud enough to use the converter's range, with headroom before

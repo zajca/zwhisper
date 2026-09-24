@@ -17,12 +17,18 @@ pub mod secrets;
 #[cfg(feature = "transcribe")]
 pub mod transcribe;
 
-/// Single source of truth for dB↔linear gain conversion and the input
-/// gain range. Shared by the profile schema (range validation), the
-/// profile writer (`input_gain_db` bounds), the audio pipeline clamp,
-/// and the `setup` calibration math, so they cannot drift apart.
-#[cfg(any(feature = "audio", feature = "setup", feature = "profile"))]
+/// Single source of truth for dB↔linear gain conversion, the input gain
+/// range, and the dBFS silence floor. Shared by the profile schema
+/// (range validation), the profile writer (`input_gain_db` bounds), the
+/// audio pipeline clamp, the `setup` calibration math, and the
+/// `diagnostics` level verdicts, so they cannot drift apart.
 pub(crate) mod gain;
+
+/// Actionable failure diagnosis (RFC-actionable-errors): the stable
+/// failure-code vocabulary, the thresholds behind the clipping / silence
+/// verdicts, and the mapping from the crate's typed errors onto a
+/// message plus a concrete next action.
+pub mod diagnostics;
 
 /// Single source of truth for `PipeWire` node-name validation. The
 /// GStreamer device resolver (`audio`), the `setup` calibration layer,

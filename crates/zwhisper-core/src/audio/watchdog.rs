@@ -43,6 +43,13 @@ const DEVICE_LOST_NEEDLES: &[&str] = &[
 /// `DEVICE_LOST_NEEDLES`.
 const UNDERRUN_NEEDLES: &[&str] = &["underrun", "xrun", "buffer underflow"];
 
+/// Structure name of the `level` element's periodic analysis message.
+const LEVEL_STRUCTURE: &str = "level";
+
+/// Structure name `pipewiresrc` uses to announce that its upstream node
+/// went away.
+const NODE_REMOVED_STRUCTURE: &str = "node-removed";
+
 /// Outcome of classifying a single bus message.
 #[derive(Debug, Clone)]
 pub(crate) enum Classification {
@@ -51,6 +58,15 @@ pub(crate) enum Classification {
     Underrun { source: String },
     /// Stop the recording immediately with the given reason.
     Stop(StopReason),
+    /// A `level` element reported one analysis window. `peak_db` and
+    /// `rms_db` are dBFS (the element computes them; 0 dBFS is full
+    /// scale) and `duration_ms` is the window length. Folded into the
+    /// recording's `LevelSummary` — never stop-worthy.
+    Level {
+        peak_db: f32,
+        rms_db: f32,
+        duration_ms: u64,
+    },
     /// Diagnostic-only — caller should log at warn level.
     Warning { source: String, message: String },
     /// Nothing to do.
@@ -104,7 +120,7 @@ pub(crate) fn classify(message: &gst::Message) -> Classification {
             // Treat any structure with that exact name as a hot-swap
             // signal regardless of which element produced it.
             if let Some(structure) = el.structure() {
-                if structure.name() == "node-removed" {
+                if structure.name() == NODE_REMOVED_STRUCTURE {
                     let node = structure
                         .get::<&str>("node-name")
                         .ok()
@@ -112,6 +128,11 @@ pub(crate) fn classify(message: &gst::Message) -> Classification {
                         .or_else(|| extract_node_hint(&source))
                         .unwrap_or_else(|| source.clone());
                     return Classification::Stop(StopReason::DeviceLost { node });
+                }
+                if structure.name() == LEVEL_STRUCTURE {
+                    if let Some(level) = parse_level(structure) {
+                        return level;
+                    }
                 }
             }
             Classification::Ignore
@@ -123,6 +144,71 @@ pub(crate) fn classify(message: &gst::Message) -> Classification {
         // soak shows it is needed in practice.
         _ => Classification::Ignore,
     }
+}
+
+/// Read one `level` element message into a [`Classification::Level`].
+///
+/// The element reports `peak` and `rms` as `GValueArray`s of `f64`
+/// **already in dBFS**, one entry per channel, plus the window length in
+/// nanoseconds.
+///
+/// Extraction is kept separate from the arithmetic in
+/// [`level_from_parts`] because `glib::ValueArray` is not `Send`, so
+/// gstreamer-rs refuses to build a `Structure` containing one — a
+/// `level` structure can be *read* from Rust but not synthesised, and
+/// the decision logic would otherwise be untestable without a live
+/// pipeline.
+fn parse_level(structure: &gst::StructureRef) -> Option<Classification> {
+    let duration_ns = structure.get::<u64>("duration").ok()?;
+    level_from_parts(
+        &channel_values(structure, "peak"),
+        &channel_values(structure, "rms"),
+        duration_ns,
+    )
+}
+
+/// Collect a `level` message's per-channel `GValueArray` into plain
+/// `f64`s. A missing or non-array field yields an empty vec, which
+/// [`level_from_parts`] rejects.
+fn channel_values(structure: &gst::StructureRef, field: &str) -> Vec<f64> {
+    structure
+        .get::<gst::glib::ValueArray>(field)
+        .map(|array| array.iter().filter_map(|v| v.get::<f64>().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Turn one `level` window's per-channel dBFS readings into a
+/// classification.
+///
+/// The capture graph is mono by the time it reaches the element, but the
+/// **loudest** channel is taken so a future multi-channel graph degrades
+/// to "the worst channel" rather than silently reporting only channel 0.
+///
+/// Returns `None` when the window is zero-length or no channel carries a
+/// finite reading. A malformed message is dropped rather than folded in
+/// as a zero, which would drag the session RMS toward silence and could
+/// manufacture a false "nothing was heard" verdict.
+fn level_from_parts(peaks: &[f64], rms: &[f64], duration_ns: u64) -> Option<Classification> {
+    let duration_ms = duration_ns / 1_000_000;
+    if duration_ms == 0 {
+        return None;
+    }
+    Some(Classification::Level {
+        peak_db: max_finite_db(peaks)?,
+        rms_db: max_finite_db(rms)?,
+        duration_ms,
+    })
+}
+
+/// Largest finite reading in a per-channel dBFS slice.
+fn max_finite_db(values: &[f64]) -> Option<f32> {
+    values
+        .iter()
+        .map(|&db| db as f32)
+        .filter(|db| db.is_finite())
+        .fold(None, |acc: Option<f32>, db| {
+            Some(acc.map_or(db, |best| if db > best { db } else { best }))
+        })
 }
 
 fn is_pipewiresrc(source: &str) -> bool {
@@ -224,6 +310,66 @@ mod tests {
         // with mixed case.
         let combined = "STREAM ERROR: TARGET NOT FOUND".to_lowercase();
         assert!(contains_any(&combined, DEVICE_LOST_NEEDLES));
+    }
+
+    #[test]
+    fn level_window_classifies_with_db_values_and_window_length() {
+        match level_from_parts(&[-6.0211], &[-9.0315], 100_000_000) {
+            Some(Classification::Level {
+                peak_db,
+                rms_db,
+                duration_ms,
+            }) => {
+                assert!((peak_db - (-6.0211)).abs() < 1e-3, "{peak_db}");
+                assert!((rms_db - (-9.0315)).abs() < 1e-3, "{rms_db}");
+                assert_eq!(duration_ms, 100);
+            }
+            other => panic!("unexpected classification: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_channel_level_window_reports_the_loudest_channel() {
+        // The capture graph is mono today, but a future multi-channel
+        // shape must degrade to "the worst channel", not "channel 0".
+        match level_from_parts(&[-30.0, -2.0], &[-40.0, -11.0], 100_000_000) {
+            Some(Classification::Level {
+                peak_db, rms_db, ..
+            }) => {
+                assert!((peak_db - (-2.0)).abs() < 1e-3, "{peak_db}");
+                assert!((rms_db - (-11.0)).abs() < 1e-3, "{rms_db}");
+            }
+            other => panic!("unexpected classification: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_level_window_is_dropped_rather_than_folded_as_zero() {
+        // No channels at all.
+        assert!(level_from_parts(&[], &[], 100_000_000).is_none());
+        // Peak present, RMS missing.
+        assert!(level_from_parts(&[-6.0], &[], 100_000_000).is_none());
+        // Sub-millisecond window: nothing to weight it by.
+        assert!(level_from_parts(&[-6.0], &[-9.0], 0).is_none());
+        assert!(level_from_parts(&[-6.0], &[-9.0], 999_999).is_none());
+    }
+
+    #[test]
+    fn non_finite_level_channels_are_skipped() {
+        match level_from_parts(&[f64::NEG_INFINITY, -12.0], &[f64::NAN, -20.0], 100_000_000) {
+            Some(Classification::Level {
+                peak_db, rms_db, ..
+            }) => {
+                assert!((peak_db - (-12.0)).abs() < 1e-3, "{peak_db}");
+                assert!((rms_db - (-20.0)).abs() < 1e-3, "{rms_db}");
+            }
+            other => panic!("unexpected classification: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_window_of_only_non_finite_channels_is_dropped() {
+        assert!(level_from_parts(&[f64::NAN], &[f64::NAN], 100_000_000).is_none());
     }
 
     #[test]

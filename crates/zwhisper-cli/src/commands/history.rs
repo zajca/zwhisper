@@ -91,7 +91,47 @@ async fn run_list(proxy: &History1Proxy<'_>, limit: u32) -> i32 {
     for line in format_sessions_table(&sessions) {
         println!("{line}");
     }
+    for line in format_failure_notes(&sessions) {
+        println!("{line}");
+    }
     EXIT_OK
+}
+
+/// Footer block naming why each failed session failed, and what to do
+/// about it.
+///
+/// The table cannot carry this: the messages are sentences, and the
+/// column would dominate the width for the common case where nothing
+/// failed. An empty vec when every session succeeded, so the footer
+/// costs nothing in the normal case.
+fn format_failure_notes(sessions: &[HistorySession]) -> Vec<String> {
+    let failed: Vec<&HistorySession> = sessions
+        .iter()
+        .filter(|s| !s.last_error.is_empty())
+        .collect();
+    if failed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = vec![String::new(), "failures:".to_owned()];
+    for s in failed {
+        let code = if s.last_error_code.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", s.last_error_code)
+        };
+        lines.push(format!(
+            "  {}{code}  {}",
+            short_session_id(&s.session_id),
+            s.last_error,
+        ));
+        // Older entries, written before the failure vocabulary landed,
+        // carry a message but no action.
+        if !s.last_error_action.is_empty() {
+            lines.push(format!("      -> {}", s.last_error_action));
+        }
+    }
+    lines
 }
 
 #[allow(clippy::print_stderr)]
@@ -268,7 +308,10 @@ fn map_daemon_err(ctx: &str, err: &zbus::Error) -> i32 {
 mod tests {
     use zwhisper_ipc::HistorySession;
 
-    use super::{format_sessions_table, max_width, short_session_id, transcript_basename};
+    use super::{
+        format_failure_notes, format_sessions_table, max_width, short_session_id,
+        transcript_basename,
+    };
 
     fn session(
         id: &str,
@@ -288,7 +331,51 @@ mod tests {
             status: status.to_owned(),
             transcript_path: tpath.to_owned(),
             last_error: String::new(),
+            last_error_code: String::new(),
+            last_error_action: String::new(),
         }
+    }
+
+    /// A failed session carrying the full diagnosis.
+    fn failed_session(id: &str, code: &str, action: &str) -> HistorySession {
+        HistorySession {
+            last_error: "microphone `Built-in Mic` is muted".to_owned(),
+            last_error_code: code.to_owned(),
+            last_error_action: action.to_owned(),
+            ..session(id, "default", "parakeet", "failed", "")
+        }
+    }
+
+    #[test]
+    fn no_failure_footer_when_every_session_succeeded() {
+        let sessions = vec![session("abc", "default", "parakeet", "done", "/x/a.txt")];
+        assert!(format_failure_notes(&sessions).is_empty());
+    }
+
+    #[test]
+    fn failure_footer_names_the_code_and_the_action() {
+        let sessions = vec![failed_session(
+            "11111111-2222",
+            "mic_muted",
+            "unmute it: `wpctl set-mute 52 0`",
+        )];
+        let joined = format_failure_notes(&sessions).join("\n");
+        assert!(joined.contains("failures:"), "{joined}");
+        assert!(joined.contains("11111111"), "{joined}");
+        assert!(joined.contains("[mic_muted]"), "{joined}");
+        assert!(joined.contains("wpctl set-mute 52 0"), "{joined}");
+    }
+
+    #[test]
+    fn a_pre_vocabulary_entry_renders_without_a_code_or_action() {
+        // Entries written before the failure vocabulary landed carry a
+        // message only; the footer must not print an empty `[]` or a
+        // dangling arrow.
+        let sessions = vec![failed_session("abc", "", "")];
+        let joined = format_failure_notes(&sessions).join("\n");
+        assert!(joined.contains("is muted"), "{joined}");
+        assert!(!joined.contains("[]"), "{joined}");
+        assert!(!joined.contains("->"), "{joined}");
     }
 
     #[test]

@@ -43,7 +43,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use zwhisper_ipc::{
-    BUS_NAME, History1Proxy, Jobs1Proxy, OBJECT_PATH, Profiles1Proxy, Recorder1Proxy,
+    BUS_NAME, Diagnostics1Proxy, History1Proxy, Jobs1Proxy, OBJECT_PATH, Profiles1Proxy,
+    Recorder1Proxy,
 };
 
 /// Reasons the fixture cannot run on this host. Tests map this to a
@@ -331,6 +332,18 @@ impl DbusFixture {
     pub async fn proxy_history(&self) -> zbus::Result<History1Proxy<'static>> {
         let conn = self.connection().await?;
         History1Proxy::builder(&conn)
+            .destination(BUS_NAME)?
+            .path(OBJECT_PATH)?
+            .build()
+            .await
+    }
+
+    /// Build a `Diagnostics1` proxy bound to a fresh connection
+    /// (RFC-actionable-errors).
+    #[allow(dead_code)] // Used only by tests/diagnostics.rs.
+    pub async fn proxy_diagnostics(&self) -> zbus::Result<Diagnostics1Proxy<'static>> {
+        let conn = self.connection().await?;
+        Diagnostics1Proxy::builder(&conn)
             .destination(BUS_NAME)?
             .path(OBJECT_PATH)?
             .build()

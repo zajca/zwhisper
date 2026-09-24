@@ -24,12 +24,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{Semaphore, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
 use tracing::{error, info, warn};
+use zwhisper_core::diagnostics::{DiagnosticsConfig, FailureReason, LevelSummary, diagnose_levels};
 use zwhisper_core::profile::schema::OutputDest;
 use zwhisper_core::transcribe::{
     AudioSource, TranscribeOpts, TranscriptArtifacts, transcribe_file, transcribe_source,
 };
 use zwhisper_ipc::{OBJECT_PATH, RpcError};
 
+use crate::diagnostics_service::FailureReporter;
 use crate::history::{HistoryHandle, HistoryStatus};
 use crate::jobs::{JobId, JobState, SubmitMode, encode_outputs};
 // `JobsInterfaceSignals` is the zbus-generated trait that exposes the
@@ -47,6 +49,23 @@ pub(crate) enum JobSource {
     Prepared(Box<AudioSource>),
 }
 
+/// Level statistics and thresholds from the recording this job
+/// transcribes (RFC-actionable-errors § F5).
+///
+/// Present only for post-record `Auto` jobs — a `Jobs1.TranscribeFile`
+/// job transcribes a file nobody metered, so it has no level data and an
+/// empty result there can only be reported as `empty_transcript`.
+pub(crate) struct CaptureDiagnostics {
+    /// Folded `level` statistics, or `None` when the recording produced
+    /// no `level` message at all.
+    pub(crate) levels: Option<LevelSummary>,
+    /// Resolved mic node name, so a verdict can name the device the user
+    /// actually recorded from.
+    pub(crate) mic_node: String,
+    /// The profile's thresholds.
+    pub(crate) cfg: DiagnosticsConfig,
+}
+
 /// Everything needed to run one job.
 pub(crate) struct JobSpec {
     pub(crate) session_id: String,
@@ -59,6 +78,9 @@ pub(crate) struct JobSpec {
     /// Set for `Auto` jobs: the lifecycle task awaits this so it can
     /// emit the FROZEN `Recorder1` terminal signals from the result.
     pub(crate) done: Option<oneshot::Sender<Result<TranscriptArtifacts, String>>>,
+    /// Set for `Auto` jobs: what the capture measured, used to explain
+    /// an empty transcript.
+    pub(crate) capture: Option<CaptureDiagnostics>,
 }
 
 struct JobRecord {
@@ -83,6 +105,9 @@ struct Inner {
     /// by which point the cell is always set.
     conn: Arc<OnceLock<zbus::Connection>>,
     history: HistoryHandle,
+    /// Publishes the structured reason for every job failure, ahead of
+    /// the `Jobs1.JobFailed` signal.
+    reporter: FailureReporter,
     sem: Arc<Semaphore>,
     registry: Mutex<HashMap<JobId, JobRecord>>,
     running: Mutex<Vec<JoinHandle<()>>>,
@@ -106,6 +131,7 @@ impl JobQueue {
     pub(crate) fn new(
         conn: Arc<OnceLock<zbus::Connection>>,
         history: HistoryHandle,
+        reporter: FailureReporter,
         concurrency: usize,
     ) -> Self {
         let concurrency = concurrency.max(1);
@@ -113,6 +139,7 @@ impl JobQueue {
             inner: Arc::new(Inner {
                 conn,
                 history,
+                reporter,
                 sem: Arc::new(Semaphore::new(concurrency)),
                 registry: Mutex::new(HashMap::new()),
                 running: Mutex::new(Vec::new()),
@@ -182,6 +209,7 @@ impl JobQueue {
         opts: TranscribeOpts,
         profile: String,
         outputs: Vec<OutputDest>,
+        capture: CaptureDiagnostics,
     ) -> oneshot::Receiver<Result<TranscriptArtifacts, String>> {
         let (tx, rx) = oneshot::channel();
         let label = format!("auto:{session_id}");
@@ -194,6 +222,7 @@ impl JobQueue {
             submit_mode: SubmitMode::Auto,
             label,
             done: Some(tx),
+            capture: Some(capture),
         };
         // `submit` forwards a shutdown refusal onto the `done` channel,
         // so the receiver always resolves.
@@ -215,12 +244,9 @@ impl JobQueue {
                 // Reflect the cancellation in history (best-effort).
                 let history = self.inner.history.clone();
                 tokio::spawn(async move {
+                    let reason = FailureReason::job_cancelled(&session_id);
                     history
-                        .set_status(
-                            &session_id,
-                            HistoryStatus::Failed,
-                            Some("cancelled by user".to_owned()),
-                        )
+                        .set_status(&session_id, HistoryStatus::Failed, Some(reason))
                         .await;
                 });
                 Ok(())
@@ -373,6 +399,18 @@ async fn run_job(queue: JobQueue, job_id: JobId, spec: JobSpec) {
     };
     drop(permit);
 
+    // An empty transcript is not a success: it is the failure mode this
+    // product is worst at explaining. Diagnose it *before* the success
+    // fan-out so no empty text is ever delivered to the clipboard or
+    // typed at the cursor (RFC-actionable-errors F5).
+    let result = match result {
+        Ok(art) => match diagnose_empty_transcript(&art, &spec) {
+            Some(reason) => Err(reason),
+            None => Ok(art),
+        },
+        Err(e) => Err(FailureReason::from(&e)),
+    };
+
     match result {
         Ok(art) => {
             let bytes = std::fs::metadata(&art.txt_path).map_or(0, |m| m.len());
@@ -414,13 +452,27 @@ async fn run_job(queue: JobQueue, job_id: JobId, spec: JobSpec) {
                 let _ = done.send(Ok(art));
             }
         }
-        Err(e) => {
-            let msg = e.to_string();
-            error!(job_id = %job_id, session_id = %spec.session_id, error = %msg, "job failed");
+        Err(reason) => {
+            let msg = reason.message.clone();
+            error!(
+                job_id = %job_id,
+                session_id = %spec.session_id,
+                code = reason.code.as_str(),
+                error = %msg,
+                action = %reason.action,
+                "job failed",
+            );
+            // Structured reason first: a client watching `JobFailed`
+            // must already hold the code and the action when it arrives.
+            queue
+                .inner
+                .reporter
+                .report(&spec.session_id, &job_id.to_string(), &reason)
+                .await;
             queue
                 .inner
                 .history
-                .set_status(&spec.session_id, HistoryStatus::Failed, Some(msg.clone()))
+                .set_status(&spec.session_id, HistoryStatus::Failed, Some(reason))
                 .await;
             queue.emit_failed(&job_id, &msg).await;
             queue.set_state(job_id, JobState::Failed);
@@ -431,4 +483,36 @@ async fn run_job(queue: JobQueue, job_id: JobId, spec: JobSpec) {
         }
     }
     queue.finish(job_id);
+}
+
+/// Explain an empty transcript, or return `None` when the transcript has
+/// text.
+///
+/// A transcript with content is **never** downgraded: the level verdict
+/// is consulted only once the recogniser has already produced nothing,
+/// which is the one case where a clipping or silence reading is the
+/// answer the user needs. A `txt` file that cannot be read is also
+/// `None` — inventing a failure from a filesystem hiccup would be worse
+/// than delivering the transcript the backend says it wrote.
+fn diagnose_empty_transcript(art: &TranscriptArtifacts, spec: &JobSpec) -> Option<FailureReason> {
+    let text = std::fs::read_to_string(&art.txt_path).ok()?;
+    if !text.trim().is_empty() {
+        return None;
+    }
+
+    // The capture measured something: let it speak first. It knows about
+    // the microphone; the backend only knows it heard nothing.
+    if let Some(capture) = &spec.capture {
+        if let Some(levels) = &capture.levels {
+            if let Some(reason) = diagnose_levels(levels, &capture.mic_node, &capture.cfg) {
+                return Some(reason);
+            }
+        }
+    }
+
+    Some(FailureReason::empty_transcript(
+        spec.opts.backend.as_str(),
+        &art.model,
+        &art.language,
+    ))
 }

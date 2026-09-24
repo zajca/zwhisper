@@ -124,11 +124,23 @@ pub enum TranscribeError {
     /// Cloud backend rejected the request as unauthorized — the
     /// resolved API key is invalid, expired, or insufficiently
     /// scoped.
+    ///
+    /// `key_source` names **where** the rejected key came from (the env
+    /// variable name or the secrets-file path), never the key itself —
+    /// it is rendered from
+    /// [`crate::secrets::ResolveSource`], which by construction holds a
+    /// name or a path. Knowing which of the two lookup paths won is the
+    /// difference between rotating the right secret and rotating the
+    /// wrong one.
     #[error(
-        "backend `{backend}` rejected the request as unauthorized (HTTP {status}); \
-         check that the API key is valid"
+        "backend `{backend}` rejected the API key from {key_source} as unauthorized \
+         (HTTP {status}); rotate it or check that it is scoped for this API"
     )]
-    BackendAuth { backend: &'static str, status: u16 },
+    BackendAuth {
+        backend: &'static str,
+        status: u16,
+        key_source: String,
+    },
 
     /// Cloud backend rejected the request because the project ran
     /// out of credit or hit a rate limit (HTTP 402 / 429). Caller

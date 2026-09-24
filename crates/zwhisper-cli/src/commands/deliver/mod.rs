@@ -24,10 +24,12 @@ pub(crate) mod sink;
 use futures_util::StreamExt;
 use zbus::fdo::{DBusProxy, RequestNameFlags, RequestNameReply};
 use zbus::names::WellKnownName;
-use zwhisper_ipc::{DELIVER_BUS_NAME, Jobs1Proxy};
+use zwhisper_core::diagnostics::FailureReason;
+use zwhisper_ipc::{DELIVER_BUS_NAME, Diagnostics1Proxy, Jobs1Proxy};
 
 use sink::{
-    ClipboardDecision, ClipboardSink, TypeDecision, TypeSink, decide_clipboard, decide_type, notify,
+    ClipboardDecision, ClipboardSink, TypeDecision, TypeSink, decide_clipboard, decide_type,
+    notify, notify_with_urgency,
 };
 
 use super::DAEMON_DOWN_HINT;
@@ -146,15 +148,30 @@ async fn run_async() {
         }
     };
 
-    // Also subscribe to JobFailed: a daemon auto-transcribe that fails
-    // (e.g. a `parakeet` profile on a build without the feature, or a
-    // missing whisper-cli) otherwise only lands in `StateChanged "failed"`
-    // + history, with nothing surfaced to the user. We are the one
-    // component with the notification daemon, so we raise it here.
-    let mut failed = match proxy.receive_job_failed().await {
+    // Failures come from `Diagnostics1.FailureReported` rather than
+    // `Jobs1.JobFailed`. Every job failure is preceded by a
+    // `FailureReported` from the same code path, so nothing is lost —
+    // and this stream additionally covers the failures that never went
+    // through a job at all: a refused start (muted mic), a recording
+    // that died mid-stream, and a drain task that crashed. None of those
+    // raised a notification before.
+    let diagnostics = match Diagnostics1Proxy::new(&conn).await {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "deliver: failed to build Diagnostics1 proxy; exiting cleanly"
+            );
+            return;
+        }
+    };
+    let mut failed = match diagnostics.receive_failure_reported().await {
         Ok(s) => s,
         Err(err) => {
-            tracing::warn!(error = %err, "deliver: cannot subscribe to Jobs1.JobFailed; exiting cleanly");
+            tracing::warn!(
+                error = %err,
+                "deliver: cannot subscribe to Diagnostics1.FailureReported; exiting cleanly"
+            );
             eprintln!("{DAEMON_DOWN_HINT}");
             return;
         }
@@ -162,7 +179,7 @@ async fn run_async() {
 
     let clipboard = ClipboardSink::new();
     let type_sink = TypeSink::new();
-    tracing::info!("deliver: listening for Jobs1.JobCompleted + JobFailed");
+    tracing::info!("deliver: listening for Jobs1.JobCompleted + Diagnostics1.FailureReported");
 
     // ---- Consume both signal streams until they end ----------------
     // `tokio::select!` polls both; the loop exits only once *both*
@@ -183,7 +200,7 @@ async fn run_async() {
                 Some(signal) => match signal.args() {
                     Ok(args) => handle_failed(&args).await,
                     Err(err) => tracing::warn!(
-                        error = %err, "deliver: malformed JobFailed payload; skipping"
+                        error = %err, "deliver: malformed FailureReported payload; skipping"
                     ),
                 },
                 None => break,
@@ -196,18 +213,33 @@ async fn run_async() {
     tracing::info!("deliver: signal stream ended; exiting cleanly");
 }
 
-/// Surface a failed transcription job as a desktop notification. The
-/// audio is always preserved daemon-side (the job error is informational
-/// only); this just makes the failure visible instead of silent. The
-/// error text is the daemon's typed message — for the not-compiled case
-/// it already names the missing `--features` flag.
-async fn handle_failed(args: &zwhisper_ipc::jobs::JobFailedArgs<'_>) {
+/// Surface a failure as a desktop notification.
+///
+/// The summary comes from the failure **code**, so a muted microphone
+/// reads differently from a missing model instead of every failure
+/// arriving as "Transcription failed". The body is the message plus the
+/// suggested action, which is the part the user acts on.
+///
+/// Urgency is `Critical` for the failures the user must fix before the
+/// next recording will work (a muted mic, a missing model): those will
+/// recur identically until acted on, so they earn a notification that
+/// does not auto-dismiss on a busy desktop.
+async fn handle_failed(args: &zwhisper_ipc::diagnostics::FailureReportedArgs<'_>) {
     tracing::warn!(
+        session_id = %args.session_id,
         job_id = %args.job_id,
-        error = %args.error,
-        "deliver: transcription job failed",
+        code = %args.code,
+        error = %args.message,
+        action = %args.action,
+        "deliver: failure reported",
     );
-    notify("Transcription failed", args.error).await;
+    let reason = FailureReason::from_wire(args.code, args.message, args.action);
+    notify_with_urgency(
+        reason.code.summary(),
+        &reason.render(),
+        reason.code.is_actionable_now(),
+    )
+    .await;
 }
 
 /// Claim `DELIVER_BUS_NAME` on `conn`. Returns `Ok(true)` when we are the

@@ -19,11 +19,11 @@
 
 use color_eyre::eyre::eyre;
 use futures_util::StreamExt;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zwhisper_core::profile;
 use zwhisper_core::profile::schema::{Backend, DeepgramSettings};
 use zwhisper_core::transcribe::{self, BackendSettings, TranscribeOpts};
-use zwhisper_ipc::Jobs1Proxy;
+use zwhisper_ipc::{Diagnostics1Proxy, Jobs1Proxy};
 
 use crate::cli::TranscribeArgs;
 
@@ -194,7 +194,7 @@ async fn run_daemon(args: &TranscribeArgs) -> i32 {
             Err(err) => map_daemon_err("Jobs1.TranscribeFile", &err),
         }
     } else {
-        run_queue_wait(&proxy, &path, &backend, &model, &lang).await
+        run_queue_wait(&proxy, &conn, &path, &backend, &model, &lang).await
     }
 }
 
@@ -203,6 +203,7 @@ async fn run_daemon(args: &TranscribeArgs) -> i32 {
 #[allow(clippy::print_stderr)]
 async fn run_queue_wait(
     proxy: &Jobs1Proxy<'_>,
+    conn: &zbus::Connection,
     path: &str,
     backend: &str,
     model: &str,
@@ -218,6 +219,18 @@ async fn run_queue_wait(
         Ok(s) => s,
         Err(err) => return map_daemon_err("subscribe JobFailed", &err),
     };
+    // `JobFailed` carries only a message. The reason — code plus the
+    // suggested action — arrives on `Diagnostics1.FailureReported`
+    // immediately before it, so subscribe here too. A daemon too old to
+    // serve it still reports the message.
+    let mut reported = match Diagnostics1Proxy::new(conn).await {
+        Ok(p) => p.receive_failure_reported().await.ok(),
+        Err(err) => {
+            debug!(error = %err, "no Diagnostics1 proxy; failures will lack an action");
+            None
+        }
+    };
+    let mut action: Option<String> = None;
 
     let job_id = match proxy
         .transcribe_file(path, backend, model, lang, "foreground")
@@ -248,7 +261,21 @@ async fn run_queue_wait(
                     let Ok(a) = sig.args() else { continue; };
                     if a.job_id != job_id { continue; }
                     eprintln!("transcription failed: {}", a.error);
+                    if let Some(action) = &action {
+                        eprintln!("  -> {action}");
+                    }
                     return EXIT_RECORDING_FAILED;
+                }
+                maybe = async {
+                    match reported.as_mut() {
+                        Some(stream) => stream.next().await,
+                        None => std::future::pending().await,
+                    }
+                }, if reported.is_some() => {
+                    let Some(sig) = maybe else { reported = None; continue; };
+                    let Ok(a) = sig.args() else { continue; };
+                    if a.job_id != job_id { continue; }
+                    action = Some(a.action.to_owned());
                 }
             }
         }

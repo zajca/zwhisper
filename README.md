@@ -40,8 +40,9 @@ Add `include ~/path/to/zwhisper/contrib/sway/zwhisper.conf` to your Sway
 config and the `custom/zwhisper` module to Waybar (see
 [Desktop integration](#desktop-integration-sway--waybar)), reload Sway,
 then press **`Super+Ctrl+R`**, speak, and press it again — the transcript
-is in your clipboard. Empty result? Your mic gain is almost certainly too
-high; see [Microphone level](#microphone-level-empty-transcripts).
+is in your clipboard. If something goes wrong, zwhisper says what and
+what to do about it, in a notification and in `zwhisper status`; see
+[Diagnostics](#diagnostics).
 
 ## Features
 
@@ -347,6 +348,8 @@ zwhisper profile list|set|show
 zwhisper model ...           # intended model list/download/verify/path surface
 zwhisper hotkey probe|status|bind
 zwhisper backend health      # local whisper.cpp + cloud backend reachability
+zwhisper audio calibrate     # measure the mic and set a safe input level
+zwhisper history             # past sessions, with why any of them failed
 ```
 
 Run `zwhisper --help` for the full command surface.
@@ -419,6 +422,56 @@ Append [`contrib/waybar/style.css`](./contrib/waybar/style.css) to your
   active profile, which captures a **mono mix of mic + system output**
   and writes a FLAC + transcript to `~/Recordings`.
 
+## Diagnostics
+
+Every failure carries three things: a **stable code**, a message naming
+the device / model / backend involved, and an **action** — a command you
+can run. They surface in three places: the notification, the
+`zwhisper record` / `zwhisper transcribe` exit message, and
+`zwhisper status`.
+
+```sh
+zwhisper status                  # state + the last failure, with its fix
+zwhisper status --json           # `last_failure: { code, message, action, ... }`
+zwhisper history                 # a `failures:` footer per failed session
+```
+
+The codes, and what each one means:
+
+| Code | What happened | Typical fix |
+|---|---|---|
+| `mic_muted` | the target source was muted when you pressed the hotkey; the recording was **refused** | `wpctl set-mute <id> 0` |
+| `mic_clipping` | the input saturated for a meaningful part of the recording, so the transcript came back empty | `zwhisper audio calibrate --apply` |
+| `mic_silent` | nothing audible was captured at all | `zwhisper audio meter --source <node>` |
+| `device_lost` | the capture device disappeared mid-recording; the partial audio is kept | `zwhisper audio devices` |
+| `empty_transcript` | the level was healthy but the recogniser produced no text | check `transcription.language`, or try a larger model |
+| `model_missing` | the configured model is not installed | `zwhisper model install <id>` |
+| `backend_not_compiled` | the backend's engine is not in this build | rebuild with `--features <flag>` |
+| `cloud_auth` | the cloud backend rejected the API key (the message names **where** the key came from) | rotate it, then `zwhisper backend health` |
+| `cloud_key_missing` | no API key resolved | set the env var or create `secrets.toml` |
+
+A missing model or an uncompiled backend does **not** block a recording:
+the audio is irreplaceable and still transcribable later with
+`zwhisper transcribe <file>`, so zwhisper reports the problem and keeps
+recording. Only a muted microphone is refused, because that capture
+would be empty by construction.
+
+In Waybar the failure code is appended as a CSS class, so
+`.zwhisper.mic_muted` can be styled differently from
+`.zwhisper.model_missing`, and the tooltip carries the message and the
+action.
+
+The clipping and silence thresholds are hardware-dependent and can be
+overridden per profile:
+
+```toml
+[diagnostics]
+clip_peak_db = -0.5        # peak at/above which a window counts as clipped
+clip_window_ratio = 0.05   # fraction of windows that must clip to report it
+silent_rms_db = -55.0       # whole-session RMS below which it is "silent"
+mute_probe = true           # check the mute flag before recording
+```
+
 ## Troubleshooting
 
 ### Daemon won't start
@@ -481,13 +534,24 @@ log will show the `pipewiresrc target-object=<name>` it resolved.
 
 ### Microphone level (empty transcripts)
 
-If recordings succeed but the transcript is empty (or whisper.cpp returns
-filler like `[ Thank you.]`), the captured audio is usually **noise, not
-speech** — most often because the input gain is cranked so high the mic
-saturates. This is common with onboard codecs (e.g. Realtek ALC1220) whose
-mic input has an aggressive hardware boost.
+zwhisper now diagnoses this case itself — a recording whose transcript
+comes back empty is reported as clipped or silent, with the command to
+fix it (see [Diagnostics](#diagnostics)). This section is the background
+for that diagnosis and the manual route if you want to measure by hand.
 
-Diagnose and fix:
+The failure mode: the captured audio is **noise, not speech** — most
+often because the input gain is cranked so high the mic saturates. This
+is common with onboard codecs (e.g. Realtek ALC1220) whose mic input has
+an aggressive hardware boost.
+
+The zwhisper way:
+
+```sh
+zwhisper audio calibrate --apply     # measure and set a safe level
+zwhisper audio meter                 # live VU meter for manual tuning
+```
+
+Or measure it by hand:
 
 ```sh
 # Record a few seconds while you speak, then check the level:

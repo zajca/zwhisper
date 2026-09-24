@@ -7,6 +7,77 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Actionable failure reasons (`docs/RFC-actionable-errors.md`).** Every
+  failure now carries a stable machine-readable code, a message naming the
+  device / model / backend involved, and an **action** — a command the user
+  can run. Previously the whole vocabulary was the bare string `"failed"`,
+  and three of the daemon's five failure paths recorded nothing anywhere.
+  - New `Diagnostics1` D-Bus interface alongside the frozen `Recorder1`:
+    signal `FailureReported(session_id, job_id, code, message, action)`,
+    emitted strictly before the terminal `StateChanged "failed"` /
+    `Jobs1.JobFailed` for the same work item, plus `GetLastFailure()` — which
+    is what finally lets the one-shot `zwhisper status` report a failure at
+    all, since `Recorder1.GetStatus` only ever returns `idle` or `recording`.
+  - **Clipping and silence detection.** A `level` element in the capture
+    pipeline folds per-window peak/RMS into a constant-memory summary; when a
+    transcript comes back empty it is reported as `mic_clipping` or
+    `mic_silent` — naming the device and pointing at `zwhisper audio
+    calibrate` — instead of delivering empty text as a success. A non-empty
+    transcript is never downgraded.
+  - **Muted-microphone check before capture.** `StartRecording` refuses with
+    the exact `wpctl set-mute <id> 0` command instead of recording silence.
+    An inconclusive probe (no `wpctl`, unparseable dump, timeout) never blocks
+    a recording.
+  - **Backend and model preflight.** A missing model or an uncompiled backend
+    is reported when recording starts rather than after the user has finished
+    speaking. It does **not** refuse the recording: the audio is
+    irreplaceable and still transcribable with `zwhisper transcribe <file>`.
+  - **Notifications per failure class.** `zwhisper deliver` now titles the
+    notification from the code (`Microphone is muted`, `Model not installed`,
+    …) with the action in the body, and raises `Critical` urgency for
+    failures that will recur until fixed. A *recording* failure raised no
+    notification at all before.
+  - **`zwhisper status`** gains the last failure in all four output modes;
+    `--waybar` keeps `text` byte-identical and adds the code as a CSS class
+    plus the message and action in the tooltip. `zwhisper history` gains a
+    `failures:` footer.
+  - **Per-profile `[diagnostics]` table** for the hardware-dependent
+    thresholds (`clip_peak_db`, `clip_window_ratio`, `silent_rms_db`,
+    `mute_probe`). Additive and optional, so existing profiles round-trip
+    byte-for-byte.
+  - `TranscribeError::BackendAuth` now names **where** the rejected API key
+    was resolved from (the env variable name or the secrets-file path, never
+    the key), so a 401 says which secret to rotate.
+
+### Changed
+
+- **`History1` wire widening.** `HistorySession` gains `last_error_code` and
+  `last_error_action` (`(stssssssss)` → `(stssssssssss)`), so
+  `zwhisper history` is machine-readable without parsing the human message.
+  `history.json` gains the same two fields additively — no schema bump, and
+  an existing file loads unchanged.
+- **`zwhisper deliver`** now takes failures from
+  `Diagnostics1.FailureReported` rather than `Jobs1.JobFailed`. Every job
+  failure is preceded by a `FailureReported` from the same code path, so
+  nothing is lost — and the new stream also covers the failures that never
+  went through a job: a refused start, a recording that died mid-stream, and
+  a crashed drain task.
+
+### Fixed
+
+- **A failed recording now reaches the user.** A recording-side failure
+  (`await_completion` error) previously wrote its reason only to
+  `history.json`: no notification, and `zwhisper record` printed
+  `recording failed (StateChanged "failed")` with no reason, because the
+  signal carries none.
+- **Two silent failure paths.** A panicked recorder-drain task and a
+  transcribe job whose result channel was dropped left nothing behind but a
+  log line — no history entry, no notification. Both now report a coded
+  reason.
+
+
 ## [0.6.0] - 2026-06-05
 
 Backend availability is now explicit, and recordings orphaned by a killed

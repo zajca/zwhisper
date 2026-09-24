@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
+use zwhisper_core::diagnostics::FailureReason;
 use zwhisper_ipc::{HistorySession, RpcError};
 
 use super::{
@@ -30,11 +31,14 @@ const CHANNEL_DEPTH: usize = 256;
 pub(crate) enum HistoryRequest {
     /// Insert a new entry or replace an existing one with the same id.
     Upsert(Box<HistoryEntry>),
-    /// Update only the status (and optional error) of an entry.
+    /// Update only the status (and optional failure reason) of an entry.
     SetStatus {
         session_id: String,
         status: HistoryStatus,
-        last_error: Option<String>,
+        /// `None` leaves whatever reason is already on the entry — a
+        /// status transition like `Recorded -> Transcribing` must not
+        /// erase the diagnosis from a previous attempt.
+        reason: Option<FailureReason>,
     },
     /// Record transcript paths + backend and mark `Done`.
     SetTranscript {
@@ -97,12 +101,12 @@ impl HistoryHandle {
         &self,
         session_id: &str,
         status: HistoryStatus,
-        last_error: Option<String>,
+        reason: Option<FailureReason>,
     ) {
         self.send(HistoryRequest::SetStatus {
             session_id: session_id.to_owned(),
             status,
-            last_error,
+            reason,
         })
         .await;
     }
@@ -216,8 +220,8 @@ async fn writer_loop(path: PathBuf, mut rx: mpsc::Receiver<HistoryRequest>) {
             HistoryRequest::SetStatus {
                 session_id,
                 status,
-                last_error,
-            } => set_status(&mut file.sessions, &session_id, status, last_error),
+                reason,
+            } => set_status(&mut file.sessions, &session_id, status, reason),
             HistoryRequest::SetTranscript {
                 session_id,
                 transcript_paths,
@@ -280,8 +284,10 @@ fn recover(sessions: &mut [HistoryEntry]) -> usize {
             e.whisper_pid = None;
             e.status = HistoryStatus::Interrupted;
             if e.last_error.is_none() {
-                e.last_error =
-                    Some("daemon stopped while transcribing; not auto-retried".to_owned());
+                let reason = FailureReason::interrupted(&e.session_id);
+                e.last_error = Some(reason.message);
+                e.last_error_code = Some(reason.code.as_str().to_owned());
+                e.last_error_action = Some(reason.action);
             }
             n += 1;
         }
@@ -304,12 +310,16 @@ fn set_status(
     sessions: &mut [HistoryEntry],
     session_id: &str,
     status: HistoryStatus,
-    last_error: Option<String>,
+    reason: Option<FailureReason>,
 ) {
     if let Some(e) = sessions.iter_mut().find(|e| e.session_id == session_id) {
         e.status = status;
-        if last_error.is_some() {
-            e.last_error = last_error;
+        if let Some(reason) = reason {
+            // All three move together or not at all, so a stale code can
+            // never end up describing a newer message.
+            e.last_error = Some(reason.message);
+            e.last_error_code = Some(reason.code.as_str().to_owned());
+            e.last_error_action = Some(reason.action);
         }
         if matches!(status, HistoryStatus::Done | HistoryStatus::Failed) {
             e.whisper_pid = None;
@@ -327,7 +337,10 @@ fn set_transcript(
         e.transcript_paths = transcript_paths;
         backend.clone_into(&mut e.backend);
         e.status = HistoryStatus::Done;
+        // Success wipes the whole diagnosis, not just its message.
         e.last_error = None;
+        e.last_error_code = None;
+        e.last_error_action = None;
         e.whisper_pid = None;
     }
 }
@@ -411,6 +424,8 @@ pub(crate) fn new_entry(
         lang: lang.to_owned(),
         status: HistoryStatus::Recorded,
         last_error: None,
+        last_error_code: None,
+        last_error_action: None,
         whisper_pid: None,
     }
 }

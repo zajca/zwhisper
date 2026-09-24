@@ -231,9 +231,21 @@ async fn auth_failure_maps_to_backend_auth() {
         .await
         .unwrap_err();
     match err {
-        TranscribeError::BackendAuth { backend, status } => {
+        TranscribeError::BackendAuth {
+            backend,
+            status,
+            key_source,
+        } => {
             assert_eq!(backend, "deepgram");
             assert_eq!(status, 401);
+            // The rejected key's provenance must reach the error so the
+            // user knows which secret to rotate — and must never be the
+            // key itself.
+            assert!(!key_source.is_empty());
+            assert!(
+                !key_source.contains(FIXTURE_KEY),
+                "key_source leaked the key: {key_source}"
+            );
         }
         other => panic!("expected BackendAuth, got {other:?}"),
     }

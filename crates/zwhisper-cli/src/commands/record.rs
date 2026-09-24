@@ -51,8 +51,9 @@
 
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
+use zwhisper_core::diagnostics::FailureReason;
 use zwhisper_core::profile;
-use zwhisper_ipc::Recorder1Proxy;
+use zwhisper_ipc::{Diagnostics1Proxy, Recorder1Proxy};
 
 use crate::cli::RecordArgs;
 
@@ -149,6 +150,26 @@ async fn run_async(profile_name: &str) -> i32 {
             return EXIT_IPC_FAILURE;
         }
     };
+    // Subscribe to the failure detail too, before StartRecording, for
+    // the same race reason. `FailureReported` always precedes the
+    // terminal `StateChanged "failed"`, so by the time we render the
+    // failure the reason is already in hand. A daemon too old to serve
+    // `Diagnostics1` still records, so this degrades to the old bare
+    // message rather than failing the command.
+    let mut failure_stream = match Diagnostics1Proxy::new(&conn).await {
+        Ok(p) => match p.receive_failure_reported().await {
+            Ok(stream) => Some(stream),
+            Err(err) => {
+                debug!(error = %err, "no FailureReported stream; failures will lack detail");
+                None
+            }
+        },
+        Err(err) => {
+            debug!(error = %err, "no Diagnostics1 proxy; failures will lack detail");
+            None
+        }
+    };
+    let mut failure: Option<FailureReason> = None;
 
     // 4. NOW call StartRecording.
     let session_id = match proxy.start_recording(profile_name).await {
@@ -249,7 +270,21 @@ async fn run_async(profile_name: &str) -> i32 {
                     "failed" => {
                         // Terminal — recording failure.
                         print_artifacts(audio_path.as_ref(), transcript.as_ref(), auto_transcribe);
-                        eprintln!("recording failed (StateChanged \"failed\")");
+                        match &failure {
+                            Some(reason) => {
+                                eprintln!("recording failed: {}", reason.message);
+                                eprintln!("  -> {}", reason.action);
+                            }
+                            // No `FailureReported` arrived: either the
+                            // daemon predates `Diagnostics1` or the
+                            // signal was lost. Say so rather than
+                            // implying there is no reason.
+                            None => eprintln!(
+                                "recording failed (StateChanged \"failed\"); \
+                                 no reason reported — check `zwhisper status` or \
+                                 `journalctl --user -u zwhisperd`"
+                            ),
+                        }
                         return EXIT_RECORDING_FAILED;
                     }
                     other => {
@@ -312,6 +347,44 @@ async fn run_async(profile_name: &str) -> i32 {
                     bytes: args.bytes,
                     backend: args.backend.to_owned(),
                 });
+            }
+
+            // Branch 3b — FailureReported: the reason behind the
+            // terminal `"failed"` that is about to arrive. Stored, not
+            // printed, so the failure is rendered once from the
+            // terminal branch. A closed stream only costs the detail.
+            maybe_signal = async {
+                match failure_stream.as_mut() {
+                    Some(stream) => stream.next().await,
+                    None => std::future::pending().await,
+                }
+            }, if failure_stream.is_some() => {
+                let Some(signal) = maybe_signal else {
+                    debug!("FailureReported stream closed");
+                    failure_stream = None;
+                    continue;
+                };
+                let Ok(args) = signal.args() else {
+                    debug!("FailureReported with malformed args, dropping");
+                    continue;
+                };
+                // A pre-capture refusal carries an empty session id and
+                // cannot be ours (StartRecording already returned), so
+                // only our own session's failures are adopted.
+                if args.session_id != session_id {
+                    debug!(
+                        got = %args.session_id,
+                        expected = %session_id,
+                        "FailureReported for a different session, dropping"
+                    );
+                    continue;
+                }
+                info!(code = %args.code, error = %args.message, "FailureReported");
+                failure = Some(FailureReason::from_wire(
+                    args.code,
+                    args.message,
+                    args.action,
+                ));
             }
 
             // Branch 4 — Ctrl+C: politely stop, keep waiting for

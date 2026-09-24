@@ -89,6 +89,17 @@ pub(crate) struct HistoryEntry {
     pub(crate) status: HistoryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) last_error: Option<String>,
+    /// Stable failure code for [`Self::last_error`]
+    /// (`zwhisper_core::diagnostics::FailureCode`), so `zwhisper history
+    /// --json` is machine-readable without parsing the human message.
+    /// Additive and `#[serde(default)]`, so an existing `history.json`
+    /// loads unchanged and needs no [`HISTORY_SCHEMA_VERSION`] bump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_error_code: Option<String>,
+    /// The suggested fix for [`Self::last_error`] — a command the user
+    /// can run or a setting they can change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_error_action: Option<String>,
     /// PID of the `whisper-cli` subprocess while `transcribing`, so
     /// startup recovery can reap an orphan (F2.3). Cleared on terminal
     /// status.
@@ -98,7 +109,7 @@ pub(crate) struct HistoryEntry {
 
 impl HistoryEntry {
     /// Project to the wire struct (`transcript_path` = first path or
-    /// `""`; `last_error` flattened to `""`).
+    /// `""`; the three `last_error*` fields flattened to `""`).
     pub(crate) fn to_wire(&self) -> HistorySession {
         HistorySession {
             session_id: self.session_id.clone(),
@@ -111,6 +122,8 @@ impl HistoryEntry {
             status: self.status.as_wire().to_owned(),
             transcript_path: self.transcript_paths.first().cloned().unwrap_or_default(),
             last_error: self.last_error.clone().unwrap_or_default(),
+            last_error_code: self.last_error_code.clone().unwrap_or_default(),
+            last_error_action: self.last_error_action.clone().unwrap_or_default(),
         }
     }
 }
@@ -278,6 +291,8 @@ mod tests {
             lang: "auto".to_owned(),
             status,
             last_error: None,
+            last_error_code: None,
+            last_error_action: None,
             whisper_pid: None,
         }
     }

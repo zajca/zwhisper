@@ -16,7 +16,11 @@ name = "zwhisperd"
 path = "src/main.rs"
 
 [dependencies]
-zwhisper-core = { path = "../zwhisper-core" }
+# `setup` adds the GStreamer-free PipeWire control layer
+# (`pw-dump`/`wpctl` parsing) the pre-capture mute probe needs
+# (RFC-actionable-errors F6). It pulls only `serde_json`, which the
+# daemon already depends on.
+zwhisper-core = { path = "../zwhisper-core", features = ["setup"] }
 zwhisper-ipc = { path = "../zwhisper-ipc" }
 zbus = { workspace = true }
 zvariant = { workspace = true }
@@ -50,7 +54,7 @@ parakeet = ["zwhisper-core/parakeet"]
 tempfile = { workspace = true }
 which = { workspace = true }
 tokio = { workspace = true, features = ["signal", "rt", "macros", "time", "sync", "process", "io-util", "fs"] }
-zwhisper-core = { path = "../zwhisper-core" }
+zwhisper-core = { path = "../zwhisper-core", features = ["setup"] }
 dirs = { workspace = true }
 
 [lints]

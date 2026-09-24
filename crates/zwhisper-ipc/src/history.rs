@@ -9,8 +9,8 @@
 //! ## Signature reference
 //!
 //! ```text
-//! ListSessions(u limit, u offset) -> a(stssssssss)
-//! GetSession(s id)                -> (stssssssss)
+//! ListSessions(u limit, u offset) -> a(stssssssssss)
+//! GetSession(s id)                -> (stssssssssss)
 //! Retry(s id)                     -> (s job_id)
 //! Forget(s id, b delete_files)    -> ()
 //! property ProtocolVersion -> s

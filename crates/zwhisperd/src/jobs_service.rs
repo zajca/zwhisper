@@ -170,6 +170,10 @@ impl JobsInterface {
                 submit_mode,
                 label,
                 done: None,
+                // A `TranscribeFile` job transcribes a file nobody
+                // metered, so there is no level data to explain an empty
+                // result with.
+                capture: None,
             })
             .map_err(zbus::fdo::Error::from)?;
         Ok(job_id.to_string())

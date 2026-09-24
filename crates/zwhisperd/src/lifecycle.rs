@@ -32,6 +32,12 @@
 //!
 //! Failure (transcribe-side): we still emit `RecordingComplete` and
 //! release the slot, then log the transcribe failure and emit
+//! Every terminal `StateChanged "failed"` is preceded by a
+//! `Diagnostics1.FailureReported` carrying the code, message, and
+//! suggested action for the same session — except the auto-transcribe
+//! failure arm, where the job queue has already reported it against the
+//! job id (reporting twice would double the notification).
+//!
 //! `StateChanged "failed"` instead of `"idle"`. The audio file is
 //! preserved on disk for the user to retry.
 
@@ -42,15 +48,18 @@ use tracing::{error, info, warn};
 use zbus::object_server::InterfaceRef;
 use zwhisper_core::audio::recorder::{Recorder, RecordingReport};
 use zwhisper_core::audio::state::{SessionId, StopReason};
+use zwhisper_core::diagnostics::{DiagnosticsConfig, FailureCode, FailureReason};
 use zwhisper_core::profile::schema::OutputDest;
 use zwhisper_core::transcribe::config::DEFAULT_ASR_SAMPLE_RATE_HZ;
 use zwhisper_core::transcribe::{
     AudioArtifact, AudioCodec, AudioMetadata, AudioSource, PcmAvailability, TranscribeOpts,
 };
 
+use crate::diagnostics_service::FailureReporter;
 use crate::history::writer::new_entry;
 use crate::history::{HistoryHandle, HistoryStatus};
 use crate::jobs::JobQueue;
+use crate::jobs::queue::CaptureDiagnostics;
 use crate::last_session::{self, LastSession};
 use crate::recorder_service::{RecorderInterface, RecorderInterfaceSignals};
 use crate::session::SessionManager;
@@ -87,6 +96,15 @@ pub(crate) struct LifecycleHooks {
     pub(crate) outputs: Vec<OutputDest>,
     /// Native capture rate, recorded in history for a future retry.
     pub(crate) native_rate: u32,
+    // ---- RFC-actionable-errors additions ----
+    /// Publishes the structured reason for every terminal failure this
+    /// task can produce, ahead of `StateChanged "failed"`.
+    pub(crate) reporter: FailureReporter,
+    /// The profile's `sources.mic`, so a silence verdict can name the
+    /// device the user actually recorded from.
+    pub(crate) mic_node: String,
+    /// The profile's failure-detection thresholds.
+    pub(crate) diagnostics: DiagnosticsConfig,
 }
 
 /// Spawn the lifecycle task. Returns immediately; the spawned task
@@ -158,6 +176,22 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
             // emit `RecordingComplete`; emit `StateChanged "failed"`
             // and bail.
             hooks.sessions.release();
+            // This path used to leave nothing behind anywhere — no
+            // history entry, no notification, only a log line. Give it
+            // the catch-all reason so it at least reaches the user.
+            hooks
+                .reporter
+                .report(
+                    &session_id_str,
+                    "",
+                    &FailureReason::new(
+                        FailureCode::RecordingFailed,
+                        "the recorder drain task crashed while finalising the recording".to_owned(),
+                        "inspect the daemon log: `journalctl --user -u zwhisperd -n 200`"
+                            .to_owned(),
+                    ),
+                )
+                .await;
             emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
             return;
         }
@@ -241,6 +275,11 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                     opts,
                     hooks.profile_name.clone(),
                     hooks.outputs.clone(),
+                    CaptureDiagnostics {
+                        levels: report.levels,
+                        mic_node: hooks.mic_node.clone(),
+                        cfg: hooks.diagnostics.clone(),
+                    },
                 );
                 match rx.await {
                     Ok(Ok(art)) => {
@@ -294,6 +333,18 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                             session_id = %session_id_str,
                             "transcribe job did not report a result (daemon shutting down?)",
                         );
+                        // The queue never reached its own failure arm,
+                        // so nothing has reported this. The audio is on
+                        // disk and the session is in history, so a
+                        // retry is the honest next step.
+                        hooks
+                            .reporter
+                            .report(
+                                &session_id_str,
+                                "",
+                                &FailureReason::interrupted(&session_id_str),
+                            )
+                            .await;
                         emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
                     }
                 }
@@ -330,9 +381,16 @@ async fn run_lifecycle(recorder: Recorder, hooks: LifecycleHooks) {
                 &hooks.transcribe_model,
                 &hooks.transcribe_language,
             );
+            let reason = FailureReason::from(&rec_err);
             entry.status = HistoryStatus::Failed;
-            entry.last_error = Some(rec_err.to_string());
+            entry.last_error = Some(reason.message.clone());
+            entry.last_error_code = Some(reason.code.as_str().to_owned());
+            entry.last_error_action = Some(reason.action.clone());
             hooks.history.upsert(entry).await;
+            // A recording-side failure produced no notification at all
+            // before this: it never went through a job, so `JobFailed`
+            // never fired and the reason lived only in history.
+            hooks.reporter.report(&session_id_str, "", &reason).await;
             emit_terminal_state(&hooks.iface_ref, "failed", &session_id_str).await;
         }
     }
